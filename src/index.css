@@ -1,0 +1,411 @@
+@import "tailwindcss";
+
+@theme {
+  /* Exact 5 brand colors from Color Palete.png with visual dominance */
+  /* 1. DOMINANT (>50% area): #2bb2b5 (Workshop Teal) */
+  --color-brand-teal: #2bb2b5;
+  /* 2. SECONDARY ACCENT (~10% area): #13707f (Teal Dark) */
+  --color-brand-teal-dark: #13707f;
+  /* 3. SIGNAL ACCENT (~10% area): #ee2f27 (Brand Red) */
+  --color-brand-red: #ee2f27;
+  --color-brand-red-hover: #ff3d2e;
+  --color-brand-red-cta: #d42920;
+  --color-brand-red-cta-hover: #ee2f27;
+  /* 4. PURE WHITE (~20% area): #ffffff (Surfaces, cards, canvas) */
+  --color-brand-white: #ffffff;
+  /* 5. PURE BLACK (~10% area): #000000 (Deep chrome header & sidebar, high contrast ink) */
+  --color-brand-black: #000000;
+
+  --color-background: #ffffff;
+  --color-foreground: #000000;
+  --color-card: #ffffff;
+  --color-card-foreground: #000000;
+  --color-muted: #eaf6f6;
+  --color-muted-foreground: #446566;
+  --color-accent: #dcf1f1;
+  --color-accent-foreground: #0f3b3d;
+  --color-border: #cfe9e9;
+  --color-input: #cfe9e9;
+  --color-ring: #2bb2b5;
+
+  /* Chrome tokens strictly using #000000, #13707f, and #2bb2b5 */
+  --color-surface-dark: #000000;
+  --color-surface-dark-border: #13707f;
+  --color-surface-dark-hover: #0a2528;
+  --color-surface-dark-active: #2bb2b5;
+
+  /* Harmonize Tailwind's teal scale with #2bb2b5 as dominant hue and #13707f for high contrast text/buttons */
+  --color-teal-50: #f0f9f9;
+  --color-teal-100: #eaf6f6;
+  --color-teal-200: #cfe9e9;
+  --color-teal-300: #9dd4d6;
+  --color-teal-400: #5ec0c2;
+  --color-teal-500: #2bb2b5;  /* Workshop Teal */
+  --color-teal-600: #13707f;  /* Teal Dark (High contrast text & buttons against white: 5.8:1) */
+  --color-teal-700: #13707f;  /* Secondary teal dark */
+  --color-teal-800: #0e5560;
+  --color-teal-900: #093940;
+  --color-teal-950: #000000;
+
+  /* Strict remap: Emerald and Green scales mapped to Workshop Teal & Teal Dark */
+  --color-emerald-50: #f0f9f9;
+  --color-emerald-100: #eaf6f6;
+  --color-emerald-200: #cfe9e9;
+  --color-emerald-300: #9dd4d6;
+  --color-emerald-400: #5ec0c2;
+  --color-emerald-500: #2bb2b5;
+  --color-emerald-600: #13707f;  /* High contrast Teal Dark */
+  --color-emerald-700: #13707f;
+  --color-emerald-800: #0e5560;
+  --color-emerald-900: #000000;
+  --color-emerald-950: #000000;
+
+  --color-green-50: #f0f9f9;
+  --color-green-100: #eaf6f6;
+  --color-green-200: #cfe9e9;
+  --color-green-300: #9dd4d6;
+  --color-green-400: #5ec0c2;
+  --color-green-500: #2bb2b5;
+  --color-green-600: #13707f;  /* High contrast Teal Dark */
+  --color-green-700: #13707f;
+  --color-green-800: #0e5560;
+  --color-green-900: #000000;
+  --color-green-950: #000000;
+
+  /* Strict remap: Sky, Blue, Indigo, Purple scales mapped to Teal, Teal Dark, and Deep Black */
+  --color-sky-50: #f0f9f9;
+  --color-sky-100: #eaf6f6;
+  --color-sky-200: #cfe9e9;
+  --color-sky-300: #9dd4d6;
+  --color-sky-400: #5ec0c2;
+  --color-sky-500: #2bb2b5;
+  --color-sky-600: #13707f;  /* High contrast Teal Dark */
+  --color-sky-700: #13707f;
+  --color-sky-800: #0e5560;
+  --color-sky-900: #000000;
+  --color-sky-950: #000000;
+
+  --color-blue-50: #f0f9f9;
+  --color-blue-100: #eaf6f6;
+  --color-blue-200: #cfe9e9;
+  --color-blue-300: #9dd4d6;
+  --color-blue-400: #5ec0c2;
+  --color-blue-500: #2bb2b5;
+  --color-blue-600: #13707f;  /* High contrast Teal Dark */
+  --color-blue-700: #13707f;
+  --color-blue-800: #0e5560;
+  --color-blue-900: #000000;
+  --color-blue-950: #000000;
+
+  --color-indigo-50: #f0f9f9;
+  --color-indigo-100: #eaf6f6;
+  --color-indigo-200: #cfe9e9;
+  --color-indigo-300: #9dd4d6;
+  --color-indigo-400: #5ec0c2;
+  --color-indigo-500: #13707f;
+  --color-indigo-600: #13707f;
+  --color-indigo-700: #0e5560;
+  --color-indigo-800: #000000;
+  --color-indigo-900: #000000;
+  --color-indigo-950: #000000;
+
+  --color-purple-50: #f0f9f9;
+  --color-purple-100: #eaf6f6;
+  --color-purple-200: #cfe9e9;
+  --color-purple-300: #9dd4d6;
+  --color-purple-400: #5ec0c2;
+  --color-purple-500: #13707f;
+  --color-purple-600: #13707f;
+  --color-purple-700: #0e5560;
+  --color-purple-800: #000000;
+  --color-purple-900: #000000;
+  --color-purple-950: #000000;
+
+  /* Strict remap: Amber & Yellow scales mapped to Teal Mist & Teal Dark (Zero yellow leakage) */
+  --color-amber-50: #f0f9f9;
+  --color-amber-100: #eaf6f6;
+  --color-amber-200: #cfe9e9;
+  --color-amber-300: #9dd4d6;
+  --color-amber-400: #2bb2b5;
+  --color-amber-500: #13707f;  /* High contrast Teal Dark */
+  --color-amber-600: #13707f;
+  --color-amber-700: #13707f;
+  --color-amber-800: #0e5560;
+  --color-amber-900: #000000;
+  --color-amber-950: #000000;
+
+  --color-yellow-50: #f0f9f9;
+  --color-yellow-100: #eaf6f6;
+  --color-yellow-200: #cfe9e9;
+  --color-yellow-300: #9dd4d6;
+  --color-yellow-400: #2bb2b5;
+  --color-yellow-500: #13707f;
+  --color-yellow-600: #13707f;
+  --color-yellow-700: #13707f;
+  --color-yellow-800: #0e5560;
+  --color-yellow-900: #000000;
+  --color-yellow-950: #000000;
+
+  /* Strict remap: Orange mapped to Signal Red */
+  --color-orange-50: #fff5f5;
+  --color-orange-100: #fed7d7;
+  --color-orange-200: #feb2b2;
+  --color-orange-300: #feb2b2;
+  --color-orange-400: #ee2f27;
+  --color-orange-500: #ee2f27;
+  --color-orange-600: #ee2f27;
+  --color-orange-700: #d42920;
+  --color-orange-800: #000000;
+  --color-orange-900: #000000;
+  --color-orange-950: #000000;
+
+  /* Harmonize slate neutrals to Compro's teal-tinted neutral scale with high readability */
+  --color-slate-50: #f8fbfb;
+  --color-slate-100: #eef6f6;
+  --color-slate-200: #cfe9e9;
+  --color-slate-300: #b5dada;
+  --color-slate-400: #557778;  /* Crisp readable secondary text (contrast >4.5:1) */
+  --color-slate-500: #446566;  /* High contrast secondary label */
+  --color-slate-600: #304e4f;
+  --color-slate-700: #20393a;
+  --color-slate-800: #0d282b;
+  --color-slate-900: #000000;
+  --color-slate-950: #000000;
+
+  /* Harmonize red and rose directly to #ee2f27 */
+  --color-rose-50: #fff5f5;
+  --color-rose-100: #fed7d7;
+  --color-rose-200: #feb2b2;
+  --color-rose-300: #feb2b2;
+  --color-rose-400: #ee2f27;
+  --color-rose-500: #ee2f27;
+  --color-rose-600: #ee2f27;
+  --color-rose-700: #d42920;
+  --color-rose-800: #000000;
+  --color-rose-900: #000000;
+  --color-rose-950: #000000;
+
+  --color-red-50: #fff5f5;
+  --color-red-100: #fed7d7;
+  --color-red-200: #feb2b2;
+  --color-red-300: #feb2b2;
+  --color-red-400: #ee2f27;
+  --color-red-500: #ee2f27;
+  --color-red-600: #ee2f27;
+  --color-red-700: #d42920;
+  --color-red-800: #000000;
+  --color-red-900: #000000;
+  --color-red-950: #000000;
+
+  /* Status signals. The brand scales above are deliberately all teal, which
+     makes every state look alike; these five carry urgency instead and are used
+     only for status badges and alerts, never for chrome. */
+  --color-status-done: #157f4f;
+  --color-status-done-bg: #e8f6ee;
+  --color-status-done-border: #b6e0c7;
+
+  --color-status-progress: #13707f;
+  --color-status-progress-bg: #e6f4f4;
+  --color-status-progress-border: #bfe4e4;
+
+  --color-status-warning: #b45309;
+  --color-status-warning-bg: #fff6e8;
+  --color-status-warning-border: #f3d3a0;
+  /* Bright amber with dark text: at badge size a dark amber reads as red. */
+  --color-status-warning-strong: #f5a524;
+
+  --color-status-critical: #d42920;
+  --color-status-critical-bg: #fff1f0;
+  --color-status-critical-border: #f6bcb8;
+
+  /* Neutral grey, deliberately outside the teal family so "not started yet"
+     never reads as "in progress". */
+  --color-status-idle: #52606d;
+  --color-status-idle-bg: #eef0f2;
+  --color-status-idle-border: #d2d8de;
+
+  /* Opaque row tint so a sticky column can inherit it and stay solid. */
+  --color-row-hover: #f1fafa;
+}
+
+:root {
+  /* Exact 5 colors pinned from Apps-HIJ/public/Color Palete.png */
+  --brand-teal: #2bb2b5;       /* Dominant 55% */
+  --brand-white: #ffffff;      /* 20% */
+  --brand-red: #ee2f27;        /* 10% */
+  --brand-teal-dark: #13707f;  /* 10% */
+  --brand-black: #000000;      /* 10% */
+
+  --background: #ffffff;
+  --foreground: #000000;
+  --card: #ffffff;
+  --card-foreground: #000000;
+  --muted: #eaf6f6;
+  --muted-foreground: #446566;
+  --accent: #dcf1f1;
+  --accent-foreground: #0f3b3d;
+  --border: #cfe9e9;
+  --input: #cfe9e9;
+  --ring: #2bb2b5;
+}
+
+/* Pins a column to an edge of a scrolling table so the row stays identifiable
+   and actionable however far the middle is scrolled. The background is
+   inherited from the row so hover and selected states carry over. */
+.cell-sticky-start,
+.cell-sticky-end {
+  position: sticky;
+  z-index: 1;
+  background: inherit;
+}
+
+.cell-sticky-start {
+  left: 0;
+}
+
+.cell-sticky-end {
+  right: 0;
+}
+
+@layer base {
+  * {
+    font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+  }
+  
+  code, pre, .font-mono {
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  body {
+    background-color: var(--background);
+    color: var(--foreground);
+  }
+
+  /* Native checkboxes, radios and the text caret carry the brand, not the OS default blue */
+  input,
+  textarea,
+  select {
+    accent-color: var(--brand-teal-dark);
+    caret-color: var(--brand-teal-dark);
+  }
+
+  /* Date and number spinners sit on a teal-tinted field, not a blue one */
+  input[type='date']::-webkit-calendar-picker-indicator {
+    cursor: pointer;
+    opacity: 0.6;
+  }
+  input[type='date']::-webkit-calendar-picker-indicator:hover {
+    opacity: 1;
+  }
+}
+
+/* Custom Scrollbar styled to dominant teal */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--muted);
+}
+
+::-webkit-scrollbar-thumb {
+  background: #9dd4d6;
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #2bb2b5;
+}
+
+/*
+ * `scrollbar-color` / `scrollbar-width` switch Chrome and Safari to the standard
+ * scrollbar, which voids every ::-webkit rule above — that is why the whole app
+ * was rendering 17px OS scrollbars instead of the 6px teal one. Both properties
+ * inherit, so they are kept to engines that have no ::-webkit-scrollbar.
+ */
+@supports not selector(::-webkit-scrollbar) {
+  html,
+  .sidebar-scroll {
+    scrollbar-width: thin;
+    scrollbar-color: #9dd4d6 transparent;
+  }
+}
+
+::selection {
+  background: #2bb2b5;
+  color: #000000;
+}
+
+/*
+ * The sidebar is white now, like the rest of the app, so the dark scrollbar it
+ * needed against black would only shout. It borrows the app's pale teal thumb
+ * and drops the track, leaving a hairline that darkens on hover.
+ */
+.sidebar-scroll::-webkit-scrollbar {
+  width: 6px;
+}
+/* The default stepper arrows read as clutter at this width. */
+.sidebar-scroll::-webkit-scrollbar-button {
+  display: none;
+}
+.sidebar-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.sidebar-scroll::-webkit-scrollbar-thumb {
+  background: #9dd4d6;
+  border-radius: 9999px;
+}
+.sidebar-scroll::-webkit-scrollbar-thumb:hover {
+  background: #2bb2b5;
+}
+
+/* Hide scrollbar for clean UI elements */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+/* Print Optimization */
+@media print {
+  body {
+    background: white !important;
+    color: black !important;
+  }
+  .no-print {
+    display: none !important;
+  }
+}
+
+/* Glassmorphism utility with teal mist tint */
+.glass-panel {
+  background: rgba(255, 255, 255, 0.90);
+  backdrop-filter: blur(12px);
+  border: 1px solid #cfe9e9;
+}
+
+/* Design Taste Diffusion Shadows & Micro-interactions */
+.shadow-diffusion {
+  box-shadow: 0 4px 24px -4px rgba(19, 112, 127, 0.07);
+}
+
+.shadow-diffusion-lg {
+  box-shadow: 0 10px 32px -6px rgba(19, 112, 127, 0.12);
+}
+
+.card-taste {
+  background-color: #ffffff;
+  border: 1px solid #cfe9e9;
+  border-radius: 0.75rem;
+  box-shadow: 0 4px 20px -4px rgba(19, 112, 127, 0.06);
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.card-taste:hover {
+  border-color: rgba(43, 178, 181, 0.45);
+  box-shadow: 0 8px 28px -6px rgba(19, 112, 127, 0.10);
+}
+

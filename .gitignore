@@ -1,0 +1,38 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+dist-server/
+dev-dist/
+*.tsbuildinfo
+
+# Local environment
+.env
+.env.*
+!.env.example
+
+# ---------------------------------------------------------------------------
+# Business data — never committed.
+#
+# The API stores everything as JSON files inside this project, so these folders
+# hold real customer names, phone numbers, addresses, prices, invoices and
+# password hashes. This repository is public; that data belongs on the server,
+# not in version control. Run `npm run seed:test` for a working local dataset.
+# ---------------------------------------------------------------------------
+server/data/*.json
+server/data-test/*.json
+uploads/
+
+# Plaintext account passwords, handed out once per person and then deleted.
+KREDENSIAL-AWAL.md
+
+# Logs & OS noise
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
+
+# Dokumen hasil generate yang disimpan sebagai contoh — 104 MB, dan isinya
+# dibuat dari pesanan asli. Bikin ulang dari aplikasinya kalau perlu contoh.
+reference/generate-form/*.pdf

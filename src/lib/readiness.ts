@@ -1,0 +1,219 @@
+// Production requirements an order must meet before PPIC may issue its SPK.
+// Shared by the server (enforcement) and the UI (checklists), so keep it dependency-free.
+//
+// Only DP and design block the SPK. Production may start while fabric is still
+// on its way, so material and pattern are reported for awareness but never hold
+// the work order back.
+//
+//   DP diterima         SOP-01 & SOP-20  blocking  verified payments >= agreed DP, or owner-approved special terms
+//   Desain & pola final SOP-02 & SOP-06  blocking  an approved design or sample, or a repeat order waiver.
+//                                                  The pattern is reported on the same line but never holds
+//                                                  the SPK back: cutting can start from an approved mockup.
+//   Bahan baku tersedia SOP-03 & SOP-04  info      every PO for the order received, or PPIC confirmed warehouse stock
+//   Pola final          SOP-06           info      a Final pattern linked to the order
+import type { Order, Payment, Sample, Procurement, Pattern, Design, SPK } from '../types';
+import { statusLabel } from './status';
+
+export type RequirementKey = 'dp' | 'sample' | 'material';
+
+export interface RequirementStatus {
+  key: RequirementKey;
+  label: string;
+  met: boolean;
+  detail: string;
+  /** False for requirements shown as awareness only; they never block the SPK. */
+  blocking: boolean;
+}
+
+export interface OrderReadiness {
+  orderId: string;
+  requirements: RequirementStatus[];
+  metCount: number;
+  total: number;
+  ready: boolean;
+  isSpkOptional?: boolean;
+  /** Blocking requirements only — what the 'n/m' badge counts. */
+  blockingMetCount: number;
+  blockingTotal: number;
+}
+
+export interface ReadinessData {
+  payments: Payment[];
+  samples: Sample[];
+  procurements: Procurement[];
+  patterns: Pattern[];
+  designs?: Design[];
+}
+
+export const REQUIREMENT_LABELS: Record<RequirementKey, string> = {
+  dp: 'DP diterima',
+  sample: 'Desain & pola final',
+  material: 'Bahan baku tersedia'
+};
+
+/** Requirements that actually hold the SPK back. The rest are shown for awareness. */
+export const BLOCKING_REQUIREMENTS: RequirementKey[] = ['dp', 'sample'];
+
+const rupiah = (n: number) => `Rp ${Math.round(n).toLocaleString('id-ID')}`;
+
+function escapeRegExp(text: string) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/** True when a procurement's free-text "intendedFor" names this order (by ID or PO number). */
+export function procurementIsForOrder(procurement: Procurement, order: Order): boolean {
+  const target = String(procurement.intendedFor || '');
+  if (!target) return false;
+  return [order.id, order.po]
+    .filter((ref): ref is string => !!ref)
+    .some(ref => new RegExp(`(^|[^A-Za-z0-9])${escapeRegExp(ref)}($|[^A-Za-z0-9])`, 'i').test(target));
+}
+
+export function verifiedPaidForOrder(orderId: string, payments: Payment[]): number {
+  return payments
+    .filter(p => p.orderId === orderId && p.status === 'Verified')
+    .reduce((sum, p) => sum + (Number(p.amount) || 0), 0);
+}
+
+function checkDp(order: Order, data: ReadinessData): RequirementStatus {
+  const paid = verifiedPaidForOrder(order.id, data.payments);
+  const required = Number(order.dpRequired) || 0;
+  const base = { key: 'dp' as const, label: REQUIREMENT_LABELS.dp, blocking: true };
+
+  if (order.specialTermsApprovedBy) {
+    return { ...base, met: true, detail: `Termin khusus disetujui ${order.specialTermsApprovedBy}` };
+  }
+  if (required > 0) {
+    return paid >= required
+      ? { ...base, met: true, detail: `Dibayar ${rupiah(paid)}` }
+      : { ...base, met: false, detail: `Dibayar ${rupiah(paid)} dari ${rupiah(required)}` };
+  }
+  return paid > 0
+    ? { ...base, met: true, detail: `Dibayar ${rupiah(paid)}` }
+    : { ...base, met: false, detail: 'Belum ada pembayaran DP' };
+}
+
+function checkSample(order: Order, data: ReadinessData): RequirementStatus {
+  const base = { key: 'sample' as const, label: REQUIREMENT_LABELS.sample, blocking: true };
+  // Appended to whatever the design outcome is, so one line answers both.
+  const pattern = ` \u2014 ${patternNote(order, data)}`;
+
+  // An approved mockup is enough to cut: the sample only matters when the
+  // quotation asked for a physical one.
+  const approvedDesign = (data.designs || []).find(
+    d => d.status === 'Approved' && (d.orderId === order.id || (!!order.designId && d.id === order.designId))
+  );
+  if (approvedDesign && order.needsSample !== true) {
+    return { ...base, met: true, detail: `Desain ${approvedDesign.id} disetujui${pattern}` };
+  }
+
+  // Anti-Skip Logic: Jika pesanan tanpa sampel fisik, otomatis lulus
+  if (order.needsSample === false) {
+    return { ...base, met: true, detail: `Dilewati: penawaran tanpa sampel fisik${pattern}` };
+  }
+
+  // Jika status sampel pada pesanan sudah Approved
+  if (order.sampleStatus === 'Approved') {
+    return { ...base, met: true, detail: `Sampel fisik telah disetujui (ACC)${pattern}` };
+  }
+
+  const linked = data.samples.filter(s => s.orderId === order.id);
+  const approved = linked.find(s => s.status === 'Approved');
+
+  if (approved) {
+    return { ...base, met: true, detail: `Sampel ${approved.id} disetujui${pattern}` };
+  }
+  if (order.sampleWaivedBy) {
+    const ref = order.sampleWaivedReferenceOrderId ? ` dari ${order.sampleWaivedReferenceOrderId}` : '';
+    return { ...base, met: true, detail: `Repeat order${ref}${pattern}` };
+  }
+  if (linked.length > 0) {
+    const latest = linked[0];
+    return { ...base, met: false, detail: `Sampel ${latest.id}: ${statusLabel(latest.status)}${pattern}` };
+  }
+  return { ...base, met: false, detail: `Belum ada sampel untuk pesanan ini${pattern}` };
+}
+
+function checkMaterial(order: Order, data: ReadinessData): RequirementStatus {
+  const base = { key: 'material' as const, label: REQUIREMENT_LABELS.material, blocking: false };
+  const pos = data.procurements.filter(p => procurementIsForOrder(p, order));
+  const received = pos.filter(p => p.status === 'Received').length;
+
+  if (order.materialConfirmedBy) {
+    return { ...base, met: true, detail: `Stok gudang dikonfirmasi ${order.materialConfirmedBy}` };
+  }
+  if (pos.length > 0) {
+    return received === pos.length
+      ? { ...base, met: true, detail: `${pos.length} PO bahan sudah diterima` }
+      : { ...base, met: false, detail: `${received} dari ${pos.length} PO bahan diterima` };
+  }
+  return {
+    ...base,
+    met: false,
+    detail: order.needsProcurement === 'Perlu Pengadaan'
+      ? 'Belum ada PO bahan untuk pesanan ini'
+      : 'Stok gudang belum dikonfirmasi PPIC'
+  };
+}
+
+/*
+ * Reported alongside the design rather than as its own requirement. A final
+ * pattern is what cutting works from, but production may start from an approved
+ * mockup while the pattern is still being graded — so this never blocks.
+ */
+function patternNote(order: Order, data: ReadinessData): string {
+  const linked = data.patterns.filter(p => (p.orderIds || []).includes(order.id));
+  const final = linked.find(p => p.status === 'Final');
+
+  if (final) return `pola ${final.id} rev. ${final.revision ?? 0} final`;
+  if (linked.length > 0) return `pola ${linked[0].id} masih ${statusLabel(linked[0].status).toLowerCase()}`;
+  return 'pola belum dibuat';
+}
+
+/**
+ * SPK tidak wajib dipenuhi untuk proses pesanan dengan case Repeat Order ATAU kuantitas di bawah 50 pcs.
+ * Untuk kasus tersebut, penerbitan SPK dibuat manual saja di tiap pesanan (opsional).
+ */
+export function isSpkOptionalForOrder(order: Partial<Order> | undefined): boolean {
+  if (!order) return false;
+  if (order.isRepeatOrder) return true;
+  const qty = Number(order.quantity);
+  return !isNaN(qty) && qty > 0 && qty < 50;
+}
+
+export function getOrderReadiness(order: Order, data: ReadinessData): OrderReadiness {
+  const isOptional = isSpkOptionalForOrder(order);
+  const requirements = [
+    checkDp(order, data),
+    checkSample(order, data),
+    checkMaterial(order, data)
+  ];
+  const metCount = requirements.filter(r => r.met).length;
+  const blocking = requirements.filter(r => r.blocking);
+  const blockingMetCount = blocking.filter(r => r.met).length;
+  return {
+    orderId: order.id,
+    requirements,
+    metCount,
+    total: requirements.length,
+    ready: isOptional ? true : blockingMetCount === blocking.length,
+    isSpkOptional: isOptional,
+    blockingMetCount,
+    blockingTotal: blocking.length
+  };
+}
+
+/**
+ * Approved orders (status 'Order') that have no SPK yet. Issuing the SPK moves an order to
+ * 'In Production', so older orders already in production without an SPK record are not listed.
+ */
+export function ordersAwaitingSpk(orders: Order[], spks: SPK[]): Order[] {
+  const withSpk = new Set(spks.map(s => s.orderId));
+  return orders.filter(o => o.status === 'Order' && !withSpk.has(o.id));
+}
+
+/** Roles allowed to approve special payment terms (SOP-20 step 8). */
+export function canApproveSpecialTerms(role: string | undefined): boolean {
+  const r = String(role || '').toLowerCase();
+  return r.includes('owner') || r.includes('super admin') || r.includes('pimpinan');
+}

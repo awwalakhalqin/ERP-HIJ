@@ -1,0 +1,19 @@
+{
+  // The root tsconfig only includes src/, so server/ was never type-checked and
+  // a syntax error there could reach a build. This config checks it; it emits
+  // nothing, because esbuild produces the actual bundle.
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "types": ["node"],
+    "strict": false,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "allowJs": false,
+    "noEmit": true
+  },
+  "include": ["server/**/*.ts", "src/lib/readiness.ts", "src/lib/status.ts", "src/types/**/*.ts"]
+}
