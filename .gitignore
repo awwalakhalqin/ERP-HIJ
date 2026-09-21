@@ -36,3 +36,6 @@ Thumbs.db
 # Dokumen hasil generate yang disimpan sebagai contoh — 104 MB, dan isinya
 # dibuat dari pesanan asli. Bikin ulang dari aplikasinya kalau perlu contoh.
 reference/generate-form/*.pdf
+
+# Vite cache
+.vite/
