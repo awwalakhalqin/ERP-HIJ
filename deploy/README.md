@@ -78,3 +78,14 @@ jadi cukup deploy ulang dari commit terbaru. Bila masih terjadi, hapus
 pakai `https://erp.hasilintijualan.com/portal` — aplikasi mengenali path itu
 sebagai pintu pelanggan. Bila `portal.hasilintijualan.com` bisa diarahkan ke
 aplikasi yang sama, pakai itu dan isi `VITE_PORTAL_HOST` sebelum build.
+
+**Tidak ada database.** Semua data disimpan sebagai berkas JSON di `DATA_DIR`
+(30 tabel, ±150 KB untuk data awal) — tidak perlu membuat MySQL/PostgreSQL di
+panel hosting. Konsekuensinya: folder `DATA_DIR` adalah satu-satunya salinan
+data, jadi taruh di luar folder aplikasi dan jadwalkan `npm run backup`.
+Jalankan hanya **satu proses** aplikasi (tabel dipegang di memori); jangan
+mengaktifkan mode cluster/multi-instance.
+
+**Aplikasi 503 setelah deploy?** Cek log start. Paling sering karena
+`AUTH_SECRET` belum diisi: server produksi sengaja berhenti dengan pesan
+`FATAL: AUTH_SECRET belum disetel (minimal 16 karakter)`.
