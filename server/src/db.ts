@@ -70,6 +70,73 @@ function ensureTable(tableName: string): string {
   return table;
 }
 
+/*
+ * Pindah otomatis dari JSON saat pertama kali jalan.
+ *
+ * Sebelum ini, membuka aplikasi di folder yang masih berisi berkas JSON akan
+ * membuat hij.db kosong dan berkas lamanya diabaikan diam-diam: seluruh
+ * pelanggan dan pesanan seolah lenyap, lalu akun admin baru dibuat dengan kata
+ * sandi baru. Yang menjalankannya tidak melihat pesan galat apa pun — kerugian
+ * paling mahal justru yang tidak bersuara. Skrip migrate-to-sqlite.mjs tetap
+ * ada untuk migrasi yang disengaja (ia menyalin cadangan dan memverifikasi
+ * ulang); bagian ini jaring pengaman kalau skrip itu terlewat.
+ *
+ * Hanya berjalan saat berkas benar-benar masih kosong, jadi baris yang sengaja
+ * dihapus lewat aplikasi tidak pernah hidup lagi di penyalaan berikutnya.
+ */
+(function importLegacyJson() {
+  const tables = db.all("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'") as any[];
+  if (tables.length > 0) return;
+
+  const files = fs.readdirSync(DATA_DIR).filter(f => f.toLowerCase().endsWith('.json'));
+  if (files.length === 0) return;
+
+  console.log(`\n  Berkas JSON ditemukan di ${DATA_DIR} dan hij.db masih kosong.`);
+  console.log('  Memindahkan isinya sekali ini saja...');
+
+  let imported = 0;
+  let rowCount = 0;
+  db.exec('BEGIN');
+  try {
+    for (const file of files) {
+      const parsed = JSON.parse(fs.readFileSync(path.join(DATA_DIR, file), 'utf-8'));
+      // Berkas yang bukan array bukan tabel; lewati tanpa menggagalkan sisanya.
+      if (!Array.isArray(parsed)) continue;
+
+      const table = ensureTable(file.replace(/\.json$/i, ''));
+      const insert = db.prepare(`INSERT OR REPLACE INTO "${table}" (id, pos, data) VALUES (?, ?, ?)`);
+      try {
+        parsed.forEach((row: any, index: number) => {
+          const id = row?.id === undefined || row?.id === null || row?.id === ''
+            ? `${table.toUpperCase()}-MIGRASI-${index + 1}`
+            : String(row.id);
+          insert.run([id, index, JSON.stringify({ ...row, id })]);
+        });
+      } finally {
+        insert.finalize();
+      }
+      imported += 1;
+      rowCount += parsed.length;
+    }
+    db.exec('COMMIT');
+  } catch (err: any) {
+    /*
+     * Dibatalkan seluruhnya. Berhenti dengan pesan jelas lebih baik daripada
+     * menyala dengan data separuh — orang akan menambah catatan baru di atas
+     * dataset yang bolong dan itu jauh lebih sulit dibereskan.
+     */
+    db.exec('ROLLBACK');
+    ensured.clear();
+    console.error(`\n  GAGAL memindahkan JSON: ${err?.message || err}`);
+    console.error('  Tidak ada yang tertulis; berkas JSON Anda tidak tersentuh.');
+    console.error('  Perbaiki berkas yang rusak, atau jalankan: node server/scripts/migrate-to-sqlite.mjs\n');
+    throw err;
+  }
+
+  console.log(`  Selesai: ${imported} tabel, ${rowCount} baris masuk ke hij.db.`);
+  console.log('  Berkas JSON dibiarkan apa adanya sebagai cadangan.\n');
+})();
+
 /** Daftar tabel yang ada di berkas — dipakai skrip backup dan migrasi. */
 export function listTables(): string[] {
   const rows = db.all("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name") as any[];
