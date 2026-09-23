@@ -90,9 +90,11 @@ function checkDp(order: Order, data: ReadinessData): RequirementStatus {
       ? { ...base, met: true, detail: `Dibayar ${rupiah(paid)}` }
       : { ...base, met: false, detail: `Dibayar ${rupiah(paid)} dari ${rupiah(required)}` };
   }
-  return paid > 0
-    ? { ...base, met: true, detail: `Dibayar ${rupiah(paid)}` }
-    : { ...base, met: false, detail: 'Belum ada pembayaran DP' };
+  if (paid > 0) return { ...base, met: true, detail: `Dibayar ${rupiah(paid)}` };
+  // Orders from before payments were itemised carry their DP on the record itself.
+  const legacyDp = Number(order.downPayment) || 0;
+  if (legacyDp > 0) return { ...base, met: true, detail: `DP ${rupiah(legacyDp)} tercatat di pesanan (data lama)` };
+  return { ...base, met: false, detail: 'Belum ada pembayaran DP' };
 }
 
 /*
@@ -218,8 +220,8 @@ function patternNote(order: Order, data: ReadinessData): string {
 }
 
 /**
- * SPK tidak wajib dipenuhi untuk proses pesanan dengan case Repeat Order ATAU kuantitas di bawah 50 pcs.
- * Untuk kasus tersebut, penerbitan SPK dibuat manual saja di tiap pesanan (opsional).
+ * Jalur cepat: Repeat Order atau kuantitas di bawah 50 pcs tidak ditahan DP dan
+ * sampel. SPK-nya tetap wajib terbit — pengiriman membutuhkan SPK yang lolos QC.
  */
 export function isSpkOptionalForOrder(order: Partial<Order> | undefined): boolean {
   if (!order) return false;

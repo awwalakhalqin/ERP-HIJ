@@ -895,18 +895,6 @@ app.post('/api/orders/:id/approve-dp', requireModule('Orders', 'Finance'), (req:
   });
 });
 
-// SOP-01: Create an order. SPKs are issued separately through PPIC.
-app.post('/api/orders/with-spk', requireModule('Orders'), (req: Request, res: Response) => {
-  const { order } = req.body;
-  const newOrder = insertItem('orders', {
-    ...order,
-    id: order?.id && !findById('orders', order.id) ? order.id : nextId('orders', 'ORD'),
-    status: order?.status || 'Order'
-  });
-  res.json({ success: true, order: newOrder, spk: null, readiness: readinessForOrder(newOrder) });
-});
-
-// Quotation approval (SOP-01): creates the order. Production waits for the SPK requirements.
 app.post('/api/quotations/:id/approve-to-order', requireModule('Quotations'), (req: Request, res: Response) => {
   const quotationId = req.params.id;
   const quotation = findById('quotations', quotationId);
@@ -1154,6 +1142,8 @@ app.put('/api/quotations/:id/revise-deal', requireModule('Quotations'), (req: Re
         ...(deadline ? { tanggalSelesai: deadline } : {}),
         ...(req.body.size ? { sizeChart: req.body.size } : {})
       });
+      recomputeSpk(linkedSpk.id);
+      syncOrderStatus(linkedOrder.id);
     }
 
     // 3. Reissue the invoice, carrying over whatever has already been paid.
@@ -1378,6 +1368,27 @@ app.post('/api/payments/:id/verify', requireModule('Finance'), (req: Request, re
   });
 });
 
+/*
+ * A payment recorded by mistake is voided, never deleted: the row stays as the
+ * audit trail, the invoice and order are recomputed without it.
+ */
+app.post('/api/payments/:id/reject', requireModule('Finance', 'Orders'), (req: Request, res: Response) => {
+  const payment = findById('payments', req.params.id);
+  if (!payment) return res.status(404).json({ error: 'Pembayaran tidak ditemukan.' });
+  if (payment.status === 'Rejected') return res.status(409).json({ error: 'Pembayaran ini sudah dibatalkan.' });
+  const actor = actorUser(req);
+  const reason = String(req.body?.reason || '').trim();
+  const updatedPayment = updateItem('payments', payment.id, {
+    status: 'Rejected',
+    rejectedBy: actor?.name || '',
+    rejectedAt: new Date().toISOString(),
+    notes: `${payment.notes ? payment.notes + ' | ' : ''}Dibatalkan ${actor?.name || 'staf'}${reason ? `: ${reason}` : ''}`
+  });
+  const updatedInvoice = payment.invoiceId ? reconcileInvoice(payment.invoiceId) : null;
+  reconcileOrderPayments(payment.orderId);
+  res.json({ success: true, message: `Pembayaran ${payment.id} dibatalkan.`, payment: updatedPayment, invoice: updatedInvoice });
+});
+
 // Specialized Invoice Creation Endpoint with auto balance calculations
 app.post('/api/invoices', requireModule('Finance', 'Orders'), (req: Request, res: Response) => {
   const data = req.body;
@@ -1435,6 +1446,8 @@ function ensureDraftInvoiceForShipment(shipment: any) {
   if (activeInvoiceForOrder(order.id)) return null;
 
   const total = Number(order.totalPrice) || 0;
+  // An order with no price on record (imports) has nothing to bill.
+  if (total <= 0) return null;
   const paid = verifiedPaidForOrder(order.id, readTable('payments'));
   const balanceRemaining = Math.max(0, total - paid);
 
@@ -1472,6 +1485,9 @@ function shipmentBlockReason(body: any, existing?: any): string | null {
   if (!existing && order.status === 'Completed') return `Pesanan ${orderId} sudah selesai; tidak ada yang dikirim lagi.`;
   if (body?.status !== undefined && !SHIPMENT_STATUSES.includes(String(body.status))) {
     return `Status pengiriman "${body.status}" tidak dikenal.`;
+  }
+  if (existing && body?.status !== undefined && SHIPMENT_STATUSES.indexOf(String(body.status)) < SHIPMENT_STATUSES.indexOf(String(existing.status))) {
+    return `Status pengiriman tidak bisa mundur dari "${existing.status}" ke "${body.status}".`;
   }
   const spks = readTable('spk_produksi').filter((s: any) => s.orderId === orderId);
   if (spks.length === 0) return `Pesanan ${orderId} belum punya SPK, jadi belum ada yang bisa dikirim.`;
@@ -2538,6 +2554,11 @@ app.post('/api/import/commit', requireModule('Orders'), (req: Request, res: Resp
   });
 });
 
+const OFFLINE_BLOCKED_TABLES = new Set([
+  'orders', 'quotations', 'customers', 'invoices', 'payments', 'shipments',
+  'spk_produksi', 'users', 'qc_reports', 'designs', 'samples', 'size_charts'
+]);
+
 app.post('/api/sync', requireStaff, (req: Request, res: Response) => {
   const { table, action, payload } = req.body;
   if (!table || !action || !payload) {
@@ -2546,6 +2567,14 @@ app.post('/api/sync', requireStaff, (req: Request, res: Response) => {
 
   const syncTable = TABLE_MAP[String(table).toLowerCase()] || String(table).toLowerCase();
   if (!KNOWN_TABLES.has(syncTable)) return res.status(404).json({ error: `Tabel "${table}" tidak dikenal.` });
+  /*
+   * These tables have gates and side effects on their live routes (QC before a
+   * surat jalan, one invoice per order, derived statuses). A replay that skips
+   * them would let an offline click land where a live one is refused.
+   */
+  if (OFFLINE_BLOCKED_TABLES.has(syncTable)) {
+    return res.status(409).json({ error: `Data ${syncTable} tidak bisa disimpan dari antrean offline. Ulangi saat terhubung.` });
+  }
   const syncBlocked = writeBlockReason(actorUser(req), syncTable) || gateFieldBlockReason(actorUser(req), payload);
   if (syncBlocked) return res.status(403).json({ error: syncBlocked });
   if (action === 'CREATE' && syncTable === 'spk_produksi') {
@@ -2654,7 +2683,7 @@ const CUSTOMER_WRITE_RULES: Record<string, CustomerWriteRule> = {
   samples: {
     methods: ['PUT'],
     allow: ['status', 'notes', 'feedback', 'approvedAt'],
-    enums: { status: ['Approved', 'Revision', 'Revision Requested', 'Rejected'] }
+    enums: { status: ['Approved', 'Revision', 'Rejected'] }
   },
   returns_complaints: {
     methods: ['POST'],
@@ -2753,6 +2782,11 @@ function advanceOrderAfterWrite(tableName: string, item: any): any | null {
     reconcileOrderPayments(item.orderId);
     return null;
   }
+  if (tableName === 'invoices') {
+    const reconciled = reconcileInvoice(item.id);
+    if (item.orderId) syncOrderStatus(item.orderId);
+    return reconciled;
+  }
   if (item.orderId && ['spk_produksi', 'qc_reports', 'shipments', 'invoices'].includes(tableName)) {
     syncOrderStatus(item.orderId);
   }
@@ -2798,7 +2832,7 @@ function deleteBlockReason(tableName: string, id: string): string | null {
   if (tableName === 'orders') {
     const spk = readTable('spk_produksi').find((s: any) => s.orderId === id);
     if (spk) {
-      return `Pesanan ${id} sudah punya SPK ${spk.id}. Hapus SPK-nya dulu di menu Surat Perintah Kerja kalau pesanan ini memang batal.`;
+      return `Pesanan ${id} sudah punya SPK ${spk.id}. Kalau pesanan ini memang batal, pakai "Batalkan Pesanan" di detail pesanan.`;
     }
     const payments = readTable('payments').filter((p: any) => p.orderId === id && p.status !== 'Rejected');
     if (payments.length > 0) {
@@ -2806,6 +2840,24 @@ function deleteBlockReason(tableName: string, id: string): string | null {
     }
     const shipment = readTable('shipments').find((s: any) => s.orderId === id);
     if (shipment) return `Pesanan ${id} sudah punya surat jalan ${shipment.id}, jadi tidak bisa dihapus.`;
+  }
+  if (tableName === 'shipments') {
+    const shipment = findById('shipments', id);
+    if (shipment?.status === 'Delivered') return `Surat jalan ${id} sudah diterima pelanggan; riwayatnya disimpan.`;
+  }
+  if (tableName === 'invoices') {
+    const paid = readTable('payments').filter((p: any) => p.invoiceId === id && p.status !== 'Rejected').length;
+    if (paid > 0) return `Faktur ${id} sudah punya ${paid} pembayaran, jadi tidak bisa dihapus. Revisi lewat Surat Penawaran.`;
+  }
+  if (tableName === 'qc_reports') {
+    const report = findById('qc_reports', id);
+    if (report?.orderId && readTable('shipments').some((s: any) => s.orderId === report.orderId)) {
+      return `Laporan QC ${id} sudah dipakai surat jalan pesanan ${report.orderId}, jadi disimpan.`;
+    }
+  }
+  if (tableName === 'size_charts') {
+    const users = readTable('orders').filter((o: any) => o.sizeChartId === id && !readTable('spk_produksi').some((s: any) => s.orderId === o.id));
+    if (users.length > 0) return `Template ini dipakai ${users.length} pesanan yang belum ber-SPK (mis. ${users[0].id}). Arahkan pesanannya ke template lain dulu.`;
   }
   if (tableName === 'customers') {
     const orders = readTable('orders').filter((o: any) => o.customerId === id);
@@ -2978,6 +3030,20 @@ app.post('/api/:resource', requireAuth, (req: Request, res: Response) => {
   if (tableName === 'spk_produksi') {
     const reason = spkBlockReason(req.body?.orderId);
     if (reason) return res.status(409).json({ error: reason });
+    // Whatever the client typed, an SPK starts in the queue with the order's template.
+    const order = findById('orders', req.body.orderId);
+    req.body = {
+      ...req.body,
+      status: 'Queued', progress: 0, cutting: 0, sewing: 0, finishing: 0, qc: 0,
+      ...sizeChartSnapshot(order?.sizeChartId)
+    };
+  }
+  if (tableName === 'qc_reports') {
+    const spk = req.body?.spkId ? findById('spk_produksi', req.body.spkId) : null;
+    if (!spk) return res.status(409).json({ error: 'Laporan QC harus terhubung ke SPK yang ada.' });
+    if (spk.status === 'Queued') {
+      return res.status(409).json({ error: `SPK ${spk.id} belum punya catatan produksi; catat potong/jahit/finishing dulu sebelum QC.` });
+    }
   }
   if (tableName === 'orders') {
     const clash = poTakenBy(req.body?.po);
@@ -3034,6 +3100,16 @@ app.put('/api/:resource/:id', requireAuth, (req: Request, res: Response) => {
     }
     const result = customerWriteBody(tableName, 'PUT', req.body, req.actor!.sub);
     if ('error' in result) return res.status(403).json({ error: result.error });
+    if (tableName === 'designs' && result.body.status !== undefined) {
+      if (!['Pending Review', 'Revision Requested', 'Approved'].includes(String(existing.status))) {
+        return res.status(409).json({ error: 'Desain ini belum dikirim untuk ditinjau.' });
+      }
+      const linkedOrders = readTable('orders').filter((o: any) => o.designId === existing.id || o.id === existing.orderId);
+      const inProduction = linkedOrders.find((o: any) => readTable('spk_produksi').some((s: any) => s.orderId === o.id));
+      if (result.body.status === 'Revision Requested' && inProduction) {
+        return res.status(409).json({ error: `Desain ini sudah masuk produksi (pesanan ${inProduction.id}). Hubungi Admin HIJ lewat WhatsApp untuk perubahan.` });
+      }
+    }
     const updated = updateItem(tableName, req.params.id, result.body);
     if (!updated) return res.status(404).json({ error: 'Data tidak ditemukan.' });
     return res.json(stripSensitive(updated));
@@ -3049,7 +3125,18 @@ app.put('/api/:resource/:id', requireAuth, (req: Request, res: Response) => {
   // The SPK's figures are owned by the recompute below; a stale status or
   // progress sent along with an edit must not win over the records.
   if (tableName === 'spk_produksi' && req.body && typeof req.body === 'object') {
-    const { status: _status, progress: _progress, ...rest } = req.body;
+    const { status: _status, progress: _progress, cutting, sewing, finishing, qc, ...rest } = req.body;
+    req.body = {
+      ...rest,
+      ...(cutting !== undefined ? { manualCutting: Number(cutting) || 0 } : {}),
+      ...(sewing !== undefined ? { manualSewing: Number(sewing) || 0 } : {}),
+      ...(finishing !== undefined ? { manualFinishing: Number(finishing) || 0 } : {}),
+      ...(qc !== undefined ? { manualQc: Number(qc) || 0 } : {})
+    };
+  }
+  // Paid/balance/status on an invoice come from its payments, never from a form.
+  if (tableName === 'invoices' && req.body && typeof req.body === 'object') {
+    const { status: _s, downPaymentReceived: _d, balanceRemaining: _b, ...rest } = req.body;
     req.body = rest;
   }
 
@@ -3076,6 +3163,10 @@ app.put('/api/:resource/:id', requireAuth, (req: Request, res: Response) => {
     } else if (req.body.status !== undefined && req.body.status !== existing.status) {
       const { status: _status, ...rest } = req.body;
       req.body = rest;
+    }
+    if (req.body.quantity !== undefined && Number(req.body.quantity) !== Number(existing.quantity)) {
+      const started = productionStartedReason(existing.id);
+      if (started) return res.status(409).json({ error: `Kuantitas pesanan ${existing.id} tidak bisa diubah: produksi sudah berjalan (${started})` });
     }
   }
 
@@ -3134,8 +3225,8 @@ app.delete('/api/:resource/:id', requireStaff, (req: Request, res: Response) => 
   if (!success) return res.status(404).json({ error: 'Data tidak ditemukan.' });
   cleanUpAfterDelete(tableName, req.params.id);
   if (SPK_SOURCE_TABLES.includes(tableName)) recomputeSpk(victim?.spkId);
-  // Without its SPK an order that only read "Diproduksi" returns to the queue.
-  if (tableName === 'spk_produksi' && victim?.orderId) syncOrderStatus(victim.orderId);
+  // Without its SPK, report or surat jalan the order returns to where its records put it.
+  if (['spk_produksi', 'qc_reports', 'shipments'].includes(tableName) && victim?.orderId) syncOrderStatus(victim.orderId);
   res.json({ success: true });
 });
 

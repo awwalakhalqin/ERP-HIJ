@@ -57,7 +57,7 @@ const PHASES: FlowPhase[] = [
         moduleLabel: 'Pesanan Masuk',
         who: 'Admin Penjualan, Supervisor Penjualan',
         body: 'Pesanan resmi dibuat otomatis dari Surat Penawaran yang deal. Khusus Repeat Order (pesanan berulang barang sama), pesanan dapat dibuat langsung secara manual tanpa perlu membuat penawaran baru terlebih dahulu.',
-        note: 'SPK tidak wajib dipenuhi secara ketat untuk Repeat Order atau pesanan kuantitas < 50 pcs (jalur cepat SPK Manual/Opsional).'
+        note: 'Repeat Order atau pesanan < 50 pcs memakai jalur cepat: DP dan sampel tidak menahan SPK, tetapi SPK tetap wajib terbit sebelum produksi dan pengiriman.'
       },
       {
         title: 'Pembayaran DP (Termin 1)',

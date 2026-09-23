@@ -79,6 +79,11 @@ erp.hasilintijualan.com, portal.hasilintijualan.com {
    **Memulihkan backup: hentikan server dulu**, salin berkas JSON-nya, lalu
    jalankan lagi. Server memegang tabel di memori; berkas yang diganti saat
    server hidup tidak terbaca dan akan tertimpa pada penulisan berikutnya.
+7. Saat pertama dijalankan dengan versi ini, server menyelaraskan status
+   pesanan dengan catatannya (log `Status N pesanan disesuaikan`): pesanan
+   "Diproduksi" tanpa SPK berjalan kembali ke antrean SPK. SPK lama tanpa
+   catatan produksi dibiarkan apa adanya. Buat backup dulu sebelum start
+   pertama, lalu periksa halaman Surat Perintah Kerja.
 6. Toko online, gateway pembayaran dan top-up mati (404) kecuali
    `STOREFRONT_ENABLED=1`; endpoint itu menerima permintaan tanpa login.
 

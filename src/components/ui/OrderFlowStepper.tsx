@@ -139,7 +139,8 @@ export const OrderFlowStepper: React.FC<OrderFlowStepperProps> = ({
   let stage5Status: 'completed' | 'current' | 'locked' = 'locked';
   let stage5Desc = 'Pemeriksaan Kualitas';
 
-  if (currentStep === 5) {
+  // Status "QC" means the inspection is passed, so the step reads done, not busy.
+  if (currentStep === 5 && !isQcPassed) {
     stage5Status = 'current';
     stage5Desc = 'Inspeksi Kualitas (In-Line/Final)';
   } else if (currentStep !== undefined && currentStep > 5) {

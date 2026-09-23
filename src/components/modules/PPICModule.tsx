@@ -429,7 +429,7 @@ export const PPICModule: React.FC = () => {
     if (!issueOrder) return;
 
     // Gerbang Anti-Skip: jika order butuh sampel dan belum approved / waived, blokir penerbitan SPK
-    // Kecuali jika pesanan merupakan Repeat Order atau Qty < 50 (SPK Opsional)
+    // Jalur cepat (repeat order / qty < 50): DP dan sampel tidak menahan, SPK tetap terbit
     const isSpkOptOrder = isSpkOptionalForOrder(issueOrder);
     const isSampleBlocked = !isSpkOptOrder && (issueOrder.needsSample === true &&
       issueOrder.sampleStatus !== 'Approved' &&
@@ -812,7 +812,7 @@ export const PPICModule: React.FC = () => {
                     : notReady
                       ? `Syarat belum lengkap (${readiness.blockingMetCount}/${readiness.blockingTotal}). Buka Detail untuk melengkapinya.`
                       : readiness.isSpkOptional
-                        ? 'Terbitkan SPK (opsional untuk pesanan ini)'
+                        ? 'Terbitkan SPK (jalur cepat)'
                         : 'Terbitkan SPK';
 
                   return (
@@ -1086,7 +1086,7 @@ export const PPICModule: React.FC = () => {
               onClick={() => handleOpenIssue(detailAwaiting)}
               disabled={(!readiness.ready && !readiness.isSpkOptional) || savingOrderId === detailAwaiting.id}
             >
-              {readiness.isSpkOptional ? 'Terbitkan SPK (Opsional)' : 'Terbitkan SPK'}
+              {readiness.isSpkOptional ? 'Terbitkan SPK (Jalur Cepat)' : 'Terbitkan SPK'}
             </Button>
           );
         })()}
@@ -1777,7 +1777,7 @@ export const PPICModule: React.FC = () => {
                 </p>
                 <div className="mt-2 flex flex-wrap gap-1.5">
                   {isSpkOptOrder && (
-                    <Badge variant="done">Jalur Cepat: SPK Opsional ({issueOrder.isRepeatOrder ? 'Repeat Order' : 'Qty < 50'})</Badge>
+                    <Badge variant="done">Jalur Cepat — DP & sampel tidak menahan ({issueOrder.isRepeatOrder ? 'Repeat Order' : 'Qty < 50'})</Badge>
                   )}
                   {issueOrder.needsSample !== true ? (
                     <Badge variant="idle">Tanpa sampel fisik · jalur cepat</Badge>

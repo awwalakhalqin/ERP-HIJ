@@ -24,8 +24,20 @@ export function latestQcReport(spkId: string): any | null {
   return reports.reduce((latest: any, r: any) => (stamp(r) >= stamp(latest) ? r : latest), reports[0]);
 }
 
+/**
+ * The latest report decides. An SPK from before reports were kept, stored as
+ * "QC Passed"/"Completed" with no report at all, keeps that word.
+ */
 export function spkQcAccepted(spkId: string): boolean {
-  return latestQcReport(spkId)?.status === 'Accept';
+  const latest = latestQcReport(spkId);
+  if (latest) return latest.status === 'Accept';
+  const spk = findById('spk_produksi', spkId);
+  return spk?.status === 'QC Passed' || spk?.status === 'Completed';
+}
+
+/** Rows on the floor tables that name this SPK — none means a legacy record typed by hand. */
+function hasSourceRecords(spkId: string): boolean {
+  return SPK_SOURCE_TABLES.some(table => readTable(table).some((r: any) => r.spkId === spkId));
 }
 
 export function recomputeSpk(spkId: string | undefined): any | null {
@@ -33,8 +45,21 @@ export function recomputeSpk(spkId: string | undefined): any | null {
   const spk = findById('spk_produksi', spkId);
   if (!spk) return null;
 
+  // Nothing recorded yet: the figures and status typed on the SPK stand as
+  // they are, so the first start with this code never rewrites history.
+  if (!hasSourceRecords(spkId)) return spk;
+
   const target = Number(spk.targetQty) || 0;
   const cap = (n: number) => (target > 0 ? Math.min(n, target) : n);
+  /*
+   * Hand-typed floors live in manual* (set by the PPIC edit); the stored
+   * counters themselves are outputs. Reading the outputs back as floors made
+   * every counter ratchet: deleting a work record could never lower it.
+   */
+  const manual = (key: string) => {
+    const typed = spk[`manual${key[0].toUpperCase()}${key.slice(1)}`];
+    return typed !== undefined ? Number(typed) || 0 : 0;
+  };
 
   // Worker records: pieces each person finished per task.
   const work = readTable('work_assignments').filter((w: any) => w.spkId === spkId);
@@ -57,10 +82,10 @@ export function recomputeSpk(spkId: string | undefined): any | null {
   const accepted = spkQcAccepted(spkId);
 
   // Records are a floor under whatever was typed by hand; nothing goes above the target.
-  const cutting = cap(Math.max(Number(spk.cutting) || 0, byTask('Cutting'), sum(cutBatches, b => b.totalPiecesCut), bundleCut));
-  const sewing = cap(Math.max(Number(spk.sewing) || 0, byTask('Jahit'), sewn, bundleSewn));
-  const finishing = cap(Math.max(Number(spk.finishing) || 0, byTask('Finishing'), finishedByLog, bundleFinished));
-  const qc = accepted ? target || Number(spk.qc) || 0 : cap(Math.max(Number(spk.qc) || 0, byTask('QC'), bundlePassed));
+  const cutting = cap(Math.max(manual('cutting'), byTask('Cutting'), sum(cutBatches, b => b.totalPiecesCut), bundleCut));
+  const sewing = cap(Math.max(manual('sewing'), byTask('Jahit'), sewn, bundleSewn));
+  const finishing = cap(Math.max(manual('finishing'), byTask('Finishing'), finishedByLog, bundleFinished));
+  const qc = accepted ? target || Number(spk.qc) || 0 : cap(Math.max(manual('qc'), byTask('QC'), bundlePassed));
 
   const pct = Math.round(((cutting + sewing + finishing + qc) / ((target || 1) * 4)) * 100);
   const progress = Math.min(100, Math.max(0, Number.isFinite(pct) ? pct : 0));

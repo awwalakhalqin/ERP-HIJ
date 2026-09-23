@@ -151,6 +151,17 @@ export async function fetchResource<T = any>(resource: string): Promise<T[]> {
   }
 }
 
+/*
+ * Only floor records may wait in the offline queue. Orders, money, SPKs,
+ * shipments and accounts have gates on their live routes that a replay would
+ * skip, so offline they fail loudly instead of pretending to be saved.
+ */
+const OFFLINE_QUEUE_BLOCKED = new Set([
+  'orders', 'quotations', 'customers', 'invoices', 'payments', 'shipments',
+  'spk', 'spk_produksi', 'users', 'qc-reports', 'qc_reports', 'designs', 'samples', 'size-charts', 'size_charts'
+]);
+const OFFLINE_REFUSED = 'Tidak ada koneksi ke server. Data ini tidak bisa disimpan offline — coba lagi saat terhubung.';
+
 export async function createResource<T = any>(resource: string, payload: any): Promise<T> {
   try {
     const res = await apiFetch(`${API_BASE}/${resource}`, {
@@ -183,6 +194,7 @@ export async function createResource<T = any>(resource: string, payload: any): P
     if (err.message && !err.message.includes('Failed to fetch') && !err.message.includes('NetworkError')) {
       throw err;
     }
+    if (OFFLINE_QUEUE_BLOCKED.has(resource.toLowerCase())) throw new Error(OFFLINE_REFUSED);
     console.warn(`Server unreachable, saving locally in Dexie offline queue...`);
     const fallbackItem = {
       ...payload,
@@ -238,6 +250,7 @@ export async function updateResource<T = any>(resource: string, id: string, payl
     if (err.message && !err.message.includes('Failed to fetch') && !err.message.includes('NetworkError')) {
       throw err;
     }
+    if (OFFLINE_QUEUE_BLOCKED.has(resource.toLowerCase())) throw new Error(OFFLINE_REFUSED);
     console.warn(`Server unreachable, updating offline queue...`);
     const queuedPatch = { ...payload, id };
     /*
@@ -271,6 +284,7 @@ export async function deleteResource(resource: string, id: string): Promise<bool
   try {
     res = await apiFetch(`${API_BASE}/${resource}/${id}`, { method: 'DELETE' });
   } catch (err) {
+    if (OFFLINE_QUEUE_BLOCKED.has(resource.toLowerCase())) throw new Error(OFFLINE_REFUSED);
     try {
       const tableName = resource.replace('-', '');
       if ((db as any)[tableName]) {

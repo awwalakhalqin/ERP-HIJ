@@ -289,13 +289,21 @@ Mohon informasi ketersediaan slot antrean produksi dan penawaran invoice terbaru
     }
   };
 
+  /*
+   * Stages follow the records, not a percentage: an average of four counters
+   * used to tick "Cek Kualitas" before any inspection and "Dikirim" before a
+   * surat jalan existed.
+   */
+  const orderAt = (...statuses: string[]) => statuses.includes(String(activeOrder?.status || ''));
+  const spkAt = (...statuses: string[]) => statuses.includes(String(activeSpk?.status || ''));
+  const shipped = ['Picked Up', 'In Transit', 'Delivered'].includes(String(activeShipment?.status || ''));
   const productionStages = [
     { label: 'Pesanan Diterima', desc: 'Pesanan tercatat', completed: true },
-    { label: 'Desain & Sampel', desc: 'Desain dan sampel disetujui', completed: activeSample?.status === 'Approved' || !!activeOrder?.sampleWaivedBy || activeDesign?.status === 'Approved' || getProgressPercentage() > 20 },
-    { label: 'Pemotongan', desc: 'Kain dipotong', completed: getProgressPercentage() >= 30 },
-    { label: 'Penjahitan', desc: 'Dijahit dan diobras', completed: getProgressPercentage() >= 65 },
-    { label: 'Cek Kualitas', desc: 'Diperiksa dan dirapikan', completed: getProgressPercentage() >= 85 },
-    { label: 'Dikemas & Dikirim', desc: 'Disetrika, dikemas, dikirim', completed: getProgressPercentage() === 100 || activeOrder?.status === 'Completed' }
+    { label: 'Desain & Sampel', desc: 'Desain dan sampel disetujui', completed: activeSample?.status === 'Approved' || !!activeOrder?.sampleWaivedBy || activeDesign?.status === 'Approved' || !!activeSpk },
+    { label: 'Pemotongan', desc: 'Kain dipotong', completed: (Number(activeSpk?.cutting) || 0) > 0 || spkAt('Finishing', 'QC Passed', 'Completed') || orderAt('QC', 'Shipping', 'Completed') },
+    { label: 'Penjahitan', desc: 'Dijahit dan diobras', completed: (Number(activeSpk?.sewing) || 0) > 0 || (Number(activeSpk?.finishing) || 0) > 0 || spkAt('Finishing', 'QC Passed', 'Completed') || orderAt('QC', 'Shipping', 'Completed') },
+    { label: 'Cek Kualitas', desc: 'Diperiksa dan dirapikan', completed: spkAt('QC Passed', 'Completed') || orderAt('QC', 'Shipping', 'Completed') },
+    { label: 'Dikemas & Dikirim', desc: 'Disetrika, dikemas, dikirim', completed: shipped || orderAt('Shipping', 'Completed') }
   ];
 
   const portalTabs: { id: PortalTab; label: string; icon: React.ElementType }[] = [
@@ -838,7 +846,9 @@ Mohon informasi ketersediaan slot antrean produksi dan penawaran invoice terbaru
                       <span className="text-sm text-slate-500">Faktur</span>
                       <h3 className="text-xl font-bold text-slate-900 font-mono break-words">{activeInvoice?.id || 'Belum terbit'}</h3>
                     </div>
-                    <StatusBadge status={activeInvoice?.status || 'Belum Lunas'} />
+                    {activeInvoice
+                      ? <StatusBadge status={activeInvoice.status} />
+                      : <span className="inline-flex items-center rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-semibold text-slate-600">Belum ada faktur</span>}
                   </div>
 
                   <div className="p-4 bg-slate-50 rounded-2xl space-y-3 text-sm tabular-nums">
@@ -922,7 +932,9 @@ Mohon informasi ketersediaan slot antrean produksi dan penawaran invoice terbaru
               <div {...panelProps('shipping')} className={`bg-white rounded-3xl p-5 sm:p-8 shadow-xs border border-slate-100 space-y-6 ${panelFocusClass}`}>
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <h3 className="text-lg font-bold text-slate-900">Pengiriman</h3>
-                  <StatusBadge status={activeShipment?.status || 'Packing'} />
+                  {activeShipment
+                    ? <StatusBadge status={activeShipment.status} />
+                    : <span className="inline-flex items-center rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-semibold text-slate-600">Belum ada pengiriman</span>}
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">

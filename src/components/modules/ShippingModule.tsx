@@ -35,6 +35,14 @@ export const ShippingModule: React.FC = () => {
   const [saving, setSaving] = useState(false);
   const [orders, setOrders] = useState<Order[]>([]);
   const [qcReports, setQcReports] = useState<QCReport[]>([]);
+
+  /** The latest report for the order decides, the same reading the server's gate uses. */
+  const latestQcAccepted = (orderId: string) => {
+    const reports = qcReports.filter(q => q.orderId === orderId);
+    if (reports.length === 0) return false;
+    const stamp = (r: QCReport) => new Date((r as any).timestamp || (r as any).inspectionDate || (r as any).date || 0).getTime() || 0;
+    return reports.reduce((latest, r) => (stamp(r) >= stamp(latest) ? r : latest), reports[0]).status === 'Accept';
+  };
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -118,8 +126,7 @@ export const ShippingModule: React.FC = () => {
 
     // Client pre-check of the QC gate (SOP-16). The server enforces the same
     // rule and its message is shown if it still refuses.
-    const orderQC = qcReports.filter(q => q.orderId === formData.orderId);
-    const hasPassedQC = orderQC.some(q => q.status === 'Accept');
+    const hasPassedQC = latestQcAccepted(formData.orderId);
     if (!hasPassedQC) {
       setFormError('Pesanan belum lolos QC. Hanya pesanan dengan hasil QC "Accept" yang dapat dibuatkan Surat Jalan.');
       return;
@@ -431,7 +438,7 @@ export const ShippingModule: React.FC = () => {
         {(() => {
           const selectedOrder = orders.find(o => o.id === formData.orderId);
           const orderQC = qcReports.filter(q => q.orderId === formData.orderId);
-          const hasPassedQC = formData.orderId ? orderQC.some(q => q.status === 'Accept') : false;
+          const hasPassedQC = formData.orderId ? latestQcAccepted(formData.orderId) : false;
 
           return (
             <form onSubmit={handleCreateShipment} className="space-y-5">
@@ -457,7 +464,7 @@ export const ShippingModule: React.FC = () => {
                   >
                     <option value="">Pilih pesanan</option>
                     {orders.map(o => {
-                      const isQcOk = qcReports.some(q => q.orderId === o.id && q.status === 'Accept');
+                      const isQcOk = latestQcAccepted(o.id);
                       return (
                         <option key={o.id} value={o.id}>
                           {o.po || o.id} - {o.customerName} {isQcOk ? '(✅ QC Accept)' : '(⏳ Belum QC)'}
@@ -489,7 +496,7 @@ export const ShippingModule: React.FC = () => {
                       </span>
                     ) : orderQC.length > 0 ? (
                       <span className="text-rose-700 bg-rose-50 px-2.5 py-0.5 rounded-full border border-rose-200 font-bold">
-                        ⚠️ QC: {orderQC[0].status}
+                        ⚠️ QC: {statusLabel(orderQC[orderQC.length - 1].status)}
                       </span>
                     ) : (
                       <span className="text-amber-700 bg-amber-50 px-2.5 py-0.5 rounded-full border border-amber-200 font-bold">

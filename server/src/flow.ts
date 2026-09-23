@@ -13,6 +13,7 @@
  *   - the order status, derived from what actually happened downstream
  */
 import { readTable, findById, updateItem } from './db.js';
+import { spkQcAccepted } from './spk.js';
 
 // ------------------------------------------------------------------ ids
 
@@ -124,16 +125,15 @@ function derivedOrderStatus(order: any): string | null {
     const total = Number(invoice?.total ?? order.totalPrice) || 0;
     const paid = invoice ? verifiedPaidForInvoice(invoice) : 0;
     // Delivered is not finished while the customer still owes money. Invoices
-    // settled before payments were itemised carry only their Lunas status.
-    if ((total > 0 && paid >= total) || invoice?.status === 'Lunas') return 'Completed';
+    // settled before payments were itemised carry only their Lunas status; an
+    // order with no price on record (imports) owes nothing.
+    if (total <= 0 || paid >= total || invoice?.status === 'Lunas') return 'Completed';
     return 'Shipping';
   }
   if (shipments.some((s: any) => SHIPPED.includes(s.status))) return 'Shipping';
 
-  const qcAccepted =
-    spks.some((s: any) => s.status === 'QC Passed' || s.status === 'Completed') ||
-    readTable('qc_reports').some((q: any) => q.orderId === order.id && q.status === 'Accept');
-  if (qcAccepted) return 'QC';
+  // The latest report per SPK decides, the same reading the shipment gate uses.
+  if (spks.some((s: any) => s.status === 'Completed' || spkQcAccepted(s.id))) return 'QC';
 
   // An SPK in the queue is a plan, not production: the order reads
   // "Diproduksi" only once the floor has recorded work on it.
@@ -175,7 +175,18 @@ export function syncOrderStatus(orderId: string | undefined): any | null {
   }
   if (!next) return null;
   const currentRank = STATUS_RANK[order.status] ?? -1;
-  if ((STATUS_RANK[next] ?? -1) <= currentRank) return null;
+  const nextRank = STATUS_RANK[next] ?? -1;
+  if (nextRank === currentRank) return null;
+  /*
+   * Backwards only inside production, and only for an order whose records are
+   * complete enough to trust (it has an SPK): a deleted QC report or surat
+   * jalan takes the order back to where its remaining records put it. Orders
+   * from before records were kept, and finished orders, are never moved back.
+   */
+  if (nextRank < currentRank) {
+    const hasSpk = readTable('spk_produksi').some((s: any) => s.orderId === order.id);
+    if (!hasSpk || !['In Production', 'QC', 'Shipping'].includes(order.status)) return null;
+  }
   return updateItem('orders', order.id, { status: next });
 }
 

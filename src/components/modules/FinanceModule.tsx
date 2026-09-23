@@ -8,6 +8,7 @@ import {
   AlertCircle,
   FileText,
   Check,
+  Ban,
   ArrowDownLeft,
   ExternalLink,
   Send
@@ -310,6 +311,27 @@ export const FinanceModule: React.FC = () => {
         alert(data.error || 'Gagal memverifikasi pembayaran. Coba lagi.');
       }
     } catch (err) {
+      alert('Koneksi bermasalah. Coba lagi.');
+    }
+  };
+
+  /** A payment recorded by mistake is voided (kept as history); the invoice and order are recomputed. */
+  const handleRejectPayment = async (paymentId: string) => {
+    const reason = window.prompt(`Batalkan pembayaran ${paymentId}? Tulis alasannya (mis. salah nominal / salah pesanan):`);
+    if (reason === null) return;
+    try {
+      const res = await authFetch(`/api/payments/${paymentId}/reject`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reason })
+      });
+      if (res.ok) {
+        await loadData();
+      } else {
+        const data = await res.json().catch(() => ({} as any));
+        alert(data.error || 'Gagal membatalkan pembayaran. Coba lagi.');
+      }
+    } catch {
       alert('Koneksi bermasalah. Coba lagi.');
     }
   };
@@ -808,6 +830,16 @@ export const FinanceModule: React.FC = () => {
                               ariaLabel={`Verifikasi pembayaran ${pay.id}`}
                               title="Uang sudah masuk rekening — hitung ke faktur"
                               onClick={() => handleVerifyPayment(pay.id)}
+                            />
+                          )}
+                          {pay.status !== 'Rejected' && (
+                            <RowActionButton
+                              tone="danger"
+                              icon={Ban}
+                              label="Batalkan"
+                              ariaLabel={`Batalkan pembayaran ${pay.id}`}
+                              title="Salah catat? Pembayaran dibatalkan (tetap tersimpan sebagai riwayat) dan faktur dihitung ulang."
+                              onClick={() => handleRejectPayment(pay.id)}
                             />
                           )}
                           <RowDetailButton label={pay.id} onClick={() => setDetailPaymentId(pay.id)} />

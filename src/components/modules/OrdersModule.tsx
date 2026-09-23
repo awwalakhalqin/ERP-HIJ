@@ -19,7 +19,8 @@ import {
   AlertCircle,
   Info,
   CalendarClock,
-  BadgeCheck
+  BadgeCheck,
+  Ban
 } from 'lucide-react';
 import { Order, Customer, SPK, Design, Sample, Invoice, PaymentTerm, SizeChart } from '../../types';
 import { fetchResource, createResource, updateResource, deleteResource, fetchReadinessData, issueSpkApi, approveDpApi, commitExcelImportApi, authFetch, fetchStaffDirectory, StaffDirectoryEntry } from '../../services/api';
@@ -104,12 +105,12 @@ const SpkStatusTag: React.FC<{ spk?: SPK; readiness?: OrderReadiness; order?: Or
   solid
 }) => {
   if (spk) {
-    const isDone = spk.status === 'QC Passed' || spk.status === 'Completed';
-    if (isDone) {
+    // "Lolos QC" and "Selesai" are different moments: the sheet says which.
+    if (spk.status === 'QC Passed' || spk.status === 'Completed') {
       return (
         <Badge variant="done" size="sm" solid={solid}>
           <CheckCircle2 size={12} className="shrink-0" aria-hidden="true" />
-          <span>Selesai</span>
+          <span>{spk.status === 'Completed' ? 'Selesai' : 'Lolos QC'}</span>
         </Badge>
       );
     }
@@ -127,7 +128,7 @@ const SpkStatusTag: React.FC<{ spk?: SPK; readiness?: OrderReadiness; order?: Or
     return (
       <Badge variant="amber" size="sm" solid={solid} className="bg-amber-100 text-amber-800 border-amber-300">
         <Sparkles size={12} className="shrink-0" aria-hidden="true" />
-        <span>SPK Opsional</span>
+        <span>Jalur cepat</span>
       </Badge>
     );
   }
@@ -897,6 +898,23 @@ export const OrdersModule: React.FC = () => {
   };
 
   // Delete Order
+  /*
+   * Cancelling is the way out for an order that already has an SPK or money on
+   * it (delete is refused then). The server refuses once production has
+   * started; a queued SPK goes with the cancellation.
+   */
+  const handleCancelOrder = async (order: Order) => {
+    if (!window.confirm(`Batalkan pesanan ${order.po || order.id}? SPK yang masih antre ikut dihapus; pembayaran yang sudah masuk tetap tercatat di Keuangan.`)) return;
+    try {
+      const updated = await updateResource<Order>('orders', order.id, { status: 'Cancelled' });
+      setSelectedOrder(updated);
+      await loadData();
+      showToast(`Pesanan ${order.po || order.id} dibatalkan.`);
+    } catch (err: any) {
+      window.alert(err?.message || 'Pesanan tidak bisa dibatalkan.');
+    }
+  };
+
   const handleDeleteOrder = async (id: string) => {
     if (!window.confirm(`Hapus pesanan ${id}? Tindakan ini tidak dapat dibatalkan.`)) return;
     try {
@@ -1533,10 +1551,21 @@ export const OrdersModule: React.FC = () => {
               >
                 <Trash2 size={14} aria-hidden="true" /> Hapus
               </Button>
+              {!['Cancelled', 'Shipping', 'Completed'].includes(selectedOrder.status) && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => handleCancelOrder(selectedOrder)}
+                  className="text-rose-600 hover:bg-rose-50 hover:border-rose-300"
+                  title="Pesanan batal sebelum produksi mulai. Setelah potong/jahit tercatat, pembatalan ditolak."
+                >
+                  <Ban size={14} aria-hidden="true" /> Batalkan Pesanan
+                </Button>
+              )}
               <Button variant="outline" size="sm" onClick={() => handleOpenInvoicePrint(selectedOrder)}>
                 <Printer size={14} aria-hidden="true" /> Cetak Invoice
               </Button>
-              {Number(selectedOrder.dpRequired) > 0 && dpOutstanding(selectedOrder) > 0 && (
+              {selectedOrder.status !== 'Cancelled' && Number(selectedOrder.dpRequired) > 0 && dpOutstanding(selectedOrder) > 0 && (
                 <Button
                   size="sm"
                   onClick={() => handleOpenApproveDp(selectedOrder)}
@@ -1612,7 +1641,7 @@ export const OrdersModule: React.FC = () => {
               <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3.5 space-y-1.5 text-xs text-amber-900">
                 <p className="font-semibold flex items-center gap-1.5">
                   <Sparkles size={14} className="text-amber-600" />
-                  Status: SPK Opsional ({selectedOrder.isRepeatOrder ? 'Repeat Order' : 'Kuantitas < 50 pcs'})
+                  Jalur cepat SPK ({selectedOrder.isRepeatOrder ? 'Repeat Order' : 'Kuantitas < 50 pcs'})
                 </p>
                 <p className="text-[11px] text-muted-foreground">
                   {selectedReadiness?.ready
@@ -1759,7 +1788,7 @@ export const OrdersModule: React.FC = () => {
                 </ul>
                 <p className="mt-3 text-xs text-muted-foreground">
                   {isSpkOptionalForOrder(selectedOrder)
-                    ? 'Catatan: Pesanan ini jalur cepat (SPK Opsional) — DP dan sampel tidak menahan SPK, cukup desain yang sudah disetujui.'
+                    ? 'Catatan: Pesanan ini jalur cepat — DP dan sampel tidak menahan SPK; SPK tetap wajib terbit dengan desain yang sudah disetujui dan template size chart.'
                     : 'Hanya DP dan desain yang menahan penerbitan SPK. Bahan baku dan pola ditampilkan sebagai informasi — produksi boleh jalan sambil bahan menyusul. Terbitkan SPK di halaman Surat Perintah Kerja.'}
                 </p>
               </DetailBlock>
