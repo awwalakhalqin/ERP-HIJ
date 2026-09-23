@@ -1,40 +1,48 @@
 import React, { useState } from 'react';
 import {
-  Lock,
-  User as UserIcon,
   Eye,
   EyeOff,
   AlertCircle,
   Loader2,
   ArrowRight,
   MessageCircle,
-  ChevronDown,
-  ChevronUp,
   Info
 } from 'lucide-react';
-import { motion, AnimatePresence, useReducedMotion } from 'motion/react';
+import { motion, useReducedMotion } from 'motion/react';
 import { AuthSession } from '../../types';
-import { unifiedLoginApi } from '../../services/api';
+import { unifiedLoginApi, setAuthToken } from '../../services/api';
+import { isPortalSite } from '../../lib/site';
 import { COMPANY_CONTACT, getWhatsAppUrl } from '../../config/contact';
 
 interface LoginModalProps {
   onLoginSuccess: (session: AuthSession) => void;
 }
 
+/*
+ * Where customers go to track orders. Set VITE_PORTAL_URL to the portal page on
+ * the company website; without it the link points at this app, which accepts
+ * customer logins too.
+ */
+const PORTAL_URL: string = import.meta.env.VITE_PORTAL_URL || COMPANY_CONTACT.portalUrl;
+
 export const LoginModal: React.FC<LoginModalProps> = ({ onLoginSuccess }) => {
-  const [identifier, setIdentifier] = useState('admin.rezza');
+  const [identifier, setIdentifier] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
-  const [showDemoList, setShowDemoList] = useState(false);
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const reduceMotion = useReducedMotion();
 
-  const handleLogin = async (e?: React.FormEvent, customIdent?: string, customPass?: string) => {
-    if (e) e.preventDefault();
-    const idToUse = (customIdent !== undefined ? customIdent : identifier).trim();
-    const passToUse = (customPass !== undefined ? customPass : password).trim();
+  /*
+   * One form for everyone: the server looks the account up and answers with
+   * its role and menus, so there is nothing to pick here. Roles are assigned
+   * in Akun & Hak Akses, never at the door.
+   */
+  const handleLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const idToUse = identifier.trim();
+    const passToUse = password.trim();
 
     if (!idToUse) {
       setError('Masukkan username, nomor WhatsApp, atau ID akun Anda.');
@@ -49,19 +57,24 @@ export const LoginModal: React.FC<LoginModalProps> = ({ onLoginSuccess }) => {
       setLoading(true);
       setError(null);
       const session = await unifiedLoginApi(idToUse, passToUse);
+      /*
+       * Each door admits one kind of account. The token was already issued,
+       * so it is dropped again here rather than left in storage.
+       */
+      if (isPortalSite && session.type !== 'customer') {
+        setAuthToken(undefined);
+        throw new Error('Ini portal pelanggan. Akun staf masuk lewat sistem ERP HIJ.');
+      }
+      if (!isPortalSite && session.type !== 'internal') {
+        setAuthToken(undefined);
+        throw new Error(`Akun pelanggan masuk lewat portal pelanggan: ${PORTAL_URL}`);
+      }
       onLoginSuccess(session);
     } catch (err: any) {
       setError(err.message || 'Login gagal. Periksa kembali kredensial Anda.');
     } finally {
       setLoading(false);
     }
-  };
-
-  const handleSelectQuickDemo = (demoId: string, demoPass: string) => {
-    setIdentifier(demoId);
-    setPassword(demoPass);
-    setError(null);
-    handleLogin(undefined, demoId, demoPass);
   };
 
   return (
@@ -107,24 +120,35 @@ export const LoginModal: React.FC<LoginModalProps> = ({ onLoginSuccess }) => {
 
             <div className="pt-1">
               <h2 className="text-lg font-semibold text-slate-900 tracking-tight">
-                ERP Operasional Pabrik
+                {isPortalSite ? 'Portal Pelanggan' : 'ERP Operasional Pabrik'}
               </h2>
               <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">
-                Khusus staf internal HIJ (Super Admin, Owner, Design, Pengadaan, Produksi).
+                {isPortalSite
+                  ? 'Pantau semua pesanan Anda, setujui desain & sampel, dan ajukan repeat order lewat WhatsApp.'
+                  : 'Khusus staf internal HIJ (Super Admin, Owner, Design, Pengadaan, Produksi).'}
               </p>
             </div>
           </div>
 
-          {/* Customer Notice Link to Compro */}
-          <div className="p-3 bg-muted border border-border rounded-xl flex items-start gap-2.5 text-xs text-brand-teal-dark leading-relaxed">
-            <Info size={15} className="shrink-0 text-brand-teal-dark mt-0.5" aria-hidden="true" />
-            <div className="min-w-0">
-              <p className="font-semibold text-foreground">Pelanggan ingin melacak pesanan?</p>
-              <p className="text-[11px] text-muted-foreground mt-0.5">
-                Gunakan <a href="http://localhost:3000/portal" target="_blank" rel="noopener noreferrer" className="underline font-semibold text-brand-teal-dark hover:text-foreground">Portal Klien & Lacak Pesanan</a> di website profil HIJ Konveksi.
+          {/* The portal address is shared with customers directly, never advertised on the website. */}
+          {isPortalSite ? (
+            <div className="p-3 bg-muted border border-border rounded-xl flex items-start gap-2.5 text-xs leading-relaxed">
+              <Info size={15} className="shrink-0 text-brand-teal-dark mt-0.5" aria-hidden="true" />
+              <p className="text-[11px] text-muted-foreground">
+                Akun dibuatkan Admin HIJ untuk pelanggan tetap. Belum punya akun atau lupa kata sandi? Hubungi WhatsApp {COMPANY_CONTACT.whatsappFormatted}.
               </p>
             </div>
-          </div>
+          ) : (
+            <div className="p-3 bg-muted border border-border rounded-xl flex items-start gap-2.5 text-xs text-brand-teal-dark leading-relaxed">
+              <Info size={15} className="shrink-0 text-brand-teal-dark mt-0.5" aria-hidden="true" />
+              <div className="min-w-0">
+                <p className="font-semibold text-foreground">Pelanggan ingin melacak pesanan?</p>
+                <p className="text-[11px] text-muted-foreground mt-0.5">
+                  Akun pelanggan masuk lewat <span className="font-mono">{PORTAL_URL}</span>.
+                </p>
+              </div>
+            </div>
+          )}
 
           {/* Inline Error Alert */}
           {error && (
@@ -156,7 +180,6 @@ export const LoginModal: React.FC<LoginModalProps> = ({ onLoginSuccess }) => {
                   type="text"
                   value={identifier}
                   onChange={(e) => setIdentifier(e.target.value)}
-                  placeholder="admin.rezza atau arkato"
                   autoComplete="username"
                   autoCapitalize="none"
                   autoCorrect="off"
@@ -182,7 +205,6 @@ export const LoginModal: React.FC<LoginModalProps> = ({ onLoginSuccess }) => {
                   type={showPassword ? 'text' : 'password'}
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  placeholder="Masukkan kata sandi"
                   autoComplete="current-password"
                   aria-invalid={error ? true : undefined}
                   aria-describedby={error ? 'login-error' : undefined}
@@ -221,99 +243,6 @@ export const LoginModal: React.FC<LoginModalProps> = ({ onLoginSuccess }) => {
             </button>
           </form>
 
-          {/* Demo accounts: development builds only — see import.meta.env.DEV. */}
-          {import.meta.env.DEV && (
-          <div className="pt-2 border-t border-border">
-            <button
-              type="button"
-              onClick={() => setShowDemoList(!showDemoList)}
-              aria-expanded={showDemoList}
-              aria-controls="login-demo-accounts"
-              className="w-full min-h-10 flex items-center justify-between text-xs text-muted-foreground hover:text-foreground py-1 transition-colors cursor-pointer"
-            >
-              <span className="font-medium">Akun Demo Pengujian</span>
-              <span className="flex items-center gap-1 text-[11px] text-muted-foreground">
-                {showDemoList ? 'Tutup' : 'Pilih Akun'}
-                {showDemoList ? <ChevronUp size={13} aria-hidden="true" /> : <ChevronDown size={13} aria-hidden="true" />}
-              </span>
-            </button>
-
-            <AnimatePresence>
-              {showDemoList && (
-                <motion.div
-                  id="login-demo-accounts"
-                  initial={{ opacity: 0, height: 0 }}
-                  animate={{ opacity: 1, height: 'auto' }}
-                  exit={{ opacity: 0, height: 0 }}
-                  transition={{ duration: reduceMotion ? 0 : 0.2 }}
-                  className="overflow-hidden pt-2 space-y-1.5"
-                >
-                  <div className="grid grid-cols-2 gap-1.5">
-                    <button
-                      type="button"
-                      disabled={loading}
-                      onClick={() => handleSelectQuickDemo('admin.rezza', 'password123')}
-                      className="px-2.5 py-2 text-left bg-muted/50 hover:bg-muted border border-border rounded-lg transition-colors cursor-pointer disabled:opacity-60 disabled:cursor-wait"
-                    >
-                      <div className="text-xs font-semibold text-foreground">Super Admin</div>
-                      <div className="text-[10px] text-muted-foreground">Semua Akses</div>
-                    </button>
-
-                    <button
-                      type="button"
-                      disabled={loading}
-                      onClick={() => handleSelectQuickDemo('owner.hij', 'password123')}
-                      className="px-2.5 py-2 text-left bg-muted/50 hover:bg-muted border border-border rounded-lg transition-colors cursor-pointer disabled:opacity-60 disabled:cursor-wait"
-                    >
-                      <div className="text-xs font-semibold text-foreground">Owner</div>
-                      <div className="text-[10px] text-muted-foreground">Eksekutif / Fin</div>
-                    </button>
-
-                    <button
-                      type="button"
-                      disabled={loading}
-                      onClick={() => handleSelectQuickDemo('desain.dina', 'password123')}
-                      className="px-2.5 py-2 text-left bg-muted/50 hover:bg-muted border border-border rounded-lg transition-colors cursor-pointer disabled:opacity-60 disabled:cursor-wait"
-                    >
-                      <div className="text-xs font-semibold text-foreground">Design</div>
-                      <div className="text-[10px] text-muted-foreground">Desain & Sampel</div>
-                    </button>
-
-                    <button
-                      type="button"
-                      disabled={loading}
-                      onClick={() => handleSelectQuickDemo('pengadaan.budi', 'password123')}
-                      className="px-2.5 py-2 text-left bg-muted/50 hover:bg-muted border border-border rounded-lg transition-colors cursor-pointer disabled:opacity-60 disabled:cursor-wait"
-                    >
-                      <div className="text-xs font-semibold text-foreground">Pengadaan</div>
-                      <div className="text-[10px] text-muted-foreground">Bahan & Trims</div>
-                    </button>
-
-                    <button
-                      type="button"
-                      disabled={loading}
-                      onClick={() => handleSelectQuickDemo('produksi.agus', 'password123')}
-                      className="px-2.5 py-2 text-left bg-muted/50 hover:bg-muted border border-border rounded-lg transition-colors cursor-pointer disabled:opacity-60 disabled:cursor-wait"
-                    >
-                      <div className="text-xs font-semibold text-foreground">Produksi</div>
-                      <div className="text-[10px] text-muted-foreground">Pabrik & QC</div>
-                    </button>
-
-                    <button
-                      type="button"
-                      disabled={loading}
-                      onClick={() => handleSelectQuickDemo('arkato', 'klien123')}
-                      className="px-2.5 py-2 text-left bg-muted hover:bg-accent border border-brand-teal/40 rounded-lg transition-colors cursor-pointer disabled:opacity-60 disabled:cursor-wait"
-                    >
-                      <div className="text-xs font-semibold text-brand-teal-dark">Pelanggan</div>
-                      <div className="text-[10px] text-brand-teal-dark">Portal Klien</div>
-                    </button>
-                  </div>
-                </motion.div>
-              )}
-            </AnimatePresence>
-          </div>
-          )}
         </div>
 
         {/* Minimal Footer Support */}

@@ -7,7 +7,12 @@
   /* 2. SECONDARY ACCENT (~10% area): #13707f (Teal Dark) */
   --color-brand-teal-dark: #13707f;
   /* 3. SIGNAL ACCENT (~10% area): #ee2f27 (Brand Red) */
-  --color-brand-red: #ee2f27;
+  /*
+   * Darkened from the logo red #ee2f27, which reaches only 4.14:1 on white
+   * and fails AA for text. It is used as text in 39 places and as a fill in
+   * 4; at 5.08:1 both directions pass and it still reads as the same red.
+   */
+  --color-brand-red: #d42920;
   --color-brand-red-hover: #ff3d2e;
   --color-brand-red-cta: #d42920;
   --color-brand-red-cta-hover: #ee2f27;
@@ -153,7 +158,7 @@
   --color-orange-300: #feb2b2;
   --color-orange-400: #ee2f27;
   --color-orange-500: #ee2f27;
-  --color-orange-600: #ee2f27;
+  --color-orange-600: #d42920;  /* text shade: 5.08:1 on white, AA */
   --color-orange-700: #d42920;
   --color-orange-800: #000000;
   --color-orange-900: #000000;
@@ -179,7 +184,7 @@
   --color-rose-300: #feb2b2;
   --color-rose-400: #ee2f27;
   --color-rose-500: #ee2f27;
-  --color-rose-600: #ee2f27;
+  --color-rose-600: #d42920;  /* text shade: 5.08:1 on white, AA */
   --color-rose-700: #d42920;
   --color-rose-800: #000000;
   --color-rose-900: #000000;
@@ -191,7 +196,7 @@
   --color-red-300: #feb2b2;
   --color-red-400: #ee2f27;
   --color-red-500: #ee2f27;
-  --color-red-600: #ee2f27;
+  --color-red-600: #d42920;  /* text shade: 5.08:1 on white, AA */
   --color-red-700: #d42920;
   --color-red-800: #000000;
   --color-red-900: #000000;
@@ -265,6 +270,22 @@
 
 .cell-sticky-end {
   right: 0;
+}
+
+/* Shadows appear only on an edge that is actually hiding columns (see Table.tsx). */
+.table-scroll .cell-sticky-start,
+.table-scroll .cell-sticky-end {
+  transition: box-shadow 150ms ease;
+}
+
+.table-scroll[data-overflow-start] .cell-sticky-start {
+  box-shadow: 6px 0 8px -6px rgb(15 23 42 / 0.18);
+  clip-path: inset(0 -14px 0 0);
+}
+
+.table-scroll[data-overflow-end] .cell-sticky-end {
+  box-shadow: -6px 0 8px -6px rgb(15 23 42 / 0.18);
+  clip-path: inset(0 0 0 -14px);
 }
 
 @layer base {

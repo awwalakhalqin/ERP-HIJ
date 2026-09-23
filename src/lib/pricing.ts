@@ -6,9 +6,13 @@ export interface SizeRow {
   qty: number;
 }
 
-/** "S: 20, M: 50" <-> rows. The stored string stays the format the PDFs read. */
+/**
+ * "S: 20, M: 50" <-> rows. The stored string stays the format the PDFs read.
+ * A string with no ':' anywhere ("All Size", "Custom") is a description, not a
+ * breakdown: it yields no rows so the quantity field stays editable.
+ */
 export function parseSizeRows(text?: string): SizeRow[] {
-  if (!text) return [];
+  if (!text || !text.includes(':')) return [];
   return text
     .split(',')
     .map(part => {

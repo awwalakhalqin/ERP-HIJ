@@ -1,9 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { Scissors, Search, Plus, Download, CalendarDays } from 'lucide-react';
 import { CuttingBatch, SPK } from '../../types';
-import { fetchResource, createResource, updateResource } from '../../services/api';
+import { fetchResource, createResource } from '../../services/api';
 import { formatDate, exportTableToExcel, generateId } from '../../lib/utils';
-import { Badge, StatusBadge } from '../ui/Badge';
+import { StatusBadge } from '../ui/Badge';
 import { Modal } from '../ui/Modal';
 import { Card } from '../ui/Card';
 import { Button } from '../ui/Button';
@@ -46,17 +46,17 @@ export const CuttingModule: React.FC = () => {
   const [formData, setFormData] = useState<Partial<CuttingBatch>>({
     spkId: '',
     fabricLotId: 'LOT-CC24S-001',
-    fabricName: 'Cotton Combed 24s',
-    color: 'Hitam Reaktif',
+    fabricName: '',
+    color: '',
     layersCount: 25,
     markerLengthMeters: 4.2,
     totalFabricUsedMeters: 105,
     cuttingYieldPercentage: 88,
     totalPiecesCut: 50,
     defectRemnantsMeters: 2.5,
-    operatorCutting: 'Budi Santoso',
+    operatorCutting: '',
     status: 'Completed',
-    notes: 'Kain telah diistirahatkan (relaksasi) 12 jam sebelum potong.'
+    notes: ''
   });
 
   const loadData = async () => {
@@ -66,41 +66,8 @@ export const CuttingModule: React.FC = () => {
         fetchResource<CuttingBatch>('cutting-batches'),
         fetchResource<SPK>('spk_produksi')
       ]);
-      setBatches(batchRes.length > 0 ? batchRes : [
-        {
-          id: 'CUT-2026-001',
-          spkId: 'SPK-ORD-001',
-          fabricLotId: 'LOT-TASLAN-003',
-          fabricName: 'Taslan Milky WP',
-          color: 'Custom',
-          layersCount: 23,
-          markerLengthMeters: 3.8,
-          totalFabricUsedMeters: 87.4,
-          cuttingYieldPercentage: 86,
-          totalPiecesCut: 46,
-          defectRemnantsMeters: 1.8,
-          cuttingDate: '2026-09-02',
-          operatorCutting: 'Budi Santoso',
-          status: 'Completed',
-          notes: 'Potongan telah diikat per komponen dan diberi nomor tiket.'
-        },
-        {
-          id: 'CUT-2026-002',
-          spkId: 'SPK-ORD-002',
-          fabricLotId: 'LOT-CC24S-002',
-          fabricName: 'Cotton Combed 24s',
-          color: 'Turquoise',
-          layersCount: 37,
-          markerLengthMeters: 2.1,
-          totalFabricUsedMeters: 77.7,
-          cuttingYieldPercentage: 90,
-          totalPiecesCut: 37,
-          defectRemnantsMeters: 0.9,
-          cuttingDate: '2026-08-22',
-          operatorCutting: 'Budi Santoso',
-          status: 'Completed'
-        }
-      ]);
+      // Show what is really there; an empty table is the honest state.
+      setBatches(batchRes);
       setSpks(spkRes);
       if (spkRes.length > 0 && !formData.spkId) {
         setFormData(prev => ({ ...prev, spkId: spkRes[0].id }));
@@ -173,18 +140,13 @@ export const CuttingModule: React.FC = () => {
     };
 
     try {
+      // The server recomputes the SPK's cutting counter from every batch on
+      // this write, so no counter is read back and re-sent from here.
       await createResource('cutting-batches', batch);
-      // Auto update SPK cutting stage count
-      const spk = spks.find(s => s.id === batch.spkId);
-      if (spk) {
-        await updateResource('spk_produksi', spk.id, {
-          cutting: (spk.cutting || 0) + batch.totalPiecesCut
-        });
-      }
       setIsModalOpen(false);
       loadData();
-    } catch (err) {
-      setFormError('Data pemotongan gagal disimpan. Periksa koneksi ke server, lalu simpan lagi.');
+    } catch (err: any) {
+      setFormError(err?.message || 'Data pemotongan gagal disimpan. Periksa koneksi ke server, lalu simpan lagi.');
     } finally {
       setSaving(false);
     }
@@ -247,7 +209,7 @@ export const CuttingModule: React.FC = () => {
               <TableHead className="hidden md:table-cell">SPK</TableHead>
               <TableHead className="hidden md:table-cell">Kain</TableHead>
               <TableHead className="hidden xl:table-cell">Warna</TableHead>
-              <TableHead className="hidden sm:table-cell text-right">Hasil Potong</TableHead>
+              <TableHead className="hidden sm:table-cell text-right tabular-nums">Hasil Potong</TableHead>
               <TableHead className="hidden lg:table-cell">Tanggal</TableHead>
               <TableHead className="text-center">Status</TableHead>
               <TableHead className="cell-sticky-end text-right">Aksi</TableHead>
@@ -262,30 +224,41 @@ export const CuttingModule: React.FC = () => {
                 icon={<Scissors size={20} />}
                 title={searchQuery ? 'Tidak ada batch yang cocok' : 'Belum ada data pemotongan'}
                 description={searchQuery ? 'Coba kata kunci lain.' : 'Catat batch pertama setelah kain selesai dipotong.'}
+                action={
+                  !searchQuery && (
+                    <Button size="sm" onClick={handleOpenModal}>
+                      <Plus size={16} aria-hidden="true" /> Catat Pemotongan
+                    </Button>
+                  )
+                }
               />
             ) : (
               filteredBatches.map(b => (
                 <TableRow key={b.id}>
-                  <TableCell className="cell-sticky-start whitespace-nowrap">
+                  <TableCell className="cell-sticky-start">
                     <span className="font-mono font-bold text-slate-900">{b.id}</span>
                   </TableCell>
-                  <TableCell className="hidden md:table-cell whitespace-nowrap">
-                    <Badge variant="teal" className="font-mono">{b.spkId}</Badge>
+                  <TableCell className="hidden md:table-cell font-mono text-slate-600">
+                    {b.spkId}
                   </TableCell>
-                  <TableCell className="hidden md:table-cell font-semibold text-slate-900">
-                    {b.fabricName}
+                  <TableCell className="hidden md:table-cell">
+                    <span className="block max-w-[180px] truncate font-semibold text-slate-900" title={b.fabricName}>
+                      {b.fabricName}
+                    </span>
                   </TableCell>
-                  <TableCell className="hidden xl:table-cell text-slate-600">
-                    {b.color}
+                  <TableCell className="hidden xl:table-cell">
+                    <span className="block max-w-[140px] truncate text-slate-600" title={b.color}>
+                      {b.color}
+                    </span>
                   </TableCell>
-                  <TableCell className="hidden sm:table-cell text-right whitespace-nowrap font-bold text-slate-900">
+                  <TableCell className="hidden sm:table-cell text-right tabular-nums font-bold text-slate-900">
                     {b.totalPiecesCut} Pcs
                   </TableCell>
-                  <TableCell className="hidden lg:table-cell whitespace-nowrap text-slate-600">
+                  <TableCell className="hidden lg:table-cell text-slate-600">
                     {formatDate(b.cuttingDate)}
                   </TableCell>
-                  <TableCell className="text-center whitespace-nowrap">
-                    <StatusBadge status={b.status} />
+                  <TableCell className="text-center">
+                    <StatusBadge status={b.status} size="sm" solid />
                   </TableCell>
                   <TableCell className="cell-sticky-end text-right">
                     <TableRowActions>

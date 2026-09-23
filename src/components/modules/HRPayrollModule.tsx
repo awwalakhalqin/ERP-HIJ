@@ -1,14 +1,15 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { Users, Plus, Download, Calculator, Phone, MessageCircle } from 'lucide-react';
+import { Users, Plus, Download, Calculator, Phone, MessageCircle, Pencil } from 'lucide-react';
 import { Operator, BoronganSalarySlip, SewingDailyLog, WorkAssignment, SPK } from '../../types';
-import { fetchResource, createResource } from '../../services/api';
-import { formatCurrency, formatDate, calculateBoronganPay, exportTableToExcel, generateId, todayLocal } from '../../lib/utils';
-import { StatusBadge } from '../ui/Badge';
+import { fetchResource, createResource, updateResource } from '../../services/api';
+import { formatCurrency, formatDate, exportTableToExcel, generateId, todayLocal } from '../../lib/utils';
+import { FormError } from '../ui/Field';
+import { Badge, StatusBadge } from '../ui/Badge';
 import { Modal } from '../ui/Modal';
 import { Card } from '../ui/Card';
 import { Button } from '../ui/Button';
 import { PageHeader } from '../ui/PageHeader';
-import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell, TableRowActions, TableEmptyRow, TableSkeletonRows } from '../ui/Table';
+import { Table, TableHeader, TableBody, TableFooter, TableHead, TableRow, TableCell, TableRowActions, RowActionButton, TableEmptyRow, TableSkeletonRows } from '../ui/Table';
 import { DetailDrawer, DetailSection, DetailField, DetailStats, DetailBlock, RowDetailButton } from '../ui/DetailDrawer';
 import { newestFirst } from '../../lib/ordering';
 
@@ -20,6 +21,34 @@ const linkClass = 'inline-flex min-h-10 items-center gap-1.5 font-semibold text-
 const toWhatsAppNumber = (phone: string) => {
   const digits = phone.replace(/\D/g, '');
   return digits.startsWith('0') ? `62${digits.slice(1)}` : digits;
+};
+
+/*
+ * Tasks that count as production progress, the same four stages PPIC tracks on
+ * an SPK. Obras and Packing are still paid; they just are not a stage figure.
+ */
+const PRODUCTION_STAGE_TASKS = new Set<string>(['Cutting', 'Jahit', 'Finishing', 'QC']);
+
+/** Monday–Sunday of the current week in local time; borongan is settled weekly. */
+const currentWeek = () => {
+  const now = new Date();
+  now.setHours(0, 0, 0, 0);
+  const dayOffset = (now.getDay() + 6) % 7;
+  const start = new Date(now);
+  start.setDate(now.getDate() - dayOffset);
+  const end = new Date(start);
+  end.setDate(start.getDate() + 6);
+  return { start: todayLocal(start), end: todayLocal(end) };
+};
+
+/*
+ * Same arithmetic as calculateBoronganPay, but the base wage comes in already
+ * summed: when it is read from the work records it is Σ(qty × rate per record),
+ * which one averaged rate cannot reproduce once rates differ between tasks.
+ */
+const boronganPay = (qty: number, baseWage: number, target: number, attendance: number) => {
+  const bonus = target > 0 && qty >= target ? Math.round(baseWage * 0.1) : 0;
+  return { baseWage, bonus, grossPay: baseWage + bonus + attendance };
 };
 
 export const HRPayrollModule: React.FC = () => {
@@ -36,7 +65,12 @@ export const HRPayrollModule: React.FC = () => {
 
   // Modals
   const [isOprModalOpen, setIsOprModalOpen] = useState(false);
+  /** Set while the form is editing someone instead of adding a new person. */
+  const [editingOperatorId, setEditingOperatorId] = useState<string | null>(null);
+  const [oprError, setOprError] = useState<string | null>(null);
   const [isSlipModalOpen, setIsSlipModalOpen] = useState(false);
+  const [slipError, setSlipError] = useState<string | null>(null);
+  const [savingSlip, setSavingSlip] = useState(false);
   const [detailOperator, setDetailOperator] = useState<Operator | null>(null);
 
   // Form State
@@ -47,6 +81,25 @@ export const HRPayrollModule: React.FC = () => {
     status: 'Active'
   });
 
+  /*
+   * No pre-filled quantity or rate: a slip saved on defaults would pay for
+   * work nobody recorded. `fromRecords` marks a slip filled from the SPK work
+   * records, whose wage is then Σ(qty × rate) rather than qty × one rate.
+   */
+  const emptySlip = () => {
+    const week = currentWeek();
+    return {
+      operatorId: '',
+      periodStart: week.start,
+      periodEnd: week.end,
+      passedQty: 0,
+      rate: 0,
+      target: 0,
+      attendance: 0,
+      fromRecords: false,
+      recordWage: 0
+    };
+  };
   const [newSlip, setNewSlip] = useState<{
     operatorId: string;
     periodStart: string;
@@ -55,15 +108,9 @@ export const HRPayrollModule: React.FC = () => {
     rate: number;
     target: number;
     attendance: number;
-  }>({
-    operatorId: '',
-    periodStart: '2026-09-01',
-    periodEnd: '2026-09-07',
-    passedQty: 250,
-    rate: 5000,
-    target: 200,
-    attendance: 100000
-  });
+    fromRecords: boolean;
+    recordWage: number;
+  }>(emptySlip);
 
   const loadData = async () => {
     try {
@@ -92,24 +139,58 @@ export const HRPayrollModule: React.FC = () => {
     loadData();
   }, []);
 
-  const handleCreateOperator = async (e: React.FormEvent) => {
+  const handleOpenAddOperator = () => {
+    setEditingOperatorId(null);
+    setOprError(null);
+    setNewOpr({ name: '', phone: '', joinDate: todayLocal(), status: 'Active' });
+    setIsOprModalOpen(true);
+  };
+
+  const handleOpenEditOperator = (opr: Operator) => {
+    setEditingOperatorId(opr.id);
+    setOprError(null);
+    setNewOpr({
+      name: opr.name,
+      phone: opr.phone || '',
+      joinDate: opr.joinDate || todayLocal(),
+      status: opr.status || 'Active'
+    });
+    setDetailOperator(null);
+    setIsOprModalOpen(true);
+  };
+
+  const handleSaveOperator = async (e: React.FormEvent) => {
     e.preventDefault();
-    const item: Operator = {
-      id: generateId('OPR'),
-      name: (newOpr.name || '').trim(),
+    const name = (newOpr.name || '').trim();
+    if (!name) {
+      setOprError('Nama petugas harus diisi.');
+      return;
+    }
+
+    const fields = {
+      name,
       phone: newOpr.phone?.trim() || undefined,
       joinDate: newOpr.joinDate || todayLocal(),
-      status: 'Active'
+      status: (newOpr.status as Operator['status']) || 'Active'
     };
-    if (!item.name) return;
 
     try {
-      await createResource('operators', item);
+      setOprError(null);
+      if (editingOperatorId) {
+        /*
+         * Only the fields on this form are sent. Work records reference the
+         * person by id, so renaming someone never detaches their past work.
+         */
+        await updateResource('operators', editingOperatorId, fields);
+      } else {
+        await createResource('operators', { id: generateId('OPR'), ...fields } as Operator);
+      }
       setIsOprModalOpen(false);
+      setEditingOperatorId(null);
       setNewOpr({ name: '', phone: '', joinDate: todayLocal(), status: 'Active' });
       loadData();
     } catch (err) {
-      alert('Gagal menyimpan petugas. Coba lagi.');
+      setOprError('Gagal menyimpan petugas. Periksa koneksi ke server, lalu simpan lagi.');
     }
   };
 
@@ -125,18 +206,77 @@ export const HRPayrollModule: React.FC = () => {
       return (!from || a.date >= from) && (!to || a.date <= to);
     });
 
+  const spkById = useMemo(() => new Map(spks.map(spk => [spk.id, spk])), [spks]);
+
+  /*
+   * Pieces that count as production: the four stage tasks only, each capped at
+   * the SPK's target per task the way PPIC caps the SPK counters, so a slip
+   * can never claim more of an SPK than the SPK is for. Wages are never
+   * capped — every recorded piece is still paid.
+   */
+  const productionPieces = (rows: WorkAssignment[]) => {
+    const perSpkTask = new Map<string, { spkId: string; qty: number }>();
+    for (const a of rows) {
+      if (!PRODUCTION_STAGE_TASKS.has(a.task)) continue;
+      const key = `${a.spkId}::${a.task}`;
+      const entry = perSpkTask.get(key) || { spkId: a.spkId, qty: 0 };
+      entry.qty += Number(a.qty) || 0;
+      perSpkTask.set(key, entry);
+    }
+    let total = 0;
+    for (const { spkId, qty } of perSpkTask.values()) {
+      const target = Number(spkById.get(spkId)?.targetQty) || 0;
+      total += target > 0 ? Math.min(qty, target) : qty;
+    }
+    return total;
+  };
+
+  const wageOf = (rows: WorkAssignment[]) =>
+    rows.reduce((sum, a) => sum + (Number(a.qty) || 0) * (Number(a.ratePerPiece) || 0), 0);
+
   const slipSource = newSlip.operatorId
     ? assignmentsInPeriod(newSlip.operatorId, newSlip.periodStart, newSlip.periodEnd)
     : [];
-  const slipSourceQty = slipSource.reduce((sum, a) => sum + (Number(a.qty) || 0), 0);
-  const slipSourceWage = slipSource.reduce((sum, a) => sum + (Number(a.qty) || 0) * (Number(a.ratePerPiece) || 0), 0);
+  const slipSourceQty = productionPieces(slipSource);
+  const slipSourceWage = wageOf(slipSource);
 
   const handleUseProductionData = () => {
     if (slipSource.length === 0) return;
-    // Rates are snapshotted per record; the average keeps the slip consistent
-    // with the wage actually earned when they differ across tasks.
-    const averageRate = slipSourceQty > 0 ? Math.round(slipSourceWage / slipSourceQty) : newSlip.rate;
-    setNewSlip(prev => ({ ...prev, passedQty: slipSourceQty, rate: averageRate }));
+    // The wage is the sum of every record at its own rate; the rate shown is
+    // only the implied average, for reading.
+    const averageRate = slipSourceQty > 0 ? Math.round(slipSourceWage / slipSourceQty) : 0;
+    setSlipError(null);
+    setNewSlip(prev => ({
+      ...prev,
+      passedQty: slipSourceQty,
+      rate: averageRate,
+      fromRecords: true,
+      recordWage: slipSourceWage
+    }));
+  };
+
+  /** Back to typing the figures by hand. */
+  const handleManualSlip = () => {
+    setNewSlip(prev => ({ ...prev, fromRecords: false, recordWage: 0 }));
+  };
+
+  const slipPay = boronganPay(
+    newSlip.passedQty,
+    newSlip.fromRecords ? newSlip.recordWage : newSlip.passedQty * newSlip.rate,
+    newSlip.target,
+    newSlip.attendance
+  );
+
+  /** Any change to who or when invalidates figures copied from the records. */
+  const setSlipField = <K extends 'operatorId' | 'periodStart' | 'periodEnd'>(key: K, value: string) => {
+    setSlipError(null);
+    setNewSlip(prev => ({ ...prev, [key]: value, fromRecords: false, recordWage: 0 }));
+  };
+
+  const openSlipModal = (operatorId?: string) => {
+    setSlipError(null);
+    setNewSlip(prev => ({ ...prev, operatorId: operatorId ?? prev.operatorId, fromRecords: false, recordWage: 0 }));
+    setIsSlipModalOpen(true);
   };
 
   /*
@@ -172,8 +312,10 @@ export const HRPayrollModule: React.FC = () => {
     const byOperator = new Map<string, {
       operatorId: string;
       operatorName: string;
+      /** Production pieces (stage tasks, capped per SPK target); see productionPieces. */
       qty: number;
       wage: number;
+      rows: WorkAssignment[];
       tasks: Map<string, number>;
       /** SPK id to pieces done on it, so the recap can be traced back per SPK. */
       spks: Map<string, number>;
@@ -185,16 +327,18 @@ export const HRPayrollModule: React.FC = () => {
         operatorName: a.operatorName,
         qty: 0,
         wage: 0,
+        rows: [],
         tasks: new Map<string, number>(),
         spks: new Map<string, number>()
       };
       const qty = Number(a.qty) || 0;
-      entry.qty += qty;
+      entry.rows.push(a);
       entry.wage += qty * (Number(a.ratePerPiece) || 0);
       entry.tasks.set(a.task, (entry.tasks.get(a.task) || 0) + qty);
       if (a.spkId) entry.spks.set(a.spkId, (entry.spks.get(a.spkId) || 0) + qty);
       byOperator.set(a.operatorId, entry);
     }
+    for (const entry of byOperator.values()) entry.qty = productionPieces(entry.rows);
 
     const list = [...byOperator.values()].sort((x, y) => y.wage - x.wage);
     return {
@@ -203,14 +347,13 @@ export const HRPayrollModule: React.FC = () => {
       totalWage: list.reduce((sum, r) => sum + r.wage, 0),
       recordCount: rows.length
     };
-  }, [assignments, weekRange]);
-
-  const spkById = useMemo(() => new Map(spks.map(spk => [spk.id, spk])), [spks]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [assignments, weekRange, spkById]);
 
   /** "SPK-ORD-019 · 45%" — id first, because that is what people track by. */
   const spkLabel = (spkId: string) => {
     const spk = spkById.get(spkId);
-    return spk ? `${spkId} \u00b7 ${spk.progress || 0}%` : spkId;
+    return spk ? `${spkId} · ${spk.progress || 0}%` : spkId;
   };
 
   const handleExportWeekly = () => {
@@ -219,7 +362,7 @@ export const HRPayrollModule: React.FC = () => {
         Petugas: r.operatorName,
         'Periode mulai': weekRange.start,
         'Periode selesai': weekRange.end,
-        'Total pcs': r.qty,
+        'Pcs produksi': r.qty,
         'Total upah': r.wage,
         'Rincian tahap': [...r.tasks.entries()].map(([t, q]) => `${t} ${q}`).join(', '),
         'Rincian SPK': [...r.spks.entries()].map(([id, q]) => `${id} (${q} pcs)`).join(', '),
@@ -231,10 +374,25 @@ export const HRPayrollModule: React.FC = () => {
 
   const handleCreateSalarySlip = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (savingSlip) return;
     const opr = operators.find(o => o.id === newSlip.operatorId);
-    if (!opr) return;
 
-    const calc = calculateBoronganPay(newSlip.passedQty, newSlip.rate, newSlip.target, newSlip.attendance);
+    if (!opr) {
+      setSlipError('Pilih operator yang digaji.');
+      return;
+    }
+    if (!newSlip.periodStart || !newSlip.periodEnd || newSlip.periodStart > newSlip.periodEnd) {
+      setSlipError('Periode slip tidak valid: tanggal mulai harus sebelum atau sama dengan tanggal selesai.');
+      return;
+    }
+    if (!(newSlip.passedQty > 0)) {
+      setSlipError('Isi jumlah pcs yang digaji, atau pakai angka dari catatan produksi.');
+      return;
+    }
+    if (!newSlip.fromRecords && !(newSlip.rate > 0)) {
+      setSlipError('Isi tarif borongan per pcs.');
+      return;
+    }
 
     const slip: BoronganSalarySlip = {
       id: `SLIP-${Date.now().toString().slice(-5)}`,
@@ -244,29 +402,36 @@ export const HRPayrollModule: React.FC = () => {
       periodEnd: newSlip.periodEnd,
       totalPiecesProduced: newSlip.passedQty,
       totalPiecesPassedQC: newSlip.passedQty,
-      ratePerPiece: newSlip.rate,
-      baseBoronganWage: calc.baseWage,
-      attendanceIncentive: calc.attendanceIncentive,
-      productivityBonus: calc.bonus,
+      // From records this is the implied average; the base wage is the exact sum.
+      ratePerPiece: newSlip.fromRecords
+        ? (newSlip.passedQty > 0 ? Math.round(newSlip.recordWage / newSlip.passedQty) : 0)
+        : newSlip.rate,
+      baseBoronganWage: slipPay.baseWage,
+      attendanceIncentive: newSlip.attendance,
+      productivityBonus: slipPay.bonus,
       deductions: 0,
-      netPay: calc.grossPay,
-      status: 'Paid',
-      paidAt: new Date().toISOString().split('T')[0]
+      netPay: slipPay.grossPay,
+      // A new slip is a draft; paying it is a separate decision.
+      status: 'Draft'
     };
 
     try {
+      setSavingSlip(true);
+      setSlipError(null);
       await createResource('payroll', slip);
       setIsSlipModalOpen(false);
+      setNewSlip(emptySlip());
       loadData();
-    } catch (err) {
-      alert('Gagal menyimpan slip gaji. Coba lagi.');
+    } catch (err: any) {
+      setSlipError(err?.message || 'Gagal menyimpan slip gaji. Coba lagi.');
+    } finally {
+      setSavingSlip(false);
     }
   };
 
   // Drawer action: open the slip form with this person already chosen.
   const handleOpenSlipForOperator = (opr: Operator) => {
-    setNewSlip({ ...newSlip, operatorId: opr.id });
-    setIsSlipModalOpen(true);
+    openSlipModal(opr.id);
   };
 
   const detailSlips = detailOperator ? slips.filter(s => s.operatorId === detailOperator.id) : [];
@@ -275,11 +440,12 @@ export const HRPayrollModule: React.FC = () => {
   const detailWork = useMemo(() => {
     const rows = detailOperator ? assignments.filter(a => a.operatorId === detailOperator.id) : [];
     return {
-      qty: rows.reduce((sum, a) => sum + (Number(a.qty) || 0), 0),
-      wage: rows.reduce((sum, a) => sum + (Number(a.qty) || 0) * (Number(a.ratePerPiece) || 0), 0),
+      qty: productionPieces(rows),
+      wage: wageOf(rows),
       spkCount: new Set(rows.map(a => a.spkId).filter(Boolean)).size
     };
-  }, [assignments, detailOperator]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [assignments, detailOperator, spkById]);
 
   const sortedOperators = newestFirst(operators);
 
@@ -300,11 +466,11 @@ export const HRPayrollModule: React.FC = () => {
             <Button
               variant="outline"
               size="sm"
-              onClick={() => setIsSlipModalOpen(true)}
+              onClick={() => openSlipModal()}
             >
               <Calculator size={16} aria-hidden="true" /> Hitung Slip Gaji
             </Button>
-            <Button size="sm" onClick={() => setIsOprModalOpen(true)}>
+            <Button size="sm" onClick={handleOpenAddOperator}>
               <Plus size={16} aria-hidden="true" /> Tambah Petugas
             </Button>
           </>
@@ -356,9 +522,11 @@ export const HRPayrollModule: React.FC = () => {
               <TableRow>
                 <TableHead className="cell-sticky-start">Petugas</TableHead>
                 <TableHead className="hidden md:table-cell">Rincian tahap</TableHead>
-                <TableHead className="hidden sm:table-cell">SPK dikerjakan</TableHead>
-                <TableHead className="text-right">Total Pcs</TableHead>
-                <TableHead className="cell-sticky-end text-right">Total Upah</TableHead>
+                <TableHead className="hidden md:table-cell">SPK dikerjakan</TableHead>
+                <TableHead className="text-right tabular-nums" title="Tahap Cutting, Jahit, Finishing, dan QC saja; dibatasi target SPK">
+                  Pcs Produksi
+                </TableHead>
+                <TableHead className="cell-sticky-end text-right tabular-nums">Total Upah</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -370,54 +538,88 @@ export const HRPayrollModule: React.FC = () => {
                   description="Catat petugas di menu Surat Perintah Kerja; rekapnya muncul di sini sendiri."
                 />
               ) : (
-                weeklyRecap.list.map(r => (
-                  <TableRow key={r.operatorId}>
-                    <TableCell className="cell-sticky-start whitespace-nowrap font-semibold text-slate-900">
-                      {r.operatorName}
-                    </TableCell>
-                    <TableCell className="hidden md:table-cell text-xs text-muted-foreground">
-                      {[...r.tasks.entries()].map(([t, q]) => `${t} ${q} pcs`).join(' \u00b7 ')}
-                    </TableCell>
-                    <TableCell className="hidden sm:table-cell">
-                      <div className="flex flex-wrap gap-1">
-                        {[...r.spks.entries()].map(([id, q]) => {
-                          const spk = spkById.get(id);
-                          const done = (spk?.progress || 0) >= 100;
-                          return (
-                            <span
-                              key={id}
-                              title={spk ? `${spk.productName} \u2014 ${spk.status}, ${q} pcs dikerjakan` : `${q} pcs`}
-                              className={`inline-flex h-7 items-center gap-1.5 rounded-lg border px-2 font-mono text-xs font-semibold ${
-                                done
-                                  ? 'border-emerald-600/30 bg-emerald-50 text-emerald-800'
-                                  : 'border-border bg-white text-slate-700'
-                              }`}
-                            >
-                              {spkLabel(id)}
-                            </span>
-                          );
-                        })}
-                      </div>
-                    </TableCell>
-                    <TableCell className="text-right font-semibold tabular-nums">{r.qty}</TableCell>
-                    <TableCell className="cell-sticky-end text-right font-bold tabular-nums text-foreground">
-                      {formatCurrency(r.wage)}
-                    </TableCell>
-                  </TableRow>
-                ))
+                weeklyRecap.list.map(r => {
+                  const taskSummary = [...r.tasks.entries()].map(([t, q]) => `${t} ${q} pcs`).join(' · ');
+                  const spkEntries = [...r.spks.entries()];
+                  // One line per row: the first two SPKs, the rest folded into "+N".
+                  const shownSpks = spkEntries.slice(0, 2);
+                  const moreSpks = spkEntries.slice(2);
+                  return (
+                    <TableRow key={r.operatorId}>
+                      <TableCell className="cell-sticky-start font-semibold text-slate-900">
+                        <span className="block max-w-[180px] truncate" title={r.operatorName}>
+                          {r.operatorName}
+                        </span>
+                      </TableCell>
+                      <TableCell className="hidden md:table-cell text-muted-foreground">
+                        <span className="block max-w-[200px] truncate" title={taskSummary}>
+                          {taskSummary}
+                        </span>
+                      </TableCell>
+                      <TableCell className="hidden md:table-cell">
+                        {spkEntries.length === 0 ? (
+                          <span className="text-muted-foreground">{'—'}</span>
+                        ) : (
+                          <div className="flex items-center gap-1">
+                            {shownSpks.map(([id, q]) => {
+                              const spk = spkById.get(id);
+                              const done = (spk?.progress || 0) >= 100;
+                              return (
+                                <span
+                                  key={id}
+                                  title={spk ? `${spk.productName} — ${spk.status}, ${q} pcs dikerjakan` : `${q} pcs`}
+                                  className="inline-flex"
+                                >
+                                  <Badge variant={done ? 'idle' : 'progress'} size="sm" className="font-mono">
+                                    {spkLabel(id)}
+                                  </Badge>
+                                </span>
+                              );
+                            })}
+                            {moreSpks.length > 0 && (
+                              <span
+                                title={moreSpks.map(([id, q]) => `${spkLabel(id)} (${q} pcs)`).join(', ')}
+                                className="inline-flex"
+                              >
+                                <Badge variant="outline" size="sm">+{moreSpks.length}</Badge>
+                              </span>
+                            )}
+                          </div>
+                        )}
+                      </TableCell>
+                      <TableCell className="text-right font-semibold tabular-nums">{r.qty}</TableCell>
+                      <TableCell className="cell-sticky-end text-right font-bold tabular-nums text-foreground">
+                        {formatCurrency(r.wage)}
+                      </TableCell>
+                    </TableRow>
+                  );
+                })
               )}
             </TableBody>
+            {weeklyRecap.list.length > 0 && (
+              <TableFooter>
+                {/* Opaque like the header, so the sticky cells stay solid while the table scrolls. */}
+                <TableRow className="border-b-0 bg-muted hover:bg-muted">
+                  <TableCell className="cell-sticky-start font-bold text-foreground">
+                    Total{' '}
+                    <span className="font-medium text-muted-foreground">
+                      &middot; {weeklyRecap.list.length} petugas
+                    </span>
+                  </TableCell>
+                  <TableCell className="hidden md:table-cell text-muted-foreground">
+                    {weeklyRecap.recordCount} catatan kerja
+                  </TableCell>
+                  <TableCell className="hidden md:table-cell" />
+                  <TableCell className="text-right font-bold tabular-nums text-foreground">
+                    {weeklyRecap.totalQty}
+                  </TableCell>
+                  <TableCell className="cell-sticky-end text-right font-bold tabular-nums text-foreground">
+                    {formatCurrency(weeklyRecap.totalWage)}
+                  </TableCell>
+                </TableRow>
+              </TableFooter>
+            )}
           </Table>
-          {weeklyRecap.list.length > 0 && (
-            <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border bg-muted/40 px-4 py-2.5 text-sm">
-              <span className="text-xs text-muted-foreground">
-                {weeklyRecap.list.length} petugas &middot; {weeklyRecap.recordCount} catatan kerja
-              </span>
-              <span className="font-bold text-foreground">
-                {weeklyRecap.totalQty} pcs &middot; {formatCurrency(weeklyRecap.totalWage)}
-              </span>
-            </div>
-          )}
         </Card>
       </section>
 
@@ -428,8 +630,8 @@ export const HRPayrollModule: React.FC = () => {
             <TableRow>
               <TableHead className="cell-sticky-start">ID</TableHead>
               <TableHead className="hidden md:table-cell">Nama</TableHead>
-              <TableHead className="hidden sm:table-cell">No. HP</TableHead>
-              <TableHead className="hidden xl:table-cell">Tanggal masuk</TableHead>
+              <TableHead className="hidden xl:table-cell">No. HP</TableHead>
+              <TableHead className="hidden lg:table-cell">Tanggal masuk</TableHead>
               <TableHead className="text-center">Status</TableHead>
               <TableHead className="cell-sticky-end text-right">Aksi</TableHead>
             </TableRow>
@@ -443,6 +645,11 @@ export const HRPayrollModule: React.FC = () => {
                 icon={<Users size={20} />}
                 title="Belum ada petugas"
                 description="Tambah petugas dulu agar bisa dipilih saat mencatat pekerjaan di SPK."
+                action={
+                  <Button size="sm" onClick={handleOpenAddOperator}>
+                    <Plus size={16} aria-hidden="true" /> Tambah Petugas
+                  </Button>
+                }
               />
             ) : (
               sortedOperators.map(opr => (
@@ -450,20 +657,29 @@ export const HRPayrollModule: React.FC = () => {
                   <TableCell className="cell-sticky-start whitespace-nowrap">
                     <span className="font-mono font-bold text-slate-900">{opr.id}</span>
                   </TableCell>
-                  <TableCell className="hidden md:table-cell font-semibold text-slate-900 break-words">
-                    {opr.name}
+                  <TableCell className="hidden md:table-cell font-semibold text-slate-900">
+                    <span className="block max-w-[180px] truncate" title={opr.name}>
+                      {opr.name}
+                    </span>
                   </TableCell>
-                  <TableCell className="hidden sm:table-cell whitespace-nowrap font-mono text-slate-800">
-                    {opr.phone || '\u2014'}
+                  <TableCell className="hidden xl:table-cell whitespace-nowrap font-mono text-slate-800">
+                    {opr.phone || '—'}
                   </TableCell>
-                  <TableCell className="hidden xl:table-cell whitespace-nowrap text-muted-foreground">
-                    {opr.joinDate ? formatDate(opr.joinDate) : '\u2014'}
+                  <TableCell className="hidden lg:table-cell whitespace-nowrap text-muted-foreground">
+                    {opr.joinDate ? formatDate(opr.joinDate) : '—'}
                   </TableCell>
                   <TableCell className="text-center whitespace-nowrap">
-                    <StatusBadge status={opr.status} />
+                    <StatusBadge status={opr.status} size="sm" solid />
                   </TableCell>
                   <TableCell className="cell-sticky-end text-right">
                     <TableRowActions>
+                      <RowActionButton
+                        label="Ubah"
+                        icon={Pencil}
+                        onClick={() => handleOpenEditOperator(opr)}
+                        ariaLabel={`Ubah data ${opr.name}`}
+                        title="Ubah data petugas"
+                      />
                       <RowDetailButton label={opr.name} onClick={() => setDetailOperator(opr)} />
                     </TableRowActions>
                   </TableCell>
@@ -483,9 +699,14 @@ export const HRPayrollModule: React.FC = () => {
         status={detailOperator && <StatusBadge status={detailOperator.status} />}
         footer={
           detailOperator && (
-            <Button onClick={() => handleOpenSlipForOperator(detailOperator)}>
-              <Calculator size={16} aria-hidden="true" /> Hitung Slip Gaji
-            </Button>
+            <div className="flex flex-wrap justify-end gap-2">
+              <Button variant="outline" onClick={() => handleOpenEditOperator(detailOperator)}>
+                <Pencil size={16} aria-hidden="true" /> Ubah Data
+              </Button>
+              <Button onClick={() => handleOpenSlipForOperator(detailOperator)}>
+                <Calculator size={16} aria-hidden="true" /> Hitung Slip Gaji
+              </Button>
+            </div>
           )
         }
       >
@@ -494,7 +715,7 @@ export const HRPayrollModule: React.FC = () => {
             <DetailStats
               items={[
                 { label: 'SPK dikerjakan', value: `${detailWork.spkCount}` },
-                { label: 'Total pcs', value: `${detailWork.qty} Pcs` },
+                { label: 'Pcs produksi', value: `${detailWork.qty} Pcs` },
                 { label: 'Total upah borongan', value: formatCurrency(detailWork.wage), tone: 'accent' }
               ]}
             />
@@ -554,8 +775,17 @@ export const HRPayrollModule: React.FC = () => {
       </DetailDrawer>
 
       {/* CREATE OPERATOR MODAL */}
-      <Modal isOpen={isOprModalOpen} onClose={() => setIsOprModalOpen(false)} title="Tambah Petugas">
-        <form onSubmit={handleCreateOperator} className="space-y-5">
+      <Modal
+        isOpen={isOprModalOpen}
+        onClose={() => { setIsOprModalOpen(false); setEditingOperatorId(null); }}
+        title={editingOperatorId ? `Ubah Petugas ${editingOperatorId}` : 'Tambah Petugas'}
+      >
+        <form onSubmit={handleSaveOperator} className="space-y-5">
+          {oprError && (
+            <div role="alert" className="rounded-xl border border-brand-red/40 bg-rose-50 px-3.5 py-2.5 text-sm text-rose-900">
+              {oprError}
+            </div>
+          )}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <label htmlFor="hr-opr-name" className={labelClass}>Nama Lengkap</label>
@@ -581,26 +811,43 @@ export const HRPayrollModule: React.FC = () => {
             </div>
           </div>
 
-          <div>
-            <label htmlFor="hr-opr-join" className={labelClass}>Tanggal Masuk</label>
-            <input
-              id="hr-opr-join"
-              type="date"
-              value={newOpr.joinDate}
-              onChange={(e) => setNewOpr({ ...newOpr, joinDate: e.target.value })}
-              className={`${fieldClass} sm:max-w-[16rem]`}
-            />
-            <p className="mt-1.5 text-xs text-muted-foreground">
-              Tugas dan tarif tidak dicatat di sini &mdash; keduanya diisi per pekerjaan di SPK.
-            </p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label htmlFor="hr-opr-join" className={labelClass}>Tanggal Masuk</label>
+              <input
+                id="hr-opr-join"
+                type="date"
+                value={newOpr.joinDate}
+                onChange={(e) => setNewOpr({ ...newOpr, joinDate: e.target.value })}
+                className={fieldClass}
+              />
+            </div>
+            <div>
+              <label htmlFor="hr-opr-status" className={labelClass}>Status</label>
+              <select
+                id="hr-opr-status"
+                value={newOpr.status}
+                onChange={(e) => setNewOpr({ ...newOpr, status: e.target.value as Operator['status'] })}
+                className={fieldClass}
+              >
+                <option value="Active">Aktif</option>
+                <option value="On Leave">Cuti</option>
+                <option value="Resigned">Berhenti</option>
+              </select>
+            </div>
           </div>
+          <p className="-mt-2 text-xs text-muted-foreground">
+            Tugas dan tarif tidak dicatat di sini &mdash; keduanya diisi per pekerjaan di SPK.
+            Petugas berstatus <b>Berhenti</b> tidak lagi muncul saat mencatat pekerjaan, tapi catatan
+            lamanya tetap utuh.
+          </p>
 
           <div className="flex justify-end gap-2 pt-4 border-t border-slate-100">
-            <Button type="button" variant="outline" onClick={() => setIsOprModalOpen(false)}>
+            <Button type="button" variant="outline" onClick={() => { setIsOprModalOpen(false); setEditingOperatorId(null); }}>
               Batal
             </Button>
             <Button type="submit">
-              Simpan Petugas
+              {editingOperatorId ? 'Simpan Perubahan' : 'Simpan Petugas'}
             </Button>
           </div>
         </form>
@@ -608,14 +855,16 @@ export const HRPayrollModule: React.FC = () => {
 
       {/* CALCULATE SALARY SLIP MODAL */}
       <Modal isOpen={isSlipModalOpen} onClose={() => setIsSlipModalOpen(false)} title="Hitung Slip Gaji">
-        <form onSubmit={handleCreateSalarySlip} className="space-y-5">
+        <form onSubmit={handleCreateSalarySlip} noValidate className="space-y-5">
+          <FormError>{slipError}</FormError>
+
           <div>
             <label htmlFor="hr-slip-operator" className={labelClass}>Operator</label>
             <select
               id="hr-slip-operator"
               required
               value={newSlip.operatorId}
-              onChange={(e) => setNewSlip({ ...newSlip, operatorId: e.target.value })}
+              onChange={(e) => setSlipField('operatorId', e.target.value)}
               className={fieldClass}
             >
               <option value="">Pilih operator</option>
@@ -623,6 +872,29 @@ export const HRPayrollModule: React.FC = () => {
                 <option key={o.id} value={o.id}>{o.name}</option>
               ))}
             </select>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label htmlFor="hr-slip-start" className={labelClass}>Periode Mulai</label>
+              <input
+                id="hr-slip-start"
+                type="date"
+                value={newSlip.periodStart}
+                onChange={(e) => setSlipField('periodStart', e.target.value)}
+                className={fieldClass}
+              />
+            </div>
+            <div>
+              <label htmlFor="hr-slip-end" className={labelClass}>Periode Selesai</label>
+              <input
+                id="hr-slip-end"
+                type="date"
+                value={newSlip.periodEnd}
+                onChange={(e) => setSlipField('periodEnd', e.target.value)}
+                className={fieldClass}
+              />
+            </div>
           </div>
 
           {/*
@@ -640,16 +912,22 @@ export const HRPayrollModule: React.FC = () => {
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="min-w-0">
                     <p className="text-sm font-semibold text-foreground">
-                      Tercatat di SPK: {slipSourceQty} pcs dari {slipSource.length} catatan
+                      Tercatat di SPK: {slipSourceQty} pcs produksi dari {slipSource.length} catatan
                     </p>
                     <p className="mt-0.5 text-xs text-muted-foreground">
-                      Upah borongan {formatCurrency(slipSourceWage)} &middot;{' '}
+                      Upah borongan {formatCurrency(slipSourceWage)} (semua tahap, tarif per catatan) &middot;{' '}
                       {[...new Set(slipSource.map(a => a.task))].join(', ')}
                     </p>
                   </div>
-                  <Button type="button" variant="outline" size="sm" onClick={handleUseProductionData}>
-                    Pakai angka ini
-                  </Button>
+                  {newSlip.fromRecords ? (
+                    <Button type="button" variant="outline" size="sm" onClick={handleManualSlip}>
+                      Isi manual
+                    </Button>
+                  ) : (
+                    <Button type="button" variant="outline" size="sm" onClick={handleUseProductionData}>
+                      Pakai angka ini
+                    </Button>
+                  )}
                 </div>
               )}
             </div>
@@ -661,20 +939,41 @@ export const HRPayrollModule: React.FC = () => {
               <input
                 id="hr-slip-qty"
                 type="number"
-                value={newSlip.passedQty}
-                onChange={(e) => setNewSlip({ ...newSlip, passedQty: Number(e.target.value) })}
-                className={`${fieldClass} font-mono font-semibold`}
+                min={0}
+                required
+                readOnly={newSlip.fromRecords}
+                placeholder="Wajib diisi"
+                value={newSlip.passedQty || ''}
+                onChange={(e) => {
+                  setSlipError(null);
+                  setNewSlip({ ...newSlip, passedQty: Number(e.target.value) || 0 });
+                }}
+                className={`${fieldClass} font-mono font-semibold ${newSlip.fromRecords ? 'bg-muted' : ''}`}
               />
             </div>
             <div>
-              <label htmlFor="hr-slip-rate" className={labelClass}>Tarif Borongan (Rp/Pcs)</label>
+              <label htmlFor="hr-slip-rate" className={labelClass}>
+                {newSlip.fromRecords ? 'Tarif Rata-rata (Rp/Pcs)' : 'Tarif Borongan (Rp/Pcs)'}
+              </label>
               <input
                 id="hr-slip-rate"
                 type="number"
-                value={newSlip.rate}
-                onChange={(e) => setNewSlip({ ...newSlip, rate: Number(e.target.value) })}
-                className={`${fieldClass} font-mono font-semibold`}
+                min={0}
+                required={!newSlip.fromRecords}
+                readOnly={newSlip.fromRecords}
+                placeholder="Wajib diisi"
+                value={newSlip.rate || ''}
+                onChange={(e) => {
+                  setSlipError(null);
+                  setNewSlip({ ...newSlip, rate: Number(e.target.value) || 0 });
+                }}
+                className={`${fieldClass} font-mono font-semibold ${newSlip.fromRecords ? 'bg-muted' : ''}`}
               />
+              {newSlip.fromRecords && (
+                <p className="mt-1.5 text-xs text-muted-foreground">
+                  Upah dasar {formatCurrency(newSlip.recordWage)} dijumlahkan per catatan, bukan dari tarif rata-rata ini.
+                </p>
+              )}
             </div>
           </div>
 
@@ -684,8 +983,10 @@ export const HRPayrollModule: React.FC = () => {
               <input
                 id="hr-slip-target"
                 type="number"
-                value={newSlip.target}
-                onChange={(e) => setNewSlip({ ...newSlip, target: Number(e.target.value) })}
+                min={0}
+                value={newSlip.target || ''}
+                placeholder="Opsional, bonus 10% bila tercapai"
+                onChange={(e) => setNewSlip({ ...newSlip, target: Number(e.target.value) || 0 })}
                 className={`${fieldClass} font-mono`}
               />
             </div>
@@ -694,8 +995,10 @@ export const HRPayrollModule: React.FC = () => {
               <input
                 id="hr-slip-attendance"
                 type="number"
-                value={newSlip.attendance}
-                onChange={(e) => setNewSlip({ ...newSlip, attendance: Number(e.target.value) })}
+                min={0}
+                value={newSlip.attendance || ''}
+                placeholder="Opsional"
+                onChange={(e) => setNewSlip({ ...newSlip, attendance: Number(e.target.value) || 0 })}
                 className={`${fieldClass} font-mono`}
               />
             </div>
@@ -703,20 +1006,25 @@ export const HRPayrollModule: React.FC = () => {
 
           {/* TOTAL PREVIEW */}
           <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-xl flex flex-wrap items-center justify-between gap-2">
-            <span className="text-sm font-semibold text-emerald-900">Total Gaji Bersih</span>
+            <div className="min-w-0">
+              <span className="block text-sm font-semibold text-emerald-900">Total Gaji Bersih (draf)</span>
+              <span className="block text-xs text-emerald-800 tabular-nums">
+                Upah dasar {formatCurrency(slipPay.baseWage)}
+                {slipPay.bonus > 0 && <> &middot; bonus {formatCurrency(slipPay.bonus)}</>}
+                {newSlip.attendance > 0 && <> &middot; kehadiran {formatCurrency(newSlip.attendance)}</>}
+              </span>
+            </div>
             <span className="text-lg font-bold text-emerald-700 tabular-nums whitespace-nowrap">
-              {formatCurrency(
-                calculateBoronganPay(newSlip.passedQty, newSlip.rate, newSlip.target, newSlip.attendance).grossPay
-              )}
+              {formatCurrency(slipPay.grossPay)}
             </span>
           </div>
 
           <div className="flex justify-end gap-2 pt-4 border-t border-slate-100">
-            <Button type="button" variant="outline" onClick={() => setIsSlipModalOpen(false)}>
+            <Button type="button" variant="outline" disabled={savingSlip} onClick={() => setIsSlipModalOpen(false)}>
               Batal
             </Button>
-            <Button type="submit">
-              Simpan Slip Gaji
+            <Button type="submit" disabled={savingSlip}>
+              {savingSlip ? 'Menyimpan…' : 'Simpan Slip Gaji'}
             </Button>
           </div>
         </form>

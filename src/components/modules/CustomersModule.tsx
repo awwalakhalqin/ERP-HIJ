@@ -15,7 +15,6 @@ import {
   ShieldCheck,
   Sparkles,
   KeyRound,
-  AlertCircle,
   RefreshCw,
   X
 } from 'lucide-react';
@@ -28,19 +27,18 @@ import { Modal } from '../ui/Modal';
 import { Card } from '../ui/Card';
 import { Button } from '../ui/Button';
 import { Input } from '../ui/Input';
+import { FieldLabel, FieldHint, FieldError, FormSection, FormNotice, Select, Textarea, ChipButton } from '../ui/Field';
 import { PageHeader } from '../ui/PageHeader';
-import { Table, TableHeader, TableHead, TableBody, TableRow, TableCell, TableRowActions, TableEmptyRow, TableSkeletonRows } from '../ui/Table';
+import { Table, TableHeader, TableHead, TableBody, TableRow, TableCell, TableRowActions, RowActionButton, TableEmptyRow, TableSkeletonRows } from '../ui/Table';
 import { DetailDrawer, DetailSection, DetailField, DetailStats, DetailBlock, RowDetailButton } from '../ui/DetailDrawer';
 import { newestFirst } from '../../lib/ordering';
 
-const labelClass = 'block text-sm font-medium text-slate-700 mb-1.5';
-const fieldClass = 'w-full h-10 px-3 text-sm border border-slate-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-teal-600';
-const hintClass = 'mt-1.5 block text-xs text-slate-500';
-const suggestButtonClass = 'inline-flex h-7 items-center gap-1 rounded-md px-2 text-xs font-semibold transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-teal';
+// Quick-fill chips stay compact with a mouse but reach 44px on touch screens.
+const touchChipClass = 'pointer-coarse:min-h-11';
 // Matches <Button variant="outline"> for links that must stay anchors (WhatsApp).
 const outlineLinkClass = 'inline-flex h-10 items-center justify-center gap-1.5 whitespace-nowrap rounded-lg border border-border bg-white px-4 text-sm font-semibold text-foreground shadow-2xs transition-all duration-150 hover:bg-muted hover:border-brand-teal/60 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-teal focus-visible:ring-offset-2';
 
-const PORTAL_URL = 'https://konveksi.hij.co.id/portal';
+const PORTAL_URL = COMPANY_CONTACT.portalUrl;
 
 interface CustomersModuleProps {
   onPreviewCustomerPortal?: (customer: Customer) => void;
@@ -114,7 +112,7 @@ export const CustomersModule: React.FC<CustomersModuleProps> = ({ onPreviewCusto
       return;
     }
     const pwd = known;
-    const text = `*KREDENSIAL PORTAL PELANGGAN HIJ KONVEKSI*\n\nHalo ${cust.name || 'Pelanggan'},\nBerikut akses resmi untuk login ke Portal Pelanggan HIJ Konveksi:\n- *Link Portal*: https://konveksi.hij.co.id/portal\n- *Username / No. WA*: ${uname}\n- *Kata Sandi*: ${pwd}\n- *WhatsApp CS Resmi*: ${COMPANY_CONTACT.whatsappFormatted}\n\nMelalui portal ini Anda dapat:\n1. Memantau progres SPK dan tahapan jahit secara real-time\n2. Melakukan konfirmasi approval desain & sampel\n3. Melihat invoice dan mengunggah bukti bayar\n4. Memeriksa nomor resi pengiriman barang\n5. Melacak riwayat semua pesanan dan mengajukan Repeat Order via WhatsApp\n\nJika ada kendala login atau pertanyaan produksi, silakan hubungi WhatsApp CS kami di ${COMPANY_CONTACT.whatsappFormatted}.\n\nTerima kasih atas kepercayaannya bermitra dengan PT Hasil Inti Jualan.`;
+    const text = `*KREDENSIAL PORTAL PELANGGAN HIJ KONVEKSI*\n\nHalo ${cust.name || 'Pelanggan'},\nBerikut akses resmi untuk login ke Portal Pelanggan HIJ Konveksi:\n- *Link Portal*: ${PORTAL_URL}\n- *Username / No. WA*: ${uname}\n- *Kata Sandi*: ${pwd}\n- *WhatsApp CS Resmi*: ${COMPANY_CONTACT.whatsappFormatted}\n\nMelalui portal ini Anda dapat:\n1. Memantau progres SPK dan tahapan jahit secara real-time\n2. Melakukan konfirmasi approval desain & sampel\n3. Melihat invoice dan mengunggah bukti bayar\n4. Memeriksa nomor resi pengiriman barang\n5. Melacak riwayat semua pesanan dan mengajukan Repeat Order via WhatsApp\n\nJika ada kendala login atau pertanyaan produksi, silakan hubungi WhatsApp CS kami di ${COMPANY_CONTACT.whatsappFormatted}.\n\nTerima kasih atas kepercayaannya bermitra dengan PT Hasil Inti Jualan.`;
     navigator.clipboard.writeText(text);
     setCopyToast(`Akses WhatsApp untuk ${cust.name || uname} berhasil disalin!`);
     setTimeout(() => setCopyToast(null), 3500);
@@ -155,6 +153,7 @@ export const CustomersModule: React.FC<CustomersModuleProps> = ({ onPreviewCusto
     if (!/^[a-z0-9._-]+$/.test(clean)) {
       return { valid: false, message: 'Hanya huruf kecil, angka, titik (.), strip (-), atau underscore (_)' };
     }
+    // A quick hint only; the server applies the authoritative rule and its error is shown on save.
     const blacklisted = ['admin', 'klien', 'customer', 'root', 'user', 'guest', 'test', 'staff', 'superuser'];
     if (blacklisted.includes(clean)) {
       return { valid: false, message: 'Username terlalu umum & rawan dibajak, gunakan nama spesifik' };
@@ -249,8 +248,10 @@ export const CustomersModule: React.FC<CustomersModuleProps> = ({ onPreviewCusto
       try {
         await deleteResource('customers', id);
         loadData();
-      } catch (err) {
-        console.error('Delete customer error:', err);
+      } catch (err: any) {
+        // e.g. 409: the customer still has orders or quotations — the server says which.
+        alert(err?.message || 'Gagal menghapus pelanggan. Coba lagi.');
+        return false;
       }
       return true;
     }
@@ -320,6 +321,13 @@ export const CustomersModule: React.FC<CustomersModuleProps> = ({ onPreviewCusto
 
   const retentionPct = customers.length > 0 ? Math.round((activeCount / customers.length) * 100) : 0;
   const usernameInvalid = !!formData.username && !usernameValidation.valid;
+  /*
+   * Credentials are only mandatory when an account is being created with portal
+   * access on. On edit an empty password means "keep the current one", and the
+   * server is the authority on username rules either way.
+   */
+  const usernameRequired = !isEditMode && formData.portalAccessActive !== false;
+  const passwordRequired = !isEditMode;
 
   return (
     <div className="space-y-6">
@@ -491,9 +499,9 @@ export const CustomersModule: React.FC<CustomersModuleProps> = ({ onPreviewCusto
               <TableHead className="cell-sticky-start">ID</TableHead>
               <TableHead className="hidden md:table-cell">Nama</TableHead>
               <TableHead className="hidden md:table-cell">Perusahaan</TableHead>
-              <TableHead className="hidden md:table-cell">Kontak</TableHead>
-              <TableHead className="hidden sm:table-cell text-right">Total Belanja</TableHead>
-              <TableHead className="hidden sm:table-cell text-right">Total Pesanan</TableHead>
+              <TableHead className="hidden 2xl:table-cell">Kontak</TableHead>
+              <TableHead className="hidden sm:table-cell text-right tabular-nums">Total Belanja</TableHead>
+              <TableHead className="hidden sm:table-cell text-right tabular-nums">Total Pesanan</TableHead>
               <TableHead className="text-center">Status</TableHead>
               <TableHead className="cell-sticky-end text-right">Aksi</TableHead>
             </TableRow>
@@ -536,15 +544,19 @@ export const CustomersModule: React.FC<CustomersModuleProps> = ({ onPreviewCusto
                       <span className="font-mono font-bold text-slate-900">{cust.id}</span>
                     </TableCell>
 
-                    <TableCell className="hidden md:table-cell font-semibold text-slate-900 break-words">
-                      {cust.name}
+                    <TableCell className="hidden md:table-cell font-semibold text-slate-900">
+                      <span className="block max-w-[140px] truncate" title={cust.name}>
+                        {cust.name}
+                      </span>
                     </TableCell>
 
-                    <TableCell className="hidden md:table-cell max-w-[220px] truncate text-slate-600" title={cust.company || 'Perorangan'}>
-                      {cust.company || 'Perorangan'}
+                    <TableCell className="hidden md:table-cell text-slate-600">
+                      <span className="block max-w-[140px] truncate" title={cust.company || 'Perorangan'}>
+                        {cust.company || 'Perorangan'}
+                      </span>
                     </TableCell>
 
-                    <TableCell className="hidden md:table-cell whitespace-nowrap">
+                    <TableCell className="hidden 2xl:table-cell whitespace-nowrap">
                       {cleanPhone ? (
                         <a
                           href={`https://wa.me/${cleanPhone}`}
@@ -562,31 +574,35 @@ export const CustomersModule: React.FC<CustomersModuleProps> = ({ onPreviewCusto
                       )}
                     </TableCell>
 
-                    <TableCell className="hidden sm:table-cell text-right whitespace-nowrap font-bold text-slate-900">
+                    <TableCell className="hidden sm:table-cell text-right tabular-nums whitespace-nowrap font-bold text-slate-900">
                       {formatCurrency(ltv)}
                     </TableCell>
 
-                    <TableCell className="hidden sm:table-cell text-right whitespace-nowrap text-slate-600">
+                    <TableCell className="hidden sm:table-cell text-right tabular-nums whitespace-nowrap text-slate-600">
                       {orderCount} pesanan
                     </TableCell>
 
                     <TableCell className="text-center whitespace-nowrap">
-                      <StatusBadge status={cust.status || 'Active'} />
+                      <StatusBadge status={cust.status || 'Active'} size="sm" solid />
                     </TableCell>
 
                     <TableCell className="cell-sticky-end text-right">
                       <TableRowActions>
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="icon"
+                        <RowActionButton
+                          label="Ubah"
+                          icon={Edit}
                           onClick={() => handleOpenEdit(cust)}
-                          aria-label={`Ubah data pelanggan ${cust.name}`}
+                          ariaLabel={`Ubah data pelanggan ${cust.name}`}
                           title="Ubah data pelanggan"
-                          className="hidden size-8 sm:inline-flex"
-                        >
-                          <Edit size={14} aria-hidden="true" />
-                        </Button>
+                        />
+                        <RowActionButton
+                          label="Hapus"
+                          icon={Trash2}
+                          tone="danger"
+                          onClick={() => handleDelete(cust.id)}
+                          ariaLabel={`Hapus pelanggan ${cust.name}`}
+                          title="Hapus pelanggan"
+                        />
                         <RowDetailButton label={cust.name || cust.id} onClick={() => setDetailCustomer(cust)} />
                       </TableRowActions>
                     </TableCell>
@@ -795,98 +811,120 @@ export const CustomersModule: React.FC<CustomersModuleProps> = ({ onPreviewCusto
         isOpen={isModalOpen}
         onClose={() => setIsModalOpen(false)}
         title={isEditMode ? 'Ubah Data Mitra Pelanggan' : 'Tambah Mitra Pelanggan Baru'}
+        subtitle="Identitas, kontak, dan akses portal pelacakan mandiri untuk klien."
         maxWidth="lg"
+        footer={
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <Button type="button" variant="outline" onClick={() => setIsModalOpen(false)}>
+              Batal
+            </Button>
+            <Button type="submit" form="customer-form">
+              {isEditMode ? 'Simpan Perubahan' : 'Tambah Pelanggan'}
+            </Button>
+          </div>
+        }
       >
-        <form onSubmit={handleSubmit} className="space-y-5 text-sm">
-          {/* Section 1: Data Identitas Pelanggan */}
-          <div className="space-y-4 rounded-xl border border-slate-200 bg-slate-50/50 p-4">
-            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200/70 pb-2.5">
-              <h3 className="flex items-center gap-1.5 text-sm font-bold text-slate-800">
-                <Users size={16} className="text-teal-700" aria-hidden="true" /> Profil PIC & Instansi
-              </h3>
-              <span className="rounded-md bg-teal-100/70 px-2 py-0.5 font-mono text-xs font-bold text-teal-800">
+        <form id="customer-form" onSubmit={handleSubmit} className="space-y-5">
+          <FormSection
+            step={1}
+            title="Identitas"
+            description="Siapa yang dihubungi dan instansi yang diwakilinya."
+            aside={
+              <span className="rounded-md bg-muted px-2 py-0.5 font-mono text-xs font-bold text-brand-teal-dark">
                 {formData.id}
               </span>
-            </div>
-
+            }
+          >
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <div>
-                <label htmlFor="cust-name" className={labelClass}>Nama Lengkap PIC *</label>
+                <FieldLabel htmlFor="cust-name" required>Nama PIC</FieldLabel>
                 <Input
                   id="cust-name"
                   type="text"
                   required
-                  placeholder="Contoh: Muhammad Ihsan"
+                  placeholder="Nama penanggung jawab"
                   value={formData.name}
                   onChange={(e) => setFormData({ ...formData, name: e.target.value })}
                 />
               </div>
 
               <div>
-                <label htmlFor="cust-company" className={labelClass}>Perusahaan / Instansi</label>
+                <FieldLabel htmlFor="cust-company" aside="Opsional">Perusahaan / Instansi</FieldLabel>
                 <Input
                   id="cust-company"
                   type="text"
-                  placeholder="Contoh: PT Arkato Kreasi"
+                  placeholder="Nama perusahaan"
                   value={formData.company}
                   onChange={(e) => setFormData({ ...formData, company: e.target.value })}
                 />
               </div>
-            </div>
 
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
               <div>
-                <label htmlFor="cust-status" className={labelClass}>Status Mitra</label>
-                <select
+                <FieldLabel htmlFor="cust-status">Status Mitra</FieldLabel>
+                <Select
                   id="cust-status"
                   value={formData.status}
                   onChange={(e) => setFormData({ ...formData, status: e.target.value as any })}
-                  className={fieldClass}
                 >
                   <option value="Active">{statusLabel('Active')}</option>
                   <option value="Inactive">{statusLabel('Inactive')}</option>
-                </select>
+                </Select>
               </div>
+            </div>
+          </FormSection>
 
+          <FormSection
+            step={2}
+            title="Kontak"
+            description="Nomor WhatsApp dipakai untuk koordinasi produksi dan pengiriman kredensial portal."
+          >
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <div>
-                <label htmlFor="cust-phone" className={labelClass}>Nomor WhatsApp *</label>
+                <FieldLabel htmlFor="cust-phone" required>Nomor WhatsApp</FieldLabel>
                 <Input
                   id="cust-phone"
                   type="tel"
+                  inputMode="tel"
                   required
                   placeholder="08xxxxxxxxxx"
                   value={formData.phone || formData.contact}
+                  aria-describedby="cust-phone-hint"
                   onChange={(e) => setFormData({ ...formData, phone: e.target.value, contact: e.target.value })}
                 />
+                <FieldHint id="cust-phone-hint">Nomor aktif; 4 digit terakhirnya dipakai untuk saran username.</FieldHint>
               </div>
 
               <div>
-                <label htmlFor="cust-email" className={labelClass}>Email (Opsional)</label>
+                <FieldLabel htmlFor="cust-email" aside="Opsional">Email</FieldLabel>
                 <Input
                   id="cust-email"
                   type="email"
-                  placeholder="klien@perusahaan.com"
+                  inputMode="email"
+                  placeholder="nama@perusahaan.com"
                   value={formData.email}
                   onChange={(e) => setFormData({ ...formData, email: e.target.value })}
                 />
               </div>
-            </div>
-          </div>
 
-          {/* Section 2: Kredensial Akses Portal Pelanggan */}
-          <div className="space-y-4 rounded-xl border border-teal-200/80 bg-teal-50/70 p-4">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="flex min-w-0 items-center gap-2">
-                <span className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-teal-600 text-white" aria-hidden="true">
-                  <ShieldCheck size={16} />
-                </span>
-                <div className="min-w-0">
-                  <h3 className="text-sm font-bold text-slate-900">Kredensial Portal Klien (Anti-Hack)</h3>
-                  <p className="text-xs text-slate-500">Dikelola staf internal untuk login pelacakan mandiri</p>
-                </div>
+              <div className="sm:col-span-2">
+                <FieldLabel htmlFor="cust-address" aside="Opsional">Alamat pengiriman</FieldLabel>
+                <Textarea
+                  id="cust-address"
+                  rows={3}
+                  placeholder="Jalan, RT/RW, kelurahan, kecamatan, kota/kabupaten, provinsi, kode pos"
+                  value={formData.address || ''}
+                  onChange={(e) => setFormData({ ...formData, address: e.target.value })}
+                />
               </div>
+            </div>
+          </FormSection>
 
-              <label htmlFor="cust-portal-active" className="relative inline-flex min-h-10 cursor-pointer items-center">
+          <FormSection
+            step={3}
+            title="Akses portal pelanggan"
+            description="Kredensial login klien untuk memantau pesanan secara mandiri; dikelola staf internal."
+            aside={
+              <label htmlFor="cust-portal-active" className="relative inline-flex min-h-11 cursor-pointer items-center">
                 <input
                   id="cust-portal-active"
                   type="checkbox"
@@ -898,140 +936,109 @@ export const CustomersModule: React.FC<CustomersModuleProps> = ({ onPreviewCusto
                 />
                 <div
                   aria-hidden="true"
-                  className="relative h-5 w-9 rounded-full bg-slate-300 after:absolute after:left-[2px] after:top-[2px] after:h-4 after:w-4 after:rounded-full after:border after:border-slate-300 after:bg-white after:transition-all after:content-[''] peer-checked:bg-teal-600 peer-checked:after:translate-x-full peer-checked:after:border-white peer-focus-visible:ring-2 peer-focus-visible:ring-teal-600 peer-focus-visible:ring-offset-2"
+                  className="relative h-5 w-9 rounded-full bg-slate-300 after:absolute after:left-[2px] after:top-[2px] after:h-4 after:w-4 after:rounded-full after:border after:border-slate-300 after:bg-white after:transition-all after:content-[''] peer-checked:bg-brand-teal-dark peer-checked:after:translate-x-full peer-checked:after:border-white peer-focus-visible:ring-2 peer-focus-visible:ring-brand-teal peer-focus-visible:ring-offset-2"
                 ></div>
-                <span className="ml-2 text-xs font-bold text-slate-700" aria-hidden="true">
+                <span className="ml-2 text-xs font-bold text-foreground" aria-hidden="true">
                   {formData.portalAccessActive !== false ? 'Aktif' : 'Nonaktif'}
                 </span>
               </label>
-            </div>
-
-            <div className="space-y-1 rounded-lg border border-teal-100 bg-white p-3 text-xs text-slate-600">
-              <div className="flex items-center gap-1.5 font-bold text-teal-900">
-                <Sparkles size={14} className="text-brand-teal-dark" aria-hidden="true" /> Standar Keamanan Username:
-              </div>
-              <p className="leading-relaxed text-slate-600">
-                Format standar yang disarankan: <strong className="font-mono text-teal-800">[brand].[4digitWA]</strong> (contoh: <span className="rounded bg-teal-50 px-1 py-0.5 font-mono font-bold text-teal-800">arkato.7766</span>). Sangat aman dari brute force dan mudah diingat oleh klien.
-              </p>
-            </div>
+            }
+          >
+            <FormNotice icon={<ShieldCheck size={16} />} title="Standar username">
+              Format yang disarankan <strong className="font-mono">[brand].[4 digit WA]</strong>, misalnya{' '}
+              <span className="font-mono font-bold">namabrand.1234</span>. Sulit ditebak dan mudah diingat klien.
+            </FormNotice>
 
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <div>
-                <div className="mb-1.5 flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
-                  <label htmlFor="cust-username" className="text-sm font-medium text-slate-700">Username Portal *</label>
-                  <div className="flex items-center gap-1">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const suggested = suggestUsername(formData.name || '', formData.company, formData.phone || formData.contact, 'phone');
-                        setFormData({ ...formData, username: suggested });
-                      }}
-                      className={`${suggestButtonClass} bg-teal-100/90 text-teal-800 hover:bg-teal-200 hover:text-teal-950`}
-                      title="Buat format brand.4digitWA"
-                    >
-                      <Sparkles size={12} aria-hidden="true" /> Saran WA
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const suggested = suggestUsername(formData.name || '', formData.company, formData.phone || formData.contact, 'year');
-                        setFormData({ ...formData, username: suggested });
-                      }}
-                      className={`${suggestButtonClass} bg-slate-200/80 text-slate-700 hover:bg-slate-300 hover:text-slate-900`}
-                      title="Buat format brand.tahun"
-                    >
-                      Tahun
-                    </button>
-                  </div>
-                </div>
+                <FieldLabel htmlFor="cust-username" required={usernameRequired}>Username portal</FieldLabel>
                 <Input
                   id="cust-username"
                   type="text"
-                  required
+                  required={usernameRequired}
                   autoComplete="off"
-                  placeholder="Contoh: arkato.7766"
+                  placeholder="brand.1234"
                   value={formData.username || ''}
                   onChange={(e) => setFormData({ ...formData, username: e.target.value.toLowerCase().replace(/\s+/g, '') })}
                   aria-invalid={usernameInvalid}
-                  aria-describedby="cust-username-hint"
+                  aria-describedby={usernameInvalid ? 'cust-username-error' : 'cust-username-hint'}
                   className="font-mono"
                 />
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  <ChipButton
+                    className={touchChipClass}
+                    title="Buat format brand.4digitWA"
+                    onClick={() => {
+                      const suggested = suggestUsername(formData.name || '', formData.company, formData.phone || formData.contact, 'phone');
+                      setFormData({ ...formData, username: suggested });
+                    }}
+                  >
+                    <Sparkles size={12} className="mr-1" aria-hidden="true" /> Saran dari WA
+                  </ChipButton>
+                  <ChipButton
+                    className={touchChipClass}
+                    title="Buat format brand.tahun"
+                    onClick={() => {
+                      const suggested = suggestUsername(formData.name || '', formData.company, formData.phone || formData.contact, 'year');
+                      setFormData({ ...formData, username: suggested });
+                    }}
+                  >
+                    Saran dari tahun
+                  </ChipButton>
+                </div>
 
                 {/* Live validation feedback */}
-                <div id="cust-username-hint" className="mt-1.5 text-xs" aria-live="polite">
+                <div aria-live="polite">
                   {formData.username ? (
                     usernameValidation.valid ? (
-                      <span className="flex items-start gap-1 font-semibold text-emerald-700">
-                        <Check size={14} className="mt-px shrink-0" aria-hidden="true" /> {usernameValidation.message}
-                      </span>
+                      <FieldHint id="cust-username-hint" className="flex items-start gap-1.5 font-semibold text-emerald-700">
+                        <Check size={14} className="mt-px shrink-0" aria-hidden="true" />
+                        <span>{usernameValidation.message}</span>
+                      </FieldHint>
                     ) : (
-                      <span className="flex items-start gap-1 font-semibold text-rose-600">
-                        <AlertCircle size={14} className="mt-px shrink-0" aria-hidden="true" /> {usernameValidation.message}
-                      </span>
+                      <FieldError id="cust-username-error">{usernameValidation.message}</FieldError>
                     )
                   ) : (
-                    <span className="text-slate-500">Minimal 5 karakter alfanumerik unik</span>
+                    <FieldHint id="cust-username-hint">
+                      Minimal 5 karakter: huruf kecil, angka, titik, strip, atau underscore.
+                    </FieldHint>
                   )}
                 </div>
               </div>
 
               <div>
-                <div className="mb-1.5 flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
-                  <label htmlFor="cust-password" className="text-sm font-medium text-slate-700">Kata Sandi Portal *</label>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const newPass = generateSecurePassword(formData.name || '', formData.company);
-                      setFormData({ ...formData, password: newPass });
-                    }}
-                    className={`${suggestButtonClass} bg-teal-100/90 text-teal-800 hover:bg-teal-200 hover:text-teal-950`}
-                    title="Buat sandi acak kuat dan mudah diingat"
-                  >
-                    <KeyRound size={12} aria-hidden="true" /> Acak Sandi Kuat
-                  </button>
-                </div>
+                <FieldLabel htmlFor="cust-password" required={passwordRequired}>Kata sandi portal</FieldLabel>
                 <Input
                   id="cust-password"
                   type="text"
-                  required
+                  required={passwordRequired}
                   autoComplete="off"
-                  placeholder="Contoh: HijArkato#782"
+                  placeholder="Kata sandi portal"
                   value={formData.password || ''}
                   onChange={(e) => setFormData({ ...formData, password: e.target.value })}
                   aria-describedby="cust-password-hint"
                   className="font-mono"
                 />
-                <span id="cust-password-hint" className={hintClass}>
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  <ChipButton
+                    className={touchChipClass}
+                    title="Buat sandi acak kuat dan mudah diingat"
+                    onClick={() => {
+                      const newPass = generateSecurePassword(formData.name || '', formData.company);
+                      setFormData({ ...formData, password: newPass });
+                    }}
+                  >
+                    <KeyRound size={12} className="mr-1" aria-hidden="true" /> Acak sandi kuat
+                  </ChipButton>
+                </div>
+                <FieldHint id="cust-password-hint">
                   {isEditMode
                     ? 'Kosongkan untuk mempertahankan kata sandi yang sekarang.'
-                    : 'Catat atau salin sekarang — setelah disimpan, kata sandi tidak bisa dibaca lagi.'}
-                </span>
+                    : 'Catat atau salin sekarang; setelah disimpan, kata sandi tidak bisa dibaca lagi.'}
+                </FieldHint>
               </div>
             </div>
-          </div>
-
-          {/* Section 3: Alamat Pengiriman */}
-          <div className="rounded-xl border border-slate-200 bg-slate-50/50 p-4">
-            <label htmlFor="cust-address" className={labelClass}>Alamat Lengkap Pengiriman Logistik</label>
-            <textarea
-              id="cust-address"
-              rows={3}
-              placeholder="Jalan, RT/RW, Kelurahan, Kecamatan, Kota/Kabupaten, Provinsi, Kode Pos"
-              value={formData.address || ''}
-              onChange={(e) => setFormData({ ...formData, address: e.target.value })}
-              className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-teal-600"
-            />
-          </div>
-
-          {/* Modal Footer Buttons */}
-          <div className="flex justify-end gap-2 border-t border-slate-100 pt-4">
-            <Button type="button" variant="outline" onClick={() => setIsModalOpen(false)}>
-              Batal
-            </Button>
-            <Button type="submit">
-              {isEditMode ? 'Simpan Perubahan' : 'Tambah Pelanggan'}
-            </Button>
-          </div>
+          </FormSection>
         </form>
       </Modal>
     </div>

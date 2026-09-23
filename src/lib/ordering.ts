@@ -30,3 +30,18 @@ export function newestFirst<T extends Recordish>(rows: T[]): T[] {
     return String(b.id || '').localeCompare(String(a.id || ''), 'id', { numeric: true });
   });
 }
+
+/**
+ * Next number for ids shaped `PREFIX-NNN`: the highest one in use plus one.
+ * Counting rows instead re-issued a deleted record's id to the next record,
+ * which then inherited everything still pointing at the old one.
+ */
+export function nextSequence(ids: Array<string | undefined>, prefix: string): number {
+  const pattern = new RegExp(`^${prefix}-(\d+)$`, 'i');
+  return (
+    ids.reduce((max, id) => {
+      const match = pattern.exec(String(id || ''));
+      return match ? Math.max(max, Number(match[1])) : max;
+    }, 0) + 1
+  );
+}

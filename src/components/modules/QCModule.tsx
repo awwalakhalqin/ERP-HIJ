@@ -9,9 +9,9 @@ import {
   ClipboardCheck
 } from 'lucide-react';
 import { QCReport, SPK } from '../../types';
-import { fetchResource, createResource, updateResource } from '../../services/api';
+import { fetchResource, createResource } from '../../services/api';
 import { formatDate, formatDateTime, getAQLStandard, exportTableToExcel, statusLabel } from '../../lib/utils';
-import { StatusBadge } from '../ui/Badge';
+import { Badge, StatusBadge } from '../ui/Badge';
 import { Modal } from '../ui/Modal';
 import { Card } from '../ui/Card';
 import { Button } from '../ui/Button';
@@ -26,7 +26,7 @@ import {
   Textarea
 } from '../ui/Field';
 import { PageHeader } from '../ui/PageHeader';
-import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell, TableRowActions, TableEmptyRow, TableSkeletonRows } from '../ui/Table';
+import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell, TableRowActions, RowActionButton, TableEmptyRow, TableSkeletonRows } from '../ui/Table';
 import { DetailDrawer, DetailSection, DetailField, DetailStats, DetailBlock, RowDetailButton } from '../ui/DetailDrawer';
 import { newestFirst } from '../../lib/ordering';
 
@@ -48,6 +48,23 @@ const toCount = (value: string) => {
 const splitUrls = (value?: string) =>
   (value || '').split(',').map(u => u.trim()).filter(Boolean);
 
+const reportTime = (r: QCReport) => {
+  const t = new Date(r.timestamp || 0).getTime();
+  return Number.isFinite(t) ? t : 0;
+};
+
+/** The most recent report per SPK; only the latest verdict says where a lot stands. */
+const latestReportBySpk = (reports: QCReport[]) => {
+  const latest = new Map<string, QCReport>();
+  for (const r of reports) {
+    const key = String(r.spkId || '').toLowerCase();
+    if (!key) continue;
+    const current = latest.get(key);
+    if (!current || reportTime(r) >= reportTime(current)) latest.set(key, r);
+  }
+  return latest;
+};
+
 export const QCModule: React.FC = () => {
   const [reports, setReports] = useState<QCReport[]>([]);
   const [spks, setSpks] = useState<SPK[]>([]);
@@ -55,6 +72,7 @@ export const QCModule: React.FC = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('ALL');
   const [detailReport, setDetailReport] = useState<QCReport | null>(null);
+  const [detailAwaitingSpk, setDetailAwaitingSpk] = useState<SPK | null>(null);
 
   // Modal State
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -64,13 +82,14 @@ export const QCModule: React.FC = () => {
   const [inspectionType, setInspectionType] = useState<'100% Final' | 'AQL 2.5 Sampling'>('AQL 2.5 Sampling');
   const [totalLotSize, setTotalLotSize] = useState(100);
   const [sampleSize, setSampleSize] = useState(20);
-  const [passedQty, setPassedQty] = useState(18);
-  const [defectsMinor, setDefectsMinor] = useState(1);
-  const [defectsMajor, setDefectsMajor] = useState(1);
+  // No default: the inspector types what actually passed. null = not filled in yet.
+  const [passedQty, setPassedQty] = useState<number | null>(null);
+  const [defectsMinor, setDefectsMinor] = useState(0);
+  const [defectsMajor, setDefectsMajor] = useState(0);
   const [defectsCritical, setDefectsCritical] = useState(0);
-  const [repairableQty, setRepairableQty] = useState(2);
-  const [defectDetails, setDefectDetails] = useState('Jahitan obras renggang di kerung lengan (2 pcs).');
-  const [inspectorName, setInspectorName] = useState('QC Leader Rina');
+  const [repairableQty, setRepairableQty] = useState(0);
+  const [defectDetails, setDefectDetails] = useState('');
+  const [inspectorName, setInspectorName] = useState('');
 
   // Submit state and validation messages
   const [savingQC, setSavingQC] = useState(false);
@@ -110,7 +129,8 @@ export const QCModule: React.FC = () => {
       setTotalLotSize(lot);
       const aql = getAQLStandard(lot);
       setSampleSize(inspectionType === '100% Final' ? lot : aql.sampleSize);
-      setPassedQty(inspectionType === '100% Final' ? lot : aql.sampleSize);
+      // A new lot means a fresh count; never pre-fill "everything passed".
+      setPassedQty(null);
     }
   };
 
@@ -124,6 +144,7 @@ export const QCModule: React.FC = () => {
 
   const selectedSpk = spks.find(s => s.id === selectedSpkId);
   const defectTotal = defectsMinor + defectsMajor + defectsCritical;
+  const passedCount = passedQty ?? 0;
 
   const handleOpenQCModal = () => {
     setQcError(null);
@@ -132,18 +153,25 @@ export const QCModule: React.FC = () => {
   };
 
   /*
-   * SPKs whose production has finished but that nobody has inspected yet.
-   * Derived from the SPK list rather than stored, the same way the SPK page
-   * derives its queue of orders — so finishing production puts the job in front
-   * of QC on its own, instead of QC having to know which SPK to type in.
+   * SPKs whose production has finished and whose latest QC verdict is not yet
+   * Accept. Derived from the SPK list rather than stored, the same way the SPK
+   * page derives its queue of orders — so finishing production puts the job in
+   * front of QC on its own. A lot that was rejected or sent back for repair
+   * stays in the queue, flagged for re-inspection, until a report accepts it.
    */
-  const inspectedSpkIds = new Set(reports.map(r => String(r.spkId || '').toLowerCase()));
+  const latestBySpk = latestReportBySpk(reports);
+  const latestReportFor = (spk: SPK) => latestBySpk.get(String(spk.id).toLowerCase());
   const awaitingQc = newestFirst(
     spks.filter(spk => {
-      const finished = spk.status === 'Completed' || (Number(spk.progress) || 0) >= 100;
-      return finished && !inspectedSpkIds.has(String(spk.id).toLowerCase());
+      const target = Number(spk.targetQty) || 0;
+      const finished =
+        spk.status === 'Finishing' ||
+        (target > 0 && (Number(spk.finishing) || 0) >= target) ||
+        (Number(spk.progress) || 0) >= 100;
+      return finished && latestReportFor(spk)?.status !== 'Accept';
     })
   );
+  const reinspectCount = awaitingQc.filter(spk => !!latestReportFor(spk)).length;
 
   /** Opens the inspection form already pointed at this SPK. */
   const handleInspectSpk = (spkId: string) => {
@@ -160,7 +188,9 @@ export const QCModule: React.FC = () => {
     const errors: Record<string, string> = {};
     if (!selectedSpkId || !spk) errors.spkId = 'Pilih SPK yang diperiksa.';
     if (!(sampleSize > 0)) errors.sampleSize = 'Jumlah diperiksa minimal 1 pcs.';
-    if (passedQty < 0) {
+    if (passedQty === null) {
+      errors.passedQty = 'Isi jumlah pcs yang lulus pemeriksaan.';
+    } else if (passedQty < 0) {
       errors.passedQty = 'Jumlah lulus tidak boleh minus.';
     } else if (sampleSize > 0 && passedQty > sampleSize) {
       errors.passedQty = `Jumlah lulus ${passedQty} pcs melebihi jumlah diperiksa ${sampleSize} pcs.`;
@@ -172,16 +202,16 @@ export const QCModule: React.FC = () => {
     if (
       !errors.sampleSize && !errors.passedQty &&
       !errors.defectsMinor && !errors.defectsMajor && !errors.defectsCritical &&
-      passedQty + defectTotal > sampleSize
+      passedCount + defectTotal > sampleSize
     ) {
-      errors.balance = `Lulus ${passedQty} pcs + cacat ${defectTotal} pcs = ${passedQty + defectTotal} pcs, melebihi ${sampleSize} pcs yang diperiksa.`;
+      errors.balance = `Lulus ${passedCount} pcs + cacat ${defectTotal} pcs = ${passedCount + defectTotal} pcs, melebihi ${sampleSize} pcs yang diperiksa.`;
     }
     if (!inspectorName.trim()) errors.inspector = 'Isi nama pemeriksa QC.';
     if (!isAccepted && !defectDetails.trim()) {
       errors.defectDetails = `Hasil "${resultLabel}" wajib disertai rincian cacat agar tim perbaikan tahu yang harus dikerjakan.`;
     }
 
-    if (Object.keys(errors).length > 0) {
+    if (Object.keys(errors).length > 0 || !spk) {
       setQcFieldErrors(errors);
       setQcError('Lengkapi isian yang ditandai merah, lalu simpan lagi.');
       const fieldIds: Record<string, string> = {
@@ -210,17 +240,17 @@ export const QCModule: React.FC = () => {
 
     const report: QCReport = {
       id: `QC-${Date.now().toString().slice(-5)}`,
-      orderId: spk?.orderId || 'ORD-GEN',
-      spkId: selectedSpkId,
-      product: spk?.productName || 'Garmen HIJ',
+      orderId: spk.orderId,
+      spkId: spk.id,
+      product: spk.productName,
       inspectionType,
       totalInspected: sampleSize,
-      passedQty,
+      passedQty: passedCount,
       defectsMinor,
       defectsMajor,
       defectsCritical,
       repairable: repairableQty,
-      nonRepairable: Math.max(0, sampleSize - passedQty - repairableQty),
+      nonRepairable: Math.max(0, sampleSize - passedCount - repairableQty),
       status: isAccepted ? 'Accept' : repairableQty > 0 ? 'Pending Repair' : 'Reject Lot',
       defectDetails: defectDetails.trim(),
       inspector: inspectorName.trim(),
@@ -228,14 +258,9 @@ export const QCModule: React.FC = () => {
     };
 
     try {
+      // Only the report is written. The server derives the SPK's qc counter
+      // and its 'QC Passed' status from the report itself.
       await createResource('qc-reports', report);
-      // Auto update SPK QC count
-      if (spk && isAccepted) {
-        await updateResource('spk_produksi', spk.id, {
-          qc: spk.targetQty,
-          status: 'QC Passed'
-        });
-      }
       setIsModalOpen(false);
       loadData();
     } catch (err) {
@@ -282,9 +307,14 @@ export const QCModule: React.FC = () => {
             1 &middot; Menunggu Pemeriksaan QC
           </h2>
           {awaitingQc.length > 0 && (
-            <span className="inline-flex h-6 min-w-6 items-center justify-center rounded-full bg-status-warning-bg px-2 text-xs font-bold text-status-warning">
-              {awaitingQc.length}
-            </span>
+            <Badge variant="warning">
+              {awaitingQc.length}<span className="sr-only"> SPK</span>
+            </Badge>
+          )}
+          {reinspectCount > 0 && (
+            <Badge variant="critical">
+              {reinspectCount} perlu inspeksi ulang
+            </Badge>
           )}
         </div>
         <Card className="overflow-hidden">
@@ -294,49 +324,74 @@ export const QCModule: React.FC = () => {
                 <TableHead className="cell-sticky-start">No. SPK</TableHead>
                 <TableHead className="hidden md:table-cell">Produk</TableHead>
                 <TableHead className="hidden lg:table-cell">Pelanggan</TableHead>
-                <TableHead className="hidden sm:table-cell text-right">Target</TableHead>
+                <TableHead className="hidden sm:table-cell text-right tabular-nums">Target</TableHead>
                 <TableHead className="hidden lg:table-cell">Selesai Produksi</TableHead>
+                <TableHead className="text-center">QC Terakhir</TableHead>
                 <TableHead className="cell-sticky-end text-right">Aksi</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {loading && spks.length === 0 ? (
-                <TableSkeletonRows columns={6} rows={2} />
+                <TableSkeletonRows columns={7} rows={2} />
               ) : awaitingQc.length === 0 ? (
                 <TableEmptyRow
-                  colSpan={6}
+                  colSpan={7}
                   icon={<ClipboardCheck size={20} />}
                   title="Tidak ada yang menunggu diperiksa"
                   description="SPK akan muncul di sini sendiri begitu produksinya selesai."
                 />
               ) : (
-                awaitingQc.map(spk => (
+                awaitingQc.map(spk => {
+                  const latest = latestReportFor(spk);
+                  return (
                   <TableRow key={spk.id}>
-                    <TableCell className="cell-sticky-start whitespace-nowrap font-mono font-bold text-slate-900">
+                    <TableCell className="cell-sticky-start font-mono font-bold text-slate-900">
                       {spk.id}
                     </TableCell>
-                    <TableCell className="hidden md:table-cell break-words">{spk.productName || '\u2014'}</TableCell>
-                    <TableCell className="hidden lg:table-cell break-words">{spk.customerName || '\u2014'}</TableCell>
+                    <TableCell className="hidden md:table-cell">
+                      <span className="block max-w-[180px] truncate font-semibold text-slate-900" title={spk.productName}>
+                        {spk.productName || '—'}
+                      </span>
+                    </TableCell>
+                    <TableCell className="hidden lg:table-cell">
+                      <span className="block max-w-[180px] truncate" title={spk.customerName}>
+                        {spk.customerName || '—'}
+                      </span>
+                    </TableCell>
                     <TableCell className="hidden sm:table-cell text-right font-semibold tabular-nums">
                       {spk.targetQty || 0}
                     </TableCell>
-                    <TableCell className="hidden lg:table-cell whitespace-nowrap text-slate-500">
-                      {spk.tanggalSelesai ? formatDate(spk.tanggalSelesai) : '\u2014'}
+                    <TableCell className="hidden lg:table-cell text-slate-500">
+                      {spk.tanggalSelesai ? formatDate(spk.tanggalSelesai) : '—'}
+                    </TableCell>
+                    <TableCell className="text-center whitespace-nowrap">
+                      {latest ? (
+                        <StatusBadge status={latest.status} size="sm" solid />
+                      ) : (
+                        <Badge variant="idle" size="sm" solid>Belum diperiksa</Badge>
+                      )}
                     </TableCell>
                     <TableCell className="cell-sticky-end text-right">
                       <TableRowActions>
-                        <Button
-                          size="sm"
+                        <RowActionButton
+                          label={latest ? 'Periksa ulang' : 'Periksa'}
+                          icon={ShieldCheck}
+                          display="labeled"
+                          tone="primary"
                           onClick={() => handleInspectSpk(spk.id)}
-                          aria-label={`Periksa mutu ${spk.id}`}
-                          className="h-8 gap-1.5 px-2.5 text-xs"
-                        >
-                          <ShieldCheck size={14} aria-hidden="true" /> Periksa
-                        </Button>
+                          ariaLabel={latest ? `Periksa ulang mutu ${spk.id}` : `Periksa mutu ${spk.id}`}
+                          title={
+                            latest
+                              ? `Hasil terakhir ${statusLabel(latest.status)} (${latest.id}). Catat hasil inspeksi ulang.`
+                              : 'Catat hasil QC untuk SPK ini'
+                          }
+                        />
+                        <RowDetailButton label={spk.id} onClick={() => setDetailAwaitingSpk(spk)} />
                       </TableRowActions>
                     </TableCell>
                   </TableRow>
-                ))
+                  );
+                })
               )}
             </TableBody>
           </Table>
@@ -380,9 +435,9 @@ export const QCModule: React.FC = () => {
               <TableHead className="cell-sticky-start">No. QC</TableHead>
               <TableHead className="hidden md:table-cell">Produk</TableHead>
               <TableHead className="hidden lg:table-cell">SPK</TableHead>
-              <TableHead className="hidden sm:table-cell text-right">Lulus</TableHead>
-              <TableHead className="hidden sm:table-cell text-right">Diperiksa</TableHead>
-              <TableHead className="hidden sm:table-cell text-right">Cacat</TableHead>
+              <TableHead className="hidden sm:table-cell text-right tabular-nums">Diperiksa</TableHead>
+              <TableHead className="hidden sm:table-cell text-right tabular-nums">Lulus</TableHead>
+              <TableHead className="hidden sm:table-cell text-right tabular-nums">Cacat</TableHead>
               <TableHead className="hidden lg:table-cell">Tanggal</TableHead>
               <TableHead className="text-center">Hasil</TableHead>
               <TableHead className="cell-sticky-end text-right">Aksi</TableHead>
@@ -407,27 +462,29 @@ export const QCModule: React.FC = () => {
                 const defects = totalDefects(report);
                 return (
                   <TableRow key={report.id}>
-                    <TableCell className="cell-sticky-start whitespace-nowrap font-mono font-bold text-slate-900">{report.id}</TableCell>
+                    <TableCell className="cell-sticky-start font-mono font-bold text-slate-900">{report.id}</TableCell>
                     <TableCell className="hidden md:table-cell">
-                      <span className="font-semibold text-slate-900 break-words">{report.product}</span>
+                      <span className="block max-w-[180px] truncate font-semibold text-slate-900" title={report.product}>
+                        {report.product}
+                      </span>
                     </TableCell>
-                    <TableCell className="hidden lg:table-cell font-mono text-slate-500 whitespace-nowrap">
+                    <TableCell className="hidden lg:table-cell font-mono text-slate-500">
                       {report.spkId || report.orderId || '—'}
                     </TableCell>
-                    <TableCell className="hidden sm:table-cell text-right font-bold text-slate-900 whitespace-nowrap">
-                      {report.passedQty}
-                    </TableCell>
-                    <TableCell className="hidden sm:table-cell text-right whitespace-nowrap">
+                    <TableCell className="hidden sm:table-cell text-right tabular-nums">
                       {report.totalInspected}
                     </TableCell>
-                    <TableCell className={`hidden sm:table-cell text-right whitespace-nowrap ${defects > 0 ? 'font-semibold text-brand-red' : ''}`}>
+                    <TableCell className="hidden sm:table-cell text-right tabular-nums font-bold text-slate-900">
+                      {report.passedQty}
+                    </TableCell>
+                    <TableCell className={`hidden sm:table-cell text-right tabular-nums ${defects > 0 ? 'font-semibold text-brand-red' : ''}`}>
                       {defects}
                     </TableCell>
-                    <TableCell className="hidden lg:table-cell whitespace-nowrap">
+                    <TableCell className="hidden lg:table-cell">
                       {formatDate(report.timestamp)}
                     </TableCell>
-                    <TableCell className="text-center whitespace-nowrap">
-                      <StatusBadge status={report.status} />
+                    <TableCell className="text-center">
+                      <StatusBadge status={report.status} size="sm" solid />
                     </TableCell>
                     <TableCell className="cell-sticky-end text-right">
                       <TableRowActions>
@@ -441,6 +498,54 @@ export const QCModule: React.FC = () => {
           </TableBody>
         </Table>
       </Card>
+
+      {/* AWAITING-QC SPK DETAIL */}
+      <DetailDrawer
+        isOpen={!!detailAwaitingSpk}
+        onClose={() => setDetailAwaitingSpk(null)}
+        title={detailAwaitingSpk?.productName}
+        subtitle={detailAwaitingSpk && <span className="font-mono">{detailAwaitingSpk.id}</span>}
+        status={detailAwaitingSpk && <StatusBadge status={detailAwaitingSpk.status} />}
+        footer={detailAwaitingSpk && (
+          <Button
+            type="button"
+            size="sm"
+            onClick={() => {
+              const spkId = detailAwaitingSpk.id;
+              setDetailAwaitingSpk(null);
+              handleInspectSpk(spkId);
+            }}
+          >
+            <ShieldCheck size={15} aria-hidden="true" /> Periksa
+          </Button>
+        )}
+      >
+        {detailAwaitingSpk && (
+          <DetailSection title="SPK">
+            <DetailField label="No. SPK" mono>{detailAwaitingSpk.id}</DetailField>
+            <DetailField label="Pesanan" mono>{detailAwaitingSpk.po || detailAwaitingSpk.orderId}</DetailField>
+            <DetailField label="Pelanggan">{detailAwaitingSpk.customerName}</DetailField>
+            <DetailField label="Produk">{detailAwaitingSpk.productName}</DetailField>
+            <DetailField label="Target">{detailAwaitingSpk.targetQty || 0} Pcs</DetailField>
+            <DetailField label="Progres">{Number(detailAwaitingSpk.progress) || 0}%</DetailField>
+            <DetailField label="Selesai produksi">
+              {detailAwaitingSpk.tanggalSelesai && formatDate(detailAwaitingSpk.tanggalSelesai)}
+            </DetailField>
+            {(() => {
+              const latest = latestReportFor(detailAwaitingSpk);
+              return latest ? (
+                <DetailField label="QC terakhir" full>
+                  <span className="inline-flex flex-wrap items-center gap-2">
+                    <StatusBadge status={latest.status} size="sm" solid />
+                    <span className="font-mono text-[13px] font-medium">{latest.id}</span>
+                    {latest.timestamp && <span className="font-normal text-muted-foreground">{formatDate(latest.timestamp)}</span>}
+                  </span>
+                </DetailField>
+              ) : null;
+            })()}
+          </DetailSection>
+        )}
+      </DetailDrawer>
 
       <DetailDrawer
         isOpen={!!detailReport}
@@ -525,7 +630,7 @@ export const QCModule: React.FC = () => {
             <div className="min-w-0" aria-live="polite">
               <span className="block text-xs font-medium text-muted-foreground">Lulus / diperiksa</span>
               <span className="block text-lg font-bold tabular-nums text-foreground">
-                {passedQty} / {sampleSize} pcs
+                {passedQty ?? '—'} / {sampleSize} pcs
               </span>
               <span className="block text-xs text-muted-foreground tabular-nums">
                 {defectTotal} pcs cacat · hasil {resultLabel}
@@ -664,7 +769,8 @@ export const QCModule: React.FC = () => {
                   inputMode="numeric"
                   min={0}
                   max={sampleSize}
-                  value={passedQty}
+                  value={passedQty ?? ''}
+                  placeholder="Wajib diisi"
                   aria-invalid={!!qcFieldErrors.passedQty || !!qcFieldErrors.balance}
                   aria-describedby={
                     [
@@ -674,7 +780,7 @@ export const QCModule: React.FC = () => {
                   }
                   onChange={(e) => {
                     setQcFieldErrors(prev => ({ ...prev, passedQty: '', balance: '' }));
-                    setPassedQty(toCount(e.target.value));
+                    setPassedQty(e.target.value === '' ? null : toCount(e.target.value));
                   }}
                   className="text-right font-semibold tabular-nums"
                 />

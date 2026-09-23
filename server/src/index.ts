@@ -14,7 +14,17 @@ import {
   HIJ_MODE,
   DATA_DIR
 } from './db.js';
-import { getOrderReadiness, verifiedPaidForOrder } from '../../src/lib/readiness.js';
+import { getOrderReadiness, verifiedPaidForOrder, designForOrder } from '../../src/lib/readiness.js';
+import {
+  nextId,
+  activeInvoiceFor,
+  activeInvoiceForOrder,
+  verifiedPaidForInvoice,
+  invoiceStatusFor,
+  withAmounts,
+  syncOrderStatus,
+  syncAllOrderStatuses
+} from './flow.js';
 import {
   hashPassword,
   verifyPassword,
@@ -23,8 +33,13 @@ import {
   requireAuth,
   requireStaff,
   requireSelfOrStaff,
-  stripSensitive
+  stripSensitive,
+  passwordVersion
 } from './auth.js';
+import { requireModule, writeBlockReason, readBlockReason, usersWriteBlockReason, STAFF_ROLE_MODULES, canOpen, isFullAdmin } from './access.js';
+import { recomputeSpk, recomputeAllSpks, completeSpkForOrder, spkQcAccepted, SPK_SOURCE_TABLES } from './spk.js';
+import { canApproveSpecialTerms } from '../../src/lib/readiness.js';
+import { COMPANY_CONTACT } from '../../src/config/contact.js';
 import dotenv from 'dotenv';
 dotenv.config();
 
@@ -60,9 +75,30 @@ app.use(
       : {}
   )
 );
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ extended: true, limit: '50mb' }));
-app.use(attachActor);
+app.disable('x-powered-by');
+app.use((_req: Request, res: Response, next: NextFunction) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+  res.setHeader('Referrer-Policy', 'same-origin');
+  next();
+});
+// Only the workbook import and the offline replay carry big bodies; a 49 MB
+// "notes" field on a public route used to be accepted and persisted.
+app.use(['/api/import/commit', '/api/sync'], express.json({ limit: '50mb' }));
+app.use(express.json({ limit: '2mb' }));
+app.use(express.urlencoded({ extended: true, limit: '2mb' }));
+app.use(attachActor((type, id) => findById(type === 'internal' ? 'users' : 'customers', id)));
+
+/*
+ * The storefront, payment gateway and top-up integrations are a separate
+ * product the factory does not run. Their routes take unauthenticated writes
+ * (checkout, webhooks), so they stay switched off unless STOREFRONT_ENABLED=1.
+ */
+const STOREFRONT_ENABLED = ['1', 'true', 'yes'].includes(String(process.env.STOREFRONT_ENABLED || '').toLowerCase());
+app.use(['/api/store', '/api/payment', '/api/digiflazz'], (_req: Request, res: Response, next: NextFunction) => {
+  if (STOREFRONT_ENABLED) return next();
+  res.status(404).json({ error: 'Fitur toko online tidak diaktifkan di server ini.' });
+});
 
 // Directories
 const UPLOADS_DIR = path.join(process.cwd(), 'uploads');
@@ -71,7 +107,9 @@ const TEMPLATES_DIR = path.join(process.cwd(), 'public', 'templates');
 if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 if (!fs.existsSync(TEMPLATES_DIR)) fs.mkdirSync(TEMPLATES_DIR, { recursive: true });
 
-app.use('/uploads', express.static(UPLOADS_DIR));
+app.use('/uploads', express.static(UPLOADS_DIR), (_req: Request, res: Response) => {
+  res.status(404).json({ error: 'Berkas tidak ditemukan.' });
+});
 app.use('/templates', express.static(TEMPLATES_DIR));
 
 // Multer storage
@@ -93,8 +131,10 @@ const storage = multer.diskStorage({
   filename: (_req, file, cb) => {
     const ext = ALLOWED_UPLOAD_TYPES[file.mimetype] || '.bin';
     const base = path.basename(file.originalname, path.extname(file.originalname));
-    const cleanName = base.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 60) || 'file';
-    cb(null, `${cleanName}_${Date.now()}${ext}`);
+    const cleanName = base.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 40) || 'file';
+    // Payment proofs and designs are served without login; a guessable name
+    // (original name + timestamp) let anyone enumerate them.
+    cb(null, `${cleanName}_${crypto.randomBytes(9).toString('base64url')}${ext}`);
   }
 });
 const upload = multer({
@@ -146,56 +186,7 @@ app.post(
 // AUTHENTICATION (UNIFIED SINGLE-PAGE LOGIN)
 // ---------------------------------------------------------
 
-// Preset modules for the 5 staff roles
-const STAFF_ROLE_MODULES: Record<string, string[]> = {
-  'Super Admin': ['*'],
-  'Owner': [
-    'Dashboard', 
-    'HowItWorks', 
-    'Quotations',
-    'Orders', 
-    'Customers', 
-    'PPIC', 
-    'QC', 
-    'Shipping', 
-    'Finance', 
-    'HRPayroll', 
-    'Storefront'
-  ],
-  'Design': [
-    'Dashboard', 
-    'HowItWorks', 
-    'Designs', 
-    'Quotations',
-    'PatternGrading', 
-    'Orders', 
-    'Customers'
-  ],
-  'Pengadaan': [
-    'Dashboard', 
-    'HowItWorks', 
-    'Quotations',
-    'Procurement', 
-    'RawMaterial', 
-    'Trims', 
-    'Orders'
-  ],
-  'Produksi': [
-    'Dashboard', 
-    'HowItWorks', 
-    'PPIC', 
-    'Cutting', 
-    'BundleTracking', 
-    'Sewing', 
-    'Trims', 
-    'QC', 
-    'Packaging', 
-    'Shipping', 
-    'Returns', 
-    'Machines', 
-    'Safety'
-  ]
-};
+// The role → menu defaults live in access.ts, shared with the permission checks.
 
 // Unified Smart Login: Auto-detects Staff (5 roles) vs Customer (1 role)
 /*
@@ -206,7 +197,7 @@ const LOGIN_FAILED = 'Username atau kata sandi salah.';
 
 /** Identifiers are matched exactly. Substring matching let one guess hit any account. */
 function findStaff(users: any[], ident: string) {
-  return users.find(u =>
+  return users.filter(u => u.status !== 'Inactive').find(u =>
     String(u.username || '').toLowerCase() === ident ||
     String(u.id || '').toLowerCase() === ident ||
     (u.email && String(u.email).toLowerCase() === ident)
@@ -214,7 +205,7 @@ function findStaff(users: any[], ident: string) {
 }
 
 function findCustomer(customers: any[], ident: string, digits: string) {
-  return customers.find(c =>
+  return customers.filter(c => c.portalAccessActive !== false && c.status !== 'Inactive').find(c =>
     String(c.username || '').toLowerCase() === ident ||
     String(c.id || '').toLowerCase() === ident ||
     (c.email && String(c.email).toLowerCase() === ident) ||
@@ -245,7 +236,7 @@ function staffSession(user: any) {
   return {
     success: true,
     type: 'internal' as const,
-    token: issueToken({ sub: String(user.id), type: 'internal', role: user.role }),
+    token: issueToken({ sub: String(user.id), type: 'internal', role: user.role, pv: passwordVersion(user.password) }),
     user: safeUser
   };
 }
@@ -254,14 +245,49 @@ function customerSession(customer: any) {
   return {
     success: true,
     type: 'customer' as const,
-    token: issueToken({ sub: String(customer.id), type: 'customer' }),
+    token: issueToken({ sub: String(customer.id), type: 'customer', pv: passwordVersion(customer.password) }),
     customer: stripSensitive(customer)
   };
 }
 
+/*
+ * Login throttle. Passwords are twelve random characters, but the customer
+ * usernames are guessable brand names, so an attacker with a word list gets
+ * ten tries per address per quarter hour and then waits. In memory: a restart
+ * clears it, which is fine for a single-process app.
+ */
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+const LOGIN_MAX_FAILURES = 10;
+const loginFailures = new Map<string, { count: number; first: number }>();
+
+function loginThrottleKey(req: Request) {
+  return `${req.ip || 'ip'}|${String(req.body?.identifier || req.body?.username || '').trim().toLowerCase()}`;
+}
+function loginBlocked(req: Request): boolean {
+  const entry = loginFailures.get(loginThrottleKey(req));
+  if (!entry) return false;
+  if (Date.now() - entry.first > LOGIN_WINDOW_MS) {
+    loginFailures.delete(loginThrottleKey(req));
+    return false;
+  }
+  return entry.count >= LOGIN_MAX_FAILURES;
+}
+function noteLoginFailure(req: Request) {
+  const key = loginThrottleKey(req);
+  const entry = loginFailures.get(key);
+  if (!entry || Date.now() - entry.first > LOGIN_WINDOW_MS) loginFailures.set(key, { count: 1, first: Date.now() });
+  else entry.count += 1;
+  // Keep the map from growing without bound under a scan.
+  if (loginFailures.size > 5000) {
+    for (const [k, v] of loginFailures) if (Date.now() - v.first > LOGIN_WINDOW_MS) loginFailures.delete(k);
+  }
+}
+const LOGIN_THROTTLED = 'Terlalu banyak percobaan masuk. Tunggu 15 menit lalu coba lagi.';
+
 app.post('/api/auth/unified-login', (req: Request, res: Response) => {
   const identifier = String(req.body.identifier || req.body.username || '').trim();
   const password = String(req.body.password || '');
+  if (loginBlocked(req)) return res.status(429).json({ success: false, error: LOGIN_THROTTLED });
 
   if (!identifier || !password) {
     return res.status(400).json({ success: false, error: 'Username dan kata sandi wajib diisi.' });
@@ -273,7 +299,11 @@ app.post('/api/auth/unified-login', (req: Request, res: Response) => {
   const matchedUser = findStaff(readTable('users'), ident);
   if (matchedUser) {
     const check = verifyPassword(password, matchedUser.password);
-    if (!check.ok) return res.status(401).json({ success: false, error: LOGIN_FAILED });
+    if (!check.ok) {
+      noteLoginFailure(req);
+      return res.status(401).json({ success: false, error: LOGIN_FAILED });
+    }
+    loginFailures.delete(loginThrottleKey(req));
     upgradeStoredPassword('users', matchedUser.id, password, check.needsUpgrade);
     return res.json(staffSession(matchedUser));
   }
@@ -281,10 +311,15 @@ app.post('/api/auth/unified-login', (req: Request, res: Response) => {
   const matchedCustomer = findCustomer(readTable('customers'), ident, digits);
   if (matchedCustomer) {
     const check = verifyPassword(password, matchedCustomer.password);
-    if (!check.ok) return res.status(401).json({ success: false, error: LOGIN_FAILED });
+    if (!check.ok) {
+      noteLoginFailure(req);
+      return res.status(401).json({ success: false, error: LOGIN_FAILED });
+    }
+    loginFailures.delete(loginThrottleKey(req));
     upgradeStoredPassword('customers', matchedCustomer.id, password, check.needsUpgrade);
     return res.json(customerSession(matchedCustomer));
   }
+  noteLoginFailure(req);
 
   /*
    * An SPK or PO number used to grant a full customer session with no password
@@ -298,15 +333,18 @@ app.post('/api/auth/unified-login', (req: Request, res: Response) => {
 app.post('/api/login', (req: Request, res: Response) => {
   const identifier = String(req.body.username || req.body.identifier || '').trim().toLowerCase();
   const password = String(req.body.password || '');
+  if (loginBlocked(req)) return res.status(429).json({ success: false, error: LOGIN_THROTTLED });
   if (!identifier || !password) {
     return res.status(400).json({ success: false, error: 'Username dan kata sandi wajib diisi.' });
   }
 
   const user = findStaff(readTable('users'), identifier);
-  if (!user) return res.status(401).json({ success: false, error: LOGIN_FAILED });
-
-  const check = verifyPassword(password, user.password);
-  if (!check.ok) return res.status(401).json({ success: false, error: LOGIN_FAILED });
+  const check = user ? verifyPassword(password, user.password) : { ok: false, needsUpgrade: false };
+  if (!user || !check.ok) {
+    noteLoginFailure(req);
+    return res.status(401).json({ success: false, error: LOGIN_FAILED });
+  }
+  loginFailures.delete(loginThrottleKey(req));
   upgradeStoredPassword('users', user.id, password, check.needsUpgrade);
   return res.json(staffSession(user));
 });
@@ -322,11 +360,14 @@ app.post('/api/customer-login', (req: Request, res: Response) => {
     return res.status(400).json({ success: false, error: 'ID pelanggan dan kata sandi wajib diisi.' });
   }
 
+  if (loginBlocked(req)) return res.status(429).json({ success: false, error: LOGIN_THROTTLED });
   const matched = findCustomer(readTable('customers'), identifier, identifier.replace(/\D/g, ''));
-  if (!matched) return res.status(401).json({ success: false, error: LOGIN_FAILED });
-
-  const check = verifyPassword(password, matched.password);
-  if (!check.ok) return res.status(401).json({ success: false, error: LOGIN_FAILED });
+  const check = matched ? verifyPassword(password, matched.password) : { ok: false, needsUpgrade: false };
+  if (!matched || !check.ok) {
+    noteLoginFailure(req);
+    return res.status(401).json({ success: false, error: LOGIN_FAILED });
+  }
+  loginFailures.delete(loginThrottleKey(req));
   upgradeStoredPassword('customers', matched.id, password, check.needsUpgrade);
   return res.json(customerSession(matched));
 });
@@ -356,17 +397,30 @@ app.get(
   );
   const targetId = matchedCustomer ? String(matchedCustomer.id).toLowerCase() : cleanQuery;
 
-  const matchFilter = (item: any) => {
+  /*
+   * A record is this customer's when it carries their id, or hangs off one of
+   * their orders. The name is only a fallback for rows with no customerId at
+   * all, and must match exactly: a substring match showed "PT Alina" records to
+   * a customer called "Ali".
+   */
+  const ownName = String(matchedCustomer?.name || '').trim().toLowerCase();
+  const ownsById = (item: any) => {
     const itemCustId = String(item.customerId || '').toLowerCase();
-    const itemCustName = String(item.customerName || '').toLowerCase();
-    return itemCustId === targetId || itemCustId === cleanQuery || (matchedCustomer && itemCustName.includes(matchedCustomer.name?.toLowerCase()));
+    if (itemCustId) return itemCustId === targetId || itemCustId === cleanQuery;
+    return !!ownName && String(item.customerName || '').trim().toLowerCase() === ownName;
   };
+  const orders = readTable('orders').filter(ownsById);
+  const orderIds = new Set(orders.map((o: any) => o.id));
+  const matchFilter = (item: any) => ownsById(item) || (!!item.orderId && orderIds.has(item.orderId));
 
-  const orders = readTable('orders').filter(matchFilter);
   const spks = readTable('spk_produksi').filter(matchFilter);
   const designs = readTable('designs').filter(matchFilter);
   const samples = readTable('samples').filter(matchFilter);
-  const invoices = readTable('invoices').filter(matchFilter);
+  // A draft has not been checked by Keuangan yet, and a superseded revision is
+  // no longer what the customer owes.
+  const invoices = readTable('invoices').filter(
+    (i: any) => matchFilter(i) && i.reviewStatus !== 'Draft' && !i.supersededBy
+  );
   const shipments = readTable('shipments').filter(matchFilter);
   const returns = readTable('returns_complaints').filter(matchFilter);
 
@@ -382,8 +436,49 @@ app.get(
 });
 
 // Quick Track by SPK ID, Order ID, PO number, or Tracking Resi (Public tracking)
+/*
+ * Public, so it is throttled: order numbers are sequential and a scan could
+ * otherwise read every customer's product and quantity in minutes.
+ */
+const trackHits = new Map<string, { count: number; first: number }>();
+function trackThrottled(req: Request): boolean {
+  const key = req.ip || 'ip';
+  const now = Date.now();
+  const entry = trackHits.get(key);
+  if (!entry || now - entry.first > 15 * 60 * 1000) {
+    trackHits.set(key, { count: 1, first: now });
+    if (trackHits.size > 5000) for (const [k, v] of trackHits) if (now - v.first > 15 * 60 * 1000) trackHits.delete(k);
+    return false;
+  }
+  entry.count += 1;
+  return entry.count > 60;
+}
+
+/** Four unambiguous characters (no 0/O/1/I) appended to customer-facing numbers. */
+function poTail(): string {
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  const bytes = crypto.randomBytes(4);
+  return Array.from(bytes, b => alphabet[b % alphabet.length]).join('');
+}
+
+/** Contact details the public site prints — one source with the ERP's invoices. */
+app.get('/api/public/company-info', (_req: Request, res: Response) => {
+  res.json({
+    name: COMPANY_CONTACT.name,
+    shortName: COMPANY_CONTACT.shortName,
+    whatsappNumber: COMPANY_CONTACT.whatsappNumber,
+    whatsappFormatted: COMPANY_CONTACT.whatsappFormatted,
+    email: COMPANY_CONTACT.email,
+    address: COMPANY_CONTACT.address,
+    bankAccounts: COMPANY_CONTACT.bankAccounts
+  });
+});
+
 app.get('/api/quick-track/:query', (req: Request, res: Response) => {
   const query = String(req.params.query || '').trim().toLowerCase();
+  if (trackThrottled(req)) {
+    return res.status(429).json({ success: false, error: 'Terlalu banyak pencarian. Coba lagi beberapa menit lagi.' });
+  }
   if (!query) {
     return res.status(400).json({ success: false, error: 'Nomor pelacakan wajib diisi.' });
   }
@@ -391,7 +486,6 @@ app.get('/api/quick-track/:query', (req: Request, res: Response) => {
   const spks = readTable('spk_produksi');
   const orders = readTable('orders');
   const shipments = readTable('shipments');
-  const samples = readTable('samples');
 
   // Match SPK by ID or PO
   const spk = spks.find(s => 
@@ -403,9 +497,9 @@ app.get('/api/quick-track/:query', (req: Request, res: Response) => {
   // Match Order by ID or customer PO
   const order = spk 
     ? orders.find(o => o.id === spk.orderId)
-    : orders.find(o => 
-        String(o.id).toLowerCase() === query || 
-        String(o.poNumber || '').toLowerCase() === query
+    : orders.find(o =>
+        String(o.id).toLowerCase() === query ||
+        String(o.po || o.poNumber || '').toLowerCase() === query
       );
 
   // Match Shipment by SPK, Order, or Tracking Number (resi)
@@ -416,11 +510,6 @@ app.get('/api/quick-track/:query', (req: Request, res: Response) => {
     String(sh.id).toLowerCase() === query
   );
 
-  const sample = (order || spk) ? samples.find(sm => 
-    (order && sm.orderId === order.id) || 
-    (spk && sm.spkId === spk.id)
-  ) : null;
-
   if (!spk && !order && !shipment) {
     return res.status(404).json({ 
       success: false, 
@@ -429,66 +518,70 @@ app.get('/api/quick-track/:query', (req: Request, res: Response) => {
     });
   }
 
-  // Calculate production stage and progress
-  const stage = spk?.stage || order?.status || 'Antrean Produksi';
-  const stageMap: Record<string, number> = {
-    'Antrean': 10,
-    'Antrean Produksi': 15,
-    'Pola': 25,
-    'Potong': 40,
-    'Cutting': 40,
-    'Sablon': 55,
-    'Bordir': 55,
-    'Jahit': 70,
-    'Sewing': 70,
-    'Finishing': 85,
-    'QC': 90,
-    'Packing': 95,
-    'Selesai': 100,
-    'Dikirim': 100
+  /*
+   * The stage is read from what actually happened — counters, QC result,
+   * shipment — never from a percentage. The old lookup keyed on fields that
+   * do not exist (spk.stage) and fell back to a made-up 50%.
+   */
+  const target = Number(spk?.targetQty) || Number(order?.quantity) || 0;
+  const delivered = shipment?.status === 'Delivered';
+  const shipped = !!shipment && ['Picked Up', 'In Transit', 'Delivered'].includes(shipment.status);
+  const qcPassed = spk?.status === 'QC Passed' || spk?.status === 'Completed';
+  let stage = 'Menunggu SPK';
+  let stageKey = 'queue';
+  if (delivered) { stage = 'Selesai — sudah diterima'; stageKey = 'done'; }
+  else if (shipped) { stage = 'Dalam pengiriman'; stageKey = 'shipping'; }
+  else if (qcPassed) { stage = 'Lolos QC — pengemasan'; stageKey = 'packing'; }
+  else if (spk && target > 0 && Number(spk.finishing) >= target) { stage = 'Pemeriksaan QC'; stageKey = 'qc'; }
+  else if (spk && Number(spk.finishing) > 0) { stage = 'Finishing'; stageKey = 'finishing'; }
+  else if (spk && Number(spk.sewing) > 0) { stage = 'Penjahitan'; stageKey = 'sewing'; }
+  else if (spk && Number(spk.cutting) > 0) { stage = 'Pemotongan'; stageKey = 'cutting'; }
+  else if (spk) { stage = 'Antrean produksi'; stageKey = 'queued'; }
+  else if (order?.status === 'Sample') { stage = 'Desain & sampel'; stageKey = 'design'; }
+
+  const progressPercent = delivered ? 100 : typeof spk?.progress === 'number' ? spk.progress : 0;
+
+  /*
+   * The public answer is what a courier's tracking page shows: how far along,
+   * when, and whether it has shipped. Never the customer's name, product or
+   * quantities — order numbers are printed on documents that pass through
+   * many hands. Those details live behind the customer portal login.
+   */
+  const publicData = {
+    trackingQuery: req.params.query,
+    orderId: order?.id || spk?.orderId || null,
+    spkId: spk?.id || null,
+    po: order?.po || null,
+    stage,
+    stageKey,
+    hasSpk: !!spk,
+    spkStatus: spk?.status || null,
+    progressPercent,
+    deadline: order?.deadline || spk?.tanggalSelesai || null,
+    createdAt: order?.timestamp || spk?.tanggalMasuk || null,
+    shipment: shipment ? {
+      id: shipment.id,
+      courier: shipment.courier || shipment.expedition || null,
+      trackingNumber: shipment.trackingNumber || shipment.resi || null,
+      status: shipment.status,
+      shippedAt: shipment.shippedAt || shipment.createdAt || null,
+      estimatedDelivery: shipment.estimatedDelivery || null
+    } : null
   };
 
-  const progressPercent = typeof spk?.progress === 'number' 
-    ? spk.progress 
-    : (stageMap[stage] || (shipment ? 100 : 50));
+  res.json({ success: true, found: true, data: publicData });
+});
 
-  res.json({
-    success: true,
-    found: true,
-    data: {
-      trackingQuery: req.params.query,
-      orderId: order?.id || spk?.orderId || 'ORD-UNKNOWN',
-      spkId: spk?.id || 'SPK-UNKNOWN',
-      customerName: order?.customerName || spk?.customerName || 'Pelanggan HIJ',
-      productName: order?.productName || spk?.productName || spk?.product || 'Custom Apparel',
-      quantity: order?.quantity || spk?.targetQty || spk?.qty || 0,
-      stage: spk?.status === 'In Progress' ? (spk.cutting > 0 ? 'Cutting / Potong' : 'Dalam Antrean') : stage,
-      progressPercent,
-      material: spk?.material || order?.material || '-',
-      sablonBordir: spk?.sablonBordir || '-',
-      deadline: order?.deadline || spk?.deadline || spk?.tanggalSelesai || spk?.targetDate || '-',
-      createdAt: order?.createdAt || spk?.createdAt || spk?.tanggalMasuk || '-',
-      cutting: spk?.cutting ?? 0,
-      sewing: spk?.sewing ?? 0,
-      finishing: spk?.finishing ?? 0,
-      qc: spk?.qc ?? 0,
-      notes: spk?.notes || order?.notes || '',
-      shipment: shipment ? {
-        id: shipment.id,
-        courier: shipment.courier || shipment.expedition,
-        trackingNumber: shipment.trackingNumber || shipment.resi,
-        status: shipment.status,
-        shippedAt: shipment.shippedAt || shipment.createdAt,
-        estimatedDelivery: shipment.estimatedDelivery
-      } : null,
-      sample: sample ? {
-        id: sample.id,
-        status: sample.status,
-        sampleType: sample.sampleType,
-        photoUrl: sample.photoUrl
-      } : null
-    }
-  });
+/*
+ * Who can be named as PIC on a quotation or order: every staff account, by
+ * name and role. The accounts table itself stays behind the Akun menu; this
+ * exposes nothing that could log in.
+ */
+app.get('/api/staff-directory', requireModule(), (_req: Request, res: Response) => {
+  const staff = readTable('users')
+    .map((u: any) => ({ id: u.id, name: u.name || u.username, role: u.role || '' }))
+    .sort((a: any, b: any) => String(a.name).localeCompare(String(b.name), 'id'));
+  res.json(staff);
 });
 
 // ---------------------------------------------------------
@@ -496,10 +589,18 @@ app.get('/api/quick-track/:query', (req: Request, res: Response) => {
 // ---------------------------------------------------------
 
 // SOP-08: Scan WIP Bundle Handover & Stage Transition
-app.post('/api/wip-bundles/scan', (req: Request, res: Response) => {
+app.post('/api/wip-bundles/scan', requireModule('BundleTracking', 'Cutting', 'Sewing', 'QC', 'Packaging'), (req: Request, res: Response) => {
   const { bundleId, nextStage, operatorName, status } = req.body;
   if (!bundleId) {
     return res.status(400).json({ error: 'ID bundel wajib diisi.' });
+  }
+  const BUNDLE_STAGES = ['Cutting', 'Sewing', 'Obras', 'Finishing Detail', 'QC', 'Packing'];
+  const BUNDLE_STATUSES = ['In Progress', 'Passed', 'Repair Needed', 'Completed'];
+  if (nextStage && !BUNDLE_STAGES.includes(String(nextStage))) {
+    return res.status(400).json({ error: `Tahap "${nextStage}" tidak dikenal.` });
+  }
+  if (status && !BUNDLE_STATUSES.includes(String(status))) {
+    return res.status(400).json({ error: `Status "${status}" tidak dikenal.` });
   }
 
   const bundles = readTable('wip_bundles');
@@ -524,19 +625,8 @@ app.post('/api/wip-bundles/scan', (req: Request, res: Response) => {
 
   updateItem('wip_bundles', bundle.id, updatedBundle);
 
-  // Auto update SPK progress
-  if (bundle.spkId) {
-    const spk = findById('spk_produksi', bundle.spkId);
-    if (spk) {
-      const allSpkBundles = readTable('wip_bundles').filter(b => b.spkId === bundle.spkId);
-      const totalBundles = allSpkBundles.length;
-      if (totalBundles > 0) {
-        const completedBundles = allSpkBundles.filter(b => b.currentStage === 'Packing' || b.currentStage === 'QC' || b.status === 'Completed').length;
-        const progress = Math.min(100, Math.round((completedBundles / totalBundles) * 100));
-        updateItem('spk_produksi', spk.id, { progress });
-      }
-    }
-  }
+  // The SPK reads its progress from the bundles (and every other record) in one place.
+  recomputeSpk(bundle.spkId);
 
   res.json({ success: true, bundle: updatedBundle });
 });
@@ -554,6 +644,29 @@ function readinessForOrder(order: any) {
   });
 }
 
+/**
+ * The size chart template the SPK is cut against, copied onto the SPK when it
+ * is issued. The sheet keeps printing the numbers production was given even
+ * if the chart is edited later; PPIC still shows the live chart when it exists.
+ */
+function sizeChartSnapshot(chartId: string | undefined) {
+  if (!chartId) return {};
+  const chart = findById('size_charts', chartId);
+  if (!chart) return {};
+  return {
+    sizeChartId: chart.id,
+    sizeChartName: chart.name,
+    sizeChartTemplate: JSON.stringify({
+      name: chart.name,
+      garment: chart.garment,
+      scope: chart.scope || 'standard',
+      customerName: chart.customerName,
+      measurements: chart.measurements || [],
+      rows: chart.rows || []
+    })
+  };
+}
+
 /** Returns why an SPK may not be created for this order, or null when it may. */
 function spkBlockReason(orderId: string | undefined): string | null {
   if (!orderId) return 'SPK harus terhubung ke pesanan.';
@@ -562,6 +675,26 @@ function spkBlockReason(orderId: string | undefined): string | null {
   if (readTable('spk_produksi').some(s => s.orderId === order.id)) {
     return `SPK untuk pesanan ${order.id} sudah ada.`;
   }
+  /*
+   * The artwork rule holds for every SPK, including the fast path below: the
+   * SPK sheet is what the floor cuts and sews from, and one without a design
+   * sends people to the machines with nothing to follow.
+   */
+  const design = designForOrder(order, readTable('designs') as any);
+  if (!design) {
+    return `SPK belum bisa diterbitkan. Desain belum dilampirkan ke pesanan ${order.id}.`;
+  }
+  if (design.status !== 'Approved') {
+    return `SPK belum bisa diterbitkan. Desain ${design.id} masih berstatus ${design.status} — setujui dulu di menu Desain & Sampel.`;
+  }
+  // The sheet prints the size chart the garment is cut to; no template, no sheet.
+  if (!order.sizeChartId) {
+    return `SPK belum bisa diterbitkan. Template size chart belum dipilih di pesanan ${order.id} — buka Edit Pesanan, lalu pilih template standar HIJ atau khusus pelanggan.`;
+  }
+  if (!findById('size_charts', order.sizeChartId)) {
+    return `SPK belum bisa diterbitkan. Template size chart ${order.sizeChartId} pada pesanan ${order.id} sudah tidak ada di halaman Size Chart — pilih template lain di Edit Pesanan.`;
+  }
+
   // SPK tidak wajib dipenuhi untuk repeat order atau kuantitas di bawah 50 pcs (dibuat manual di tiap pesanan)
   if (order.isRepeatOrder || (Number(order.quantity) > 0 && Number(order.quantity) < 50)) {
     return null;
@@ -586,14 +719,14 @@ function reconcileOrderPayments(orderId: string | undefined) {
   });
 }
 
-app.get('/api/orders/:id/readiness', (req: Request, res: Response) => {
+app.get('/api/orders/:id/readiness', requireStaff, (req: Request, res: Response) => {
   const order = findById('orders', req.params.id);
   if (!order) return res.status(404).json({ error: 'Pesanan tidak ditemukan.' });
   res.json(readinessForOrder(order));
 });
 
 // SOP-03: PPIC issues the SPK once every production requirement is met.
-app.post('/api/orders/:id/issue-spk', (req: Request, res: Response) => {
+app.post('/api/orders/:id/issue-spk', requireModule('PPIC', 'Orders'), (req: Request, res: Response) => {
   const order = findById('orders', req.params.id);
   if (!order) return res.status(404).json({ error: 'Pesanan tidak ditemukan.' });
 
@@ -605,13 +738,13 @@ app.post('/api/orders/:id/issue-spk', (req: Request, res: Response) => {
   const { plannedStart, notes, user } = req.body || {};
 
   // Resolve mockup from order or linked design to forward to SPK
-  const designs = readTable('designs');
-  const matchedDesign = (order.designId && designs.find((d: any) => d.id === order.designId)) ||
-    (order.designName && designs.find((d: any) => d.name === order.designName)) ||
-    designs.find((d: any) => d.orderId === order.id);
+  // Same lookup the gate used, so the SPK prints the design that was approved —
+  // never another customer's design that happens to share a name.
+  const matchedDesign: any = designForOrder(order, readTable('designs') as any);
+  const isArtwork = (url?: string) => !!url && !String(url).startsWith('/templates/');
 
-  const mockupDepan = order.designUrl || matchedDesign?.mockupFront || '';
-  const mockupBelakang = matchedDesign?.mockupBack || '';
+  const mockupDepan = [matchedDesign?.mockupFront, order.designUrl].find(isArtwork) || '';
+  const mockupBelakang = isArtwork(matchedDesign?.mockupBack) ? matchedDesign.mockupBack : '';
 
   const spkPayload = {
     id: `SPK-${order.id}`,
@@ -622,11 +755,14 @@ app.post('/api/orders/:id/issue-spk', (req: Request, res: Response) => {
     productName: order.productType,
     targetQty: Number(order.quantity) || 1,
     material: order.material || '-',
-    sablonBordir: order.accessories || order.sablonBordir || '-',
+    // sablonBordir is the spec; accessories is often just '-', which is truthy.
+    sablonBordir: [order.sablonBordir, order.accessories].find(v => v && v !== '-') || '-',
     tanggalMasuk: plannedStart || new Date().toISOString().split('T')[0],
     tanggalSelesai: order.deadline,
     notes: notes ?? order.notes,
-    sizeChart: order.sizeChart,
+    // Quotation orders carry the breakdown in `size`; without it the SPK printed no sizes.
+    sizeChart: order.sizeChart || order.size,
+    ...sizeChartSnapshot(order.sizeChartId),
     mockupDepan,
     mockupBelakang,
     cutting: 0,
@@ -639,7 +775,8 @@ app.post('/api/orders/:id/issue-spk', (req: Request, res: Response) => {
   };
 
   const newSpk = insertItem('spk_produksi', spkPayload);
-  const updatedOrder = updateItem('orders', order.id, { status: 'In Production' });
+  syncOrderStatus(order.id);
+  const updatedOrder = findById('orders', order.id);
 
   res.status(201).json({
     success: true,
@@ -649,32 +786,147 @@ app.post('/api/orders/:id/issue-spk', (req: Request, res: Response) => {
   });
 });
 
+/*
+ * SOP-01 & SOP-20: money never enters through the portal. The customer sends
+ * the transfer proof over WhatsApp and the order's PIC (or a full admin)
+ * confirms it here, which records a verified payment in one step so the DP
+ * gate, the invoice and the order all move together.
+ */
+app.post('/api/orders/:id/approve-dp', requireModule('Orders', 'Finance'), (req: Request, res: Response) => {
+  const order = findById('orders', req.params.id);
+  if (!order) return res.status(404).json({ error: 'Pesanan tidak ditemukan.' });
+
+  const actor = actorUser(req);
+  const isPic = !!order.picUserId && String(order.picUserId) === String(actor?.id);
+  if (!isPic && !isFullAdmin(actor)) {
+    return res.status(403).json({
+      error: order.picName
+        ? `Hanya PIC pesanan ini (${order.picName}) atau Super Admin yang bisa menyetujui DP.`
+        : 'Pesanan ini belum punya PIC. Pilih PIC lewat Ubah Pesanan, atau minta Super Admin menyetujui DP.'
+    });
+  }
+
+  const amount = Number(req.body?.amount);
+  if (!amount || amount <= 0) return res.status(400).json({ error: 'Nominal DP harus lebih dari 0.' });
+
+  const invoice = activeInvoiceForOrder(order.id);
+  const paidSoFar = verifiedPaidForOrder(order.id, readTable('payments'));
+  const required = Number(order.dpRequired) || 0;
+  // Once the agreed DP is covered, whatever follows is settlement.
+  const type = required > 0 && paidSoFar >= required ? 'Pelunasan' : 'DP';
+  const now = new Date().toISOString();
+  const extraNote = String(req.body?.notes || '').trim();
+
+  const payment = insertItem('payments', {
+    id: nextId('payments', 'PAY'),
+    orderId: order.id,
+    invoiceId: invoice?.id || '',
+    customerId: order.customerId || '',
+    customerName: order.customerName || 'Klien',
+    amount,
+    type,
+    date: req.body?.date || now.split('T')[0],
+    paymentMethod: req.body?.paymentMethod || 'Transfer Bank',
+    bankAccount: req.body?.bankAccount || '',
+    proofImageUrl: '',
+    status: 'Verified',
+    notes: `Bukti transfer diterima via WhatsApp, disetujui ${actor?.name || 'PIC'}${extraNote ? ` — ${extraNote}` : ''}`,
+    user: actor?.name || 'PIC',
+    approvedBy: actor?.name || '',
+    approvedById: actor?.id || '',
+    timestamp: now
+  });
+
+  if (invoice) reconcileInvoice(invoice.id);
+  reconcileOrderPayments(order.id);
+  updateItem('orders', order.id, { dpApprovedBy: actor?.name || '', dpApprovedAt: now });
+
+  res.status(201).json({
+    success: true,
+    message: `${type} Rp ${amount.toLocaleString('id-ID')} disetujui dan tercatat.`,
+    payment,
+    order: findById('orders', order.id),
+    invoice: invoice ? findById('invoices', invoice.id) : null
+  });
+});
+
 // SOP-01: Create an order. SPKs are issued separately through PPIC.
-app.post('/api/orders/with-spk', (req: Request, res: Response) => {
+app.post('/api/orders/with-spk', requireModule('Orders'), (req: Request, res: Response) => {
   const { order } = req.body;
-  const newOrder = insertItem('orders', { ...order, status: order?.status || 'Order' });
+  const newOrder = insertItem('orders', {
+    ...order,
+    id: order?.id && !findById('orders', order.id) ? order.id : nextId('orders', 'ORD'),
+    status: order?.status || 'Order'
+  });
   res.json({ success: true, order: newOrder, spk: null, readiness: readinessForOrder(newOrder) });
 });
 
 // Quotation approval (SOP-01): creates the order. Production waits for the SPK requirements.
-app.post('/api/quotations/:id/approve-to-order', (req: Request, res: Response) => {
+app.post('/api/quotations/:id/approve-to-order', requireModule('Quotations'), (req: Request, res: Response) => {
   const quotationId = req.params.id;
   const quotation = findById('quotations', quotationId);
 
   if (!quotation) {
     return res.status(404).json({ error: 'Penawaran tidak ditemukan.' });
   }
+  // A second click, or a stale tab, used to create a second order for one deal.
+  if (quotation.supersededBy) {
+    return res.status(409).json({
+      error: `Penawaran ${quotation.id} sudah diganti revisi ${quotation.supersededBy}. Proses dari dokumen terbaru.`
+    });
+  }
+  if (quotation.orderId && findById('orders', quotation.orderId)) {
+    return res.status(409).json({
+      error: `Penawaran ${quotation.id} sudah deal dan menjadi pesanan ${quotation.orderId}.`
+    });
+  }
+  if (quotation.status === 'Rejected') {
+    return res.status(409).json({ error: `Penawaran ${quotation.id} sudah ditandai ditolak pelanggan. Buat penawaran baru.` });
+  }
 
   const { downPayment, po, deadline, user } = req.body;
   const now = new Date();
 
-  // Generate next sequential Order ID
-  const orders = readTable('orders');
-  const nextOrderNum = orders.length + 1;
-  const orderId = `ORD-${String(nextOrderNum).padStart(3, '0')}`;
-  const finalPo = po || `PO-${(quotation.customerName || 'HIJ').replace(/[^a-zA-Z0-9]/g, '').slice(0, 3).toUpperCase()}-${now.getFullYear()}-${String(nextOrderNum).padStart(2, '0')}`;
+  const orderId = nextId('orders', 'ORD');
+  const orderNum = Number(orderId.split('-').pop()) || 1;
+  // The PO number is what customers type into public tracking, so it carries
+  // a random tail: a counted-up number let anyone walk through every order.
+  const finalPo = po || `PO-${(quotation.customerName || 'HIJ').replace(/[^a-zA-Z0-9]/g, '').slice(0, 3).toUpperCase()}-${now.getFullYear()}-${String(orderNum).padStart(2, '0')}${poTail()}`;
   const totalAmount = Number(quotation.totalPrice) || (Number(quotation.quantity) * Number(quotation.price));
-  const finalDp = downPayment !== undefined ? Number(downPayment) : Math.round(totalAmount * 0.5);
+  let schedule = Array.isArray(quotation.paymentSchedule) && quotation.paymentSchedule.length > 0
+    ? withAmounts(quotation.paymentSchedule, totalAmount)
+    : [];
+  // The first agreed instalment is the DP; 50% only when nothing was agreed.
+  const scheduledDp = Number(schedule[0]?.amount) || Math.round(totalAmount * 0.5);
+  const typedDp = downPayment !== undefined && downPayment !== null && downPayment !== '' ? Number(downPayment) : NaN;
+  if (!Number.isNaN(typedDp) && (typedDp < 0 || (totalAmount > 0 && typedDp > totalAmount))) {
+    return res.status(400).json({ error: `Uang muka harus antara Rp 0 dan Rp ${totalAmount.toLocaleString('id-ID')}.` });
+  }
+  const finalDp = Number.isNaN(typedDp) ? scheduledDp : typedDp;
+  /*
+   * A DP typed at deal time that differs from the agreed first instalment
+   * becomes the first instalment: the invoice printed the schedule's figure
+   * while the SPK gate waited for the typed one.
+   */
+  if (schedule.length >= 2 && totalAmount > 0 && finalDp !== Number(schedule[0].amount)) {
+    const dpPct = Math.round((finalDp / totalAmount) * 100);
+    const restPct = 100 - dpPct;
+    const [first, ...rest] = schedule;
+    const restTotal = rest.reduce((sum: number, t: any) => sum + (Number(t.percentage) || 0), 0) || 1;
+    schedule = withAmounts(
+      [
+        { ...first, percentage: dpPct },
+        ...rest.map((t: any) => ({ ...t, percentage: Math.round(((Number(t.percentage) || 0) / restTotal) * restPct) }))
+      ],
+      totalAmount
+    );
+    // Rounding may leave the percentages a point short; the last term absorbs it.
+    const pctSum = schedule.reduce((sum: number, t: any) => sum + (Number(t.percentage) || 0), 0);
+    if (pctSum !== 100) {
+      schedule[schedule.length - 1].percentage += 100 - pctSum;
+      schedule = withAmounts(schedule, totalAmount);
+    }
+  }
 
   // 1. Create the Order directly from agreed quotation
   const orderPayload = {
@@ -695,10 +947,17 @@ app.post('/api/quotations/:id/approve-to-order', (req: Request, res: Response) =
     material: quotation.material || '-',
     color: quotation.color || 'Custom',
     size: quotation.size || 'All Size',
+    sizeChart: quotation.sizeChart,
+    sizeChartId: quotation.sizeChartId || '',
+    sizeChartName: quotation.sizeChartName || '',
+    // The PIC who closed the deal stays on the order.
+    picUserId: quotation.picUserId || '',
+    picName: quotation.picName || '',
+    picRole: quotation.picRole || '',
     accessories: quotation.accessories || '-',
     needsProcurement: quotation.needsProcurement || 'Perlu Pengadaan',
     notes: `Dibuat dari penawaran ${quotation.id}. ${quotation.notes || ''}`.trim(),
-    user: user || quotation.user || 'Sistem',
+    user: user || quotation.picName || quotation.user || 'Sistem',
     timestamp: now.toISOString(),
     // Anti-Skip & Specifications mapping
     needsSample: quotation.needsSample !== undefined ? quotation.needsSample : true,
@@ -712,10 +971,15 @@ app.post('/api/quotations/:id/approve-to-order', (req: Request, res: Response) =
     discount: quotation.discount || 0,
     discountPercent: quotation.discountPercent || 0,
     // Installments agreed on the quotation follow the order into invoicing
-    paymentSchedule: Array.isArray(quotation.paymentSchedule) ? quotation.paymentSchedule : []
+    paymentSchedule: schedule
   };
 
   const newOrder = insertItem('orders', orderPayload);
+  // Both links are used in practice; keep them in step so Desain shows the order too.
+  if (orderPayload.designId) {
+    const design = findById('designs', orderPayload.designId);
+    if (design && !design.orderId) updateItem('designs', design.id, { orderId: orderId });
+  }
 
   // 2. Update Quotation status to Approved with link to generated order
   const updatedQuotation = updateItem('quotations', quotation.id, {
@@ -751,7 +1015,7 @@ function nextRevision(table: string, baseId: string) {
  * one is marked superseded, and money already received carries across so the
  * customer is never asked to pay twice.
  */
-app.put('/api/quotations/:id/revise-deal', (req: Request, res: Response) => {
+app.put('/api/quotations/:id/revise-deal', requireModule('Quotations'), (req: Request, res: Response) => {
   const quotation = findById('quotations', req.params.id);
 
   if (!quotation) {
@@ -788,7 +1052,11 @@ app.put('/api/quotations/:id/revise-deal', (req: Request, res: Response) => {
     totalPrice: newTotal,
     deadline: deadline || quotation.deadline,
     notes: notes !== undefined ? notes : quotation.notes,
-    paymentSchedule: Array.isArray(paymentSchedule) ? paymentSchedule : quotation.paymentSchedule,
+    // Same percentages, amounts recomputed: the old amounts described the old total.
+    paymentSchedule: withAmounts(
+      Array.isArray(paymentSchedule) ? paymentSchedule : (quotation.paymentSchedule || []),
+      newTotal
+    ),
     timestamp: now
   });
   updateItem('quotations', quotation.id, { supersededBy: newQuotation.id, supersededAt: now });
@@ -801,15 +1069,32 @@ app.put('/api/quotations/:id/revise-deal', (req: Request, res: Response) => {
   let newInvoice = null;
 
   if (linkedOrder) {
+    const revisedSchedule = newQuotation.paymentSchedule || [];
     updatedOrder = updateItem('orders', linkedOrder.id, {
       quotationId: newQuotation.id,
       quantity: newQty,
       price: newPrice,
       totalPrice: newTotal,
+      /*
+       * A DP sized for the old total could exceed the new one, and the DP gate
+       * could then never pass. It follows the revised first instalment.
+       */
+      dpRequired: Number(revisedSchedule[0]?.amount) || Math.round(newTotal * 0.5),
+      ...(req.body.size ? { size: req.body.size } : {}),
       deadline: deadline || linkedOrder.deadline,
-      paymentSchedule: newQuotation.paymentSchedule,
+      paymentSchedule: revisedSchedule,
       updatedAt: now
     });
+
+    // The floor works to the SPK's target, so it follows the revised quantity.
+    const linkedSpk = readTable('spk_produksi').find((spk: any) => spk.orderId === linkedOrder.id);
+    if (linkedSpk) {
+      updateItem('spk_produksi', linkedSpk.id, {
+        targetQty: newQty,
+        ...(deadline ? { tanggalSelesai: deadline } : {}),
+        ...(req.body.size ? { sizeChart: req.body.size } : {})
+      });
+    }
 
     // 3. Reissue the invoice, carrying over whatever has already been paid.
     const activeInvoice = readTable('invoices').find(
@@ -819,10 +1104,9 @@ app.put('/api/quotations/:id/revise-deal', (req: Request, res: Response) => {
     if (activeInvoice) {
       const invBase = activeInvoice.revisionOf || activeInvoice.id;
       const invNext = nextRevision('invoices', invBase);
-      const paid = Number(activeInvoice.downPaymentReceived) || 0;
+      const paid = verifiedPaidForInvoice(activeInvoice);
       const balanceRemaining = Math.max(0, newTotal - paid);
-      const status =
-        newTotal > 0 && balanceRemaining <= 0 ? 'Lunas' : paid > 0 ? 'DP Dibayar' : 'Belum Bayar';
+      const status = invoiceStatusFor(newTotal, paid);
 
       newInvoice = insertItem('invoices', {
         ...activeInvoice,
@@ -860,7 +1144,7 @@ app.put('/api/quotations/:id/revise-deal', (req: Request, res: Response) => {
 });
 
 // Dashboard Analytics KPIs
-app.get('/api/dashboard/stats', (_req: Request, res: Response) => {
+app.get('/api/dashboard/stats', requireStaff, (_req: Request, res: Response) => {
   const orders = readTable('orders');
   const spks = readTable('spk_produksi');
   const customers = readTable('customers');
@@ -872,8 +1156,10 @@ app.get('/api/dashboard/stats', (_req: Request, res: Response) => {
   const activeSpks = spks.filter(s => s.status !== 'Completed');
   const totalPcsInProduction = activeSpks.reduce((acc, s) => acc + (Number(s.targetQty) || 0), 0);
   
-  const totalRevenue = invoices.reduce((acc, i) => acc + (Number(i.total) || 0), 0);
-  const pendingPayment = invoices.reduce((acc, i) => acc + (Number(i.balanceRemaining) || 0), 0);
+  // A superseded revision is history; counting it doubled piutang after every Revisi Qty.
+  const liveInvoices = invoices.filter(i => !i.supersededBy);
+  const totalRevenue = liveInvoices.reduce((acc, i) => acc + (Number(i.total) || 0), 0);
+  const pendingPayment = liveInvoices.reduce((acc, i) => acc + (Number(i.balanceRemaining) || 0), 0);
 
   const totalInspected = qcReports.reduce((acc, q) => acc + (Number(q.totalInspected) || 0), 0);
   const totalPassed = qcReports.reduce((acc, q) => acc + (Number(q.passedQty) || 0), 0);
@@ -896,43 +1182,37 @@ app.get('/api/dashboard/stats', (_req: Request, res: Response) => {
 // ---------------------------------------------------------
 export function reconcileInvoice(invoiceId: string) {
   if (!invoiceId) return null;
-  const invoice = findById('invoices', invoiceId);
+  const invoice = activeInvoiceFor(invoiceId);
   if (!invoice) return null;
 
-  const payments = readTable('payments').filter(p => p.invoiceId === invoiceId && p.status !== 'Rejected');
-  const totalPaid = payments.reduce((sum, p) => sum + (Number(p.amount) || 0), 0);
+  // Verified money only, and all of it: see verifiedPaidForInvoice.
+  const totalPaid = verifiedPaidForInvoice(invoice);
   const invoiceTotal = Number(invoice.total) || Number(invoice.amount) || 0;
   const balanceRemaining = Math.max(0, invoiceTotal - totalPaid);
-  
-  let status: 'Belum Bayar' | 'DP Dibayar' | 'Lunas' = 'Belum Bayar';
-  if (balanceRemaining <= 0 && invoiceTotal > 0) {
-    status = 'Lunas';
-  } else if (totalPaid > 0) {
-    status = 'DP Dibayar';
-  }
 
-  const updatedInvoice = updateItem('invoices', invoiceId, {
+  const updatedInvoice = updateItem('invoices', invoice.id, {
     downPaymentReceived: totalPaid,
     balanceRemaining: balanceRemaining,
-    status: status
+    status: invoiceStatusFor(invoiceTotal, totalPaid)
   });
 
-  // Also sync order downPayment if order exists
   if (invoice.orderId) {
     const order = findById('orders', invoice.orderId);
     if (order) {
+      const paid = verifiedPaidForOrder(order.id, readTable('payments'));
       updateItem('orders', order.id, {
-        downPayment: totalPaid,
-        dpPercent: order.totalPrice > 0 ? Math.min(100, Math.round((totalPaid / order.totalPrice) * 100)) : 0
+        downPayment: paid,
+        dpPercent: order.totalPrice > 0 ? Math.min(100, Math.round((paid / order.totalPrice) * 100)) : 0
       });
     }
+    syncOrderStatus(invoice.orderId);
   }
 
   return updatedInvoice;
 }
 
 // Dedicated Endpoint: Record Kas Masuk / Payment with auto invoice & order reconciliation
-app.post('/api/payments/record', (req: Request, res: Response) => {
+app.post('/api/payments/record', requireModule('Finance'), (req: Request, res: Response) => {
   const {
     orderId,
     invoiceId,
@@ -953,11 +1233,10 @@ app.post('/api/payments/record', (req: Request, res: Response) => {
     return res.status(400).json({ error: 'Nominal pembayaran harus lebih dari 0.' });
   }
 
-  const payments = readTable('payments');
-  const nextNum = payments.length + 1;
-  const paymentId = `PAY-${String(nextNum).padStart(3, '0')}`;
+  const paymentId = nextId('payments', 'PAY');
 
-  let targetInvoiceId = invoiceId;
+  // A payment against a replaced revision lands on the revision now in force.
+  let targetInvoiceId = invoiceId ? (activeInvoiceFor(invoiceId)?.id || invoiceId) : invoiceId;
   let targetOrderId = orderId;
   let targetCustomerId = customerId;
   let targetCustomerName = customerName;
@@ -971,8 +1250,7 @@ app.post('/api/payments/record', (req: Request, res: Response) => {
       if (!targetCustomerName) targetCustomerName = inv.customerName;
     }
   } else if (targetOrderId) {
-    const invoices = readTable('invoices');
-    const matched = invoices.find(i => i.orderId === targetOrderId);
+    const matched = activeInvoiceForOrder(targetOrderId);
     if (matched) {
       targetInvoiceId = matched.id;
       if (!targetCustomerId) targetCustomerId = matched.customerId;
@@ -1016,7 +1294,7 @@ app.post('/api/payments/record', (req: Request, res: Response) => {
 });
 
 // Endpoint to verify payment and trigger reconciliation
-app.post('/api/payments/:id/verify', (req: Request, res: Response) => {
+app.post('/api/payments/:id/verify', requireModule('Finance'), (req: Request, res: Response) => {
   const paymentId = req.params.id;
   const payment = findById('payments', paymentId);
   if (!payment) return res.status(404).json({ error: 'Pembayaran tidak ditemukan.' });
@@ -1037,11 +1315,19 @@ app.post('/api/payments/:id/verify', (req: Request, res: Response) => {
 });
 
 // Specialized Invoice Creation Endpoint with auto balance calculations
-app.post('/api/invoices', (req: Request, res: Response) => {
+app.post('/api/invoices', requireModule('Finance', 'Orders'), (req: Request, res: Response) => {
   const data = req.body;
-  const invoices = readTable('invoices');
-  const nextNum = invoices.length + 1;
-  const invId = data.id || `INV-${String(nextNum).padStart(3, '0')}`;
+  /*
+   * Two live invoices for one order split the payments between them: one stayed
+   * "Belum Bayar" forever and omzet counted the order twice.
+   */
+  const existing = data.orderId ? activeInvoiceForOrder(data.orderId) : null;
+  if (existing) {
+    return res.status(409).json({
+      error: `Pesanan ${data.orderId} sudah punya faktur ${existing.id}. Buka faktur itu, atau revisi lewat Surat Penawaran.`
+    });
+  }
+  const invId = data.id && !findById('invoices', data.id) ? data.id : nextId('invoices', 'INV');
   
   const amount = Number(data.amount) || Number(data.total) || 0;
   const tax = Number(data.tax) || 0;
@@ -1059,12 +1345,13 @@ app.post('/api/invoices', (req: Request, res: Response) => {
     downPaymentReceived: downPayment,
     balanceRemaining,
     status: data.status || status,
-    dueDate: data.dueDate || new Date(Date.now() + 14 * 86400000).toISOString().split('T')[0],
     timestamp: data.timestamp || new Date().toISOString()
   };
 
   const newInvoice = insertItem('invoices', invoicePayload);
-  res.status(201).json(newInvoice);
+  // Money recorded against the order before this invoice existed counts toward it.
+  const reconciled = newInvoice.orderId ? reconcileInvoice(newInvoice.id) : null;
+  res.status(201).json(reconciled || newInvoice);
 });
 
 // ---------------------------------------------------------
@@ -1073,13 +1360,7 @@ app.post('/api/invoices', (req: Request, res: Response) => {
 const SHIPPED_STATUSES = ['Picked Up', 'In Transit', 'Delivered'];
 
 function nextInvoiceId(): string {
-  let num = readTable('invoices').length + 1;
-  let id = `INV-${String(num).padStart(3, '0')}`;
-  while (findById('invoices', id)) {
-    num += 1;
-    id = `INV-${String(num).padStart(3, '0')}`;
-  }
-  return id;
+  return nextId('invoices', 'INV');
 }
 
 /** Creates a draft invoice for the shipment's order once it is handed to the courier, unless one exists. */
@@ -1087,7 +1368,7 @@ function ensureDraftInvoiceForShipment(shipment: any) {
   if (!shipment || !SHIPPED_STATUSES.includes(shipment.status) || !shipment.orderId) return null;
   const order = findById('orders', shipment.orderId);
   if (!order) return null;
-  if (readTable('invoices').some(i => i.orderId === order.id)) return null;
+  if (activeInvoiceForOrder(order.id)) return null;
 
   const total = Number(order.totalPrice) || 0;
   const paid = verifiedPaidForOrder(order.id, readTable('payments'));
@@ -1103,7 +1384,6 @@ function ensureDraftInvoiceForShipment(shipment: any) {
     total,
     downPaymentReceived: paid,
     balanceRemaining,
-    dueDate: new Date(Date.now() + 14 * 86400000).toISOString().split('T')[0],
     status: balanceRemaining <= 0 && total > 0 ? 'Lunas' : (paid > 0 ? 'DP Dibayar' : 'Belum Bayar'),
     reviewStatus: 'Draft',
     shipmentId: shipment.id,
@@ -1112,16 +1392,56 @@ function ensureDraftInvoiceForShipment(shipment: any) {
   });
 }
 
-app.post('/api/shipments', (req: Request, res: Response) => {
-  const shipment = insertItem('shipments', req.body);
+const SHIPMENT_STATUSES = ['Packing', 'Surat Jalan Dibuat', 'Picked Up', 'In Transit', 'Delivered'];
+
+/*
+ * SOP-16 gate, on the server this time: the browser checked for a QC Accept
+ * before offering the form, but the API took any body. A surat jalan for an
+ * order that failed QC, or for no order at all, drove the order to "Dikirim".
+ */
+function shipmentBlockReason(body: any, existing?: any): string | null {
+  const orderId = body?.orderId ?? existing?.orderId;
+  if (!orderId) return 'Surat jalan harus terhubung ke pesanan.';
+  const order = findById('orders', orderId);
+  if (!order) return `Pesanan ${orderId} tidak ditemukan.`;
+  if (order.status === 'Cancelled') return `Pesanan ${orderId} sudah dibatalkan.`;
+  if (body?.status !== undefined && !SHIPMENT_STATUSES.includes(String(body.status))) {
+    return `Status pengiriman "${body.status}" tidak dikenal.`;
+  }
+  const spks = readTable('spk_produksi').filter((s: any) => s.orderId === orderId);
+  if (spks.length === 0) return `Pesanan ${orderId} belum punya SPK, jadi belum ada yang bisa dikirim.`;
+  if (!spks.some((s: any) => spkQcAccepted(s.id))) {
+    return `Hasil QC pesanan ${orderId} belum berstatus Accept. Selesaikan pemeriksaan QC dulu.`;
+  }
+  if (!existing) {
+    const open = readTable('shipments').find((s: any) => s.orderId === orderId && s.status !== 'Delivered');
+    if (open) return `Pesanan ${orderId} sudah punya surat jalan ${open.id} yang masih berjalan.`;
+  }
+  return null;
+}
+
+app.post('/api/shipments', requireModule('Shipping'), (req: Request, res: Response) => {
+  const blocked = shipmentBlockReason(req.body);
+  if (blocked) return res.status(409).json({ error: blocked });
+  if (req.body?.id && findById('shipments', req.body.id)) {
+    return res.status(409).json({ error: `Nomor surat jalan ${req.body.id} sudah dipakai.` });
+  }
+  const shipment = insertItem('shipments', { ...req.body, id: req.body?.id || nextId('shipments', 'SJ') });
   const draftInvoice = ensureDraftInvoiceForShipment(shipment);
+  if (SHIPPED_STATUSES.includes(shipment.status)) completeSpkForOrder(shipment.orderId);
+  syncOrderStatus(shipment.orderId);
   res.status(201).json({ ...shipment, draftInvoiceId: draftInvoice?.id });
 });
 
-app.put('/api/shipments/:id', (req: Request, res: Response) => {
+app.put('/api/shipments/:id', requireModule('Shipping'), (req: Request, res: Response) => {
+  const existing = findById('shipments', req.params.id);
+  if (!existing) return res.status(404).json({ error: 'Data tidak ditemukan.' });
+  const blocked = shipmentBlockReason(req.body, existing);
+  if (blocked) return res.status(409).json({ error: blocked });
   const shipment = updateItem('shipments', req.params.id, req.body);
-  if (!shipment) return res.status(404).json({ error: 'Data tidak ditemukan.' });
   const draftInvoice = ensureDraftInvoiceForShipment(shipment);
+  if (SHIPPED_STATUSES.includes(shipment.status)) completeSpkForOrder(shipment.orderId);
+  syncOrderStatus(shipment.orderId);
   res.json({ ...shipment, draftInvoiceId: draftInvoice?.id });
 });
 
@@ -1212,7 +1532,7 @@ app.post('/api/store/referrals/validate', (req: Request, res: Response) => {
 });
 
 // Referral Payout / Disbursement
-app.post('/api/store/referrals/:id/payout', (req: Request, res: Response) => {
+app.post('/api/store/referrals/:id/payout', requireModule('Accounts'), (req: Request, res: Response) => {
   const referral = findById('store_referrals', req.params.id);
   if (!referral) return res.status(404).json({ error: 'Mitra referral tidak ditemukan.' });
 
@@ -1483,7 +1803,6 @@ app.post('/api/store/checkout', async (req: Request, res: Response) => {
     total: grandTotal,
     downPaymentReceived: 0,
     balanceRemaining: grandTotal,
-    dueDate: new Date(Date.now() + 1 * 86400000).toISOString().split('T')[0],
     status: 'Belum Bayar',
     paymentMethod: chosenMethod,
     reviewStatus: 'Sent',
@@ -1544,7 +1863,7 @@ app.post('/api/store/checkout', async (req: Request, res: Response) => {
 // PAYMENT GATEWAY: CONFIG, INSTANT SIMULATION & WEBHOOKS
 // ---------------------------------------------------------
 
-app.get('/api/payment/settings', (_req: Request, res: Response) => {
+app.get('/api/payment/settings', requireModule('Accounts'), (_req: Request, res: Response) => {
   const settings = readTable('store_settings');
   const paymentConfig = settings.find(s => s.id === 'PAYMENT_CONFIG') || {
     id: 'PAYMENT_CONFIG',
@@ -1554,10 +1873,10 @@ app.get('/api/payment/settings', (_req: Request, res: Response) => {
     midtrans: { merchantId: '', clientKey: '', serverKey: '', isProduction: false },
     tripay: { merchantCode: '', apiKey: '', privateKey: '', isProduction: false }
   };
-  res.json(paymentConfig);
+  res.json(stripSensitive(paymentConfig));
 });
 
-app.post('/api/payment/settings', (req: Request, res: Response) => {
+app.post('/api/payment/settings', requireModule('Accounts'), (req: Request, res: Response) => {
   const existing = findById('store_settings', 'PAYMENT_CONFIG');
   const payload = { ...req.body, id: 'PAYMENT_CONFIG' };
   let updated;
@@ -1570,7 +1889,7 @@ app.post('/api/payment/settings', (req: Request, res: Response) => {
 });
 
 // Simulate Instant Payment Success (Sandbox / Live Demo)
-app.post('/api/payment/simulate-success', async (req: Request, res: Response) => {
+app.post('/api/payment/simulate-success', requireModule('Accounts'), async (req: Request, res: Response) => {
   const { storeOrderId, paymentMethod } = req.body;
   const storeOrder = findById('store_orders', storeOrderId);
 
@@ -1681,7 +2000,7 @@ app.post('/api/payment/webhook', (req: Request, res: Response) => {
 // DIGIFLAZZ PPOB & DIGITAL GOODS INTEGRATION
 // ---------------------------------------------------------
 
-app.get('/api/digiflazz/settings', (_req: Request, res: Response) => {
+app.get('/api/digiflazz/settings', requireModule('Accounts'), (_req: Request, res: Response) => {
   const settings = readTable('store_settings');
   const digiConfig = settings.find(s => s.id === 'DIGIFLAZZ_CONFIG') || {
     id: 'DIGIFLAZZ_CONFIG',
@@ -1692,10 +2011,10 @@ app.get('/api/digiflazz/settings', (_req: Request, res: Response) => {
     autoMarkupType: 'fixed',
     autoMarkupValue: 1500
   };
-  res.json(digiConfig);
+  res.json(stripSensitive(digiConfig));
 });
 
-app.post('/api/digiflazz/settings', (req: Request, res: Response) => {
+app.post('/api/digiflazz/settings', requireModule('Accounts'), (req: Request, res: Response) => {
   const existing = findById('store_settings', 'DIGIFLAZZ_CONFIG');
   const payload = { ...req.body, id: 'DIGIFLAZZ_CONFIG' };
   let updated;
@@ -1708,7 +2027,7 @@ app.post('/api/digiflazz/settings', (req: Request, res: Response) => {
 });
 
 // Digiflazz Cek Saldo Real-Time
-app.post('/api/digiflazz/balance', async (req: Request, res: Response) => {
+app.post('/api/digiflazz/balance', requireModule('Accounts'), async (req: Request, res: Response) => {
   const settings = readTable('store_settings');
   const config = settings.find(s => s.id === 'DIGIFLAZZ_CONFIG');
 
@@ -1767,7 +2086,7 @@ app.post('/api/digiflazz/balance', async (req: Request, res: Response) => {
 });
 
 // Digiflazz Sync Price List
-app.post('/api/digiflazz/price-list', async (req: Request, res: Response) => {
+app.post('/api/digiflazz/price-list', requireModule('Accounts'), async (req: Request, res: Response) => {
   const settings = readTable('store_settings');
   const config = settings.find(s => s.id === 'DIGIFLAZZ_CONFIG');
   const cachedProducts = readTable('digiflazz_products');
@@ -1854,7 +2173,7 @@ app.post('/api/digiflazz/price-list', async (req: Request, res: Response) => {
 });
 
 // Digiflazz Execute Digital Topup
-app.post('/api/digiflazz/topup', async (req: Request, res: Response) => {
+app.post('/api/digiflazz/topup', requireModule('Accounts'), async (req: Request, res: Response) => {
   const { customer_no, buyer_sku_code, max_price } = req.body;
 
   if (!customer_no || !buyer_sku_code) {
@@ -1967,7 +2286,7 @@ app.post('/api/digiflazz/webhook', (req: Request, res: Response) => {
  * running the same import twice updates rather than duplicates — the operator
  * will re-run it after fixing the spreadsheet.
  */
-app.post('/api/import/commit', requireStaff, (req: Request, res: Response) => {
+app.post('/api/import/commit', requireModule('Orders'), (req: Request, res: Response) => {
   const { monthLabel, orders = [], samples = [], applyBreakdown = true } = req.body || {};
   if (!Array.isArray(orders) || !Array.isArray(samples)) {
     return res.status(400).json({ error: 'Isi impor tidak dikenali.' });
@@ -1975,6 +2294,13 @@ app.post('/api/import/commit', requireStaff, (req: Request, res: Response) => {
 
   const source = String(monthLabel || 'IMPOR').trim();
   const normalise = (value: unknown) => String(value ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const sourceSlug = normalise(source).slice(0, 8) || 'IMPOR';
+  const freeId = (table: string, base: string) => {
+    let id = base;
+    let n = 2;
+    while (findById(table, id)) id = `${base}-${n++}`;
+    return id;
+  };
 
   const customers = readTable('customers');
   const report = {
@@ -1986,14 +2312,14 @@ app.post('/api/import/commit', requireStaff, (req: Request, res: Response) => {
     breakdownHeld: 0
   };
 
-  /** Reuse a customer whose name contains the brand, or register a new one. */
+  /**
+   * Reuse the customer whose name or company is the brand, or register a new
+   * one. Exact after normalising: a substring match filed "ALI" under
+   * "PT ALINA MANDIRI".
+   */
   function resolveCustomer(brand: string): any {
     const key = normalise(brand);
-    const existing = customers.find(c => {
-      const a = normalise(c.company);
-      const b = normalise(c.name);
-      return (a && (a.includes(key) || key.includes(a))) || (b && (b.includes(key) || key.includes(b)));
-    });
+    const existing = customers.find(c => normalise(c.company) === key || normalise(c.name) === key);
     if (existing) return existing;
 
     /*
@@ -2079,17 +2405,29 @@ app.post('/api/import/commit', requireStaff, (req: Request, res: Response) => {
 
     const existing = readTable('orders').find((o: any) => o.importKey === importKey);
     if (existing) {
-      updateItem('orders', existing.id, payload);
+      /*
+       * A re-run fills in what is still blank. Values already corrected in the
+       * app — a deadline, a size breakdown, a note — are not put back to the
+       * spreadsheet's version.
+       */
+      const fillOnly = Object.fromEntries(
+        Object.entries(payload).filter(([field, value]) => {
+          if (value === undefined) return false;
+          const current = existing[field];
+          return current === undefined || current === null || current === '' || current === 0;
+        })
+      );
+      updateItem('orders', existing.id, fillOnly);
       report.ordersUpdated.push(existing.id);
     } else {
-      const orderRows = readTable('orders');
+      // Row 12 of next month's file is not row 12 of this one: the id carries
+      // the source, and is bumped if a hand-typed record already took it.
       const created = insertItem('orders', {
-        id: `ORD-IMP-${String(row.sourceRow).padStart(3, '0')}`,
+        id: freeId('orders', `ORD-IMP-${sourceSlug}-${String(row.sourceRow).padStart(3, '0')}`),
         po: `PO-${normalise(brand).slice(0, 6)}-${String(row.sourceRow).padStart(3, '0')}`,
         status: 'Order',
         ...payload
       });
-      void orderRows;
       report.ordersCreated.push(created.id);
     }
   }
@@ -2117,7 +2455,10 @@ app.post('/api/import/commit', requireStaff, (req: Request, res: Response) => {
     if (existing) {
       updateItem('samples', existing.id, payload);
     } else {
-      const created = insertItem('samples', { id: `SMP-IMP-${String(row.sourceRow).padStart(3, '0')}`, ...payload });
+      const created = insertItem('samples', {
+        id: freeId('samples', `SMP-IMP-${sourceSlug}-${String(row.sourceRow).padStart(3, '0')}`),
+        ...payload
+      });
       report.samplesCreated.push(created.id);
     }
   }
@@ -2132,25 +2473,34 @@ app.post('/api/import/commit', requireStaff, (req: Request, res: Response) => {
   });
 });
 
-app.post('/api/sync', (req: Request, res: Response) => {
+app.post('/api/sync', requireStaff, (req: Request, res: Response) => {
   const { table, action, payload } = req.body;
   if (!table || !action || !payload) {
     return res.status(400).json({ error: 'Data sinkronisasi tidak valid.' });
   }
 
   const syncTable = TABLE_MAP[String(table).toLowerCase()] || String(table).toLowerCase();
+  if (!KNOWN_TABLES.has(syncTable)) return res.status(404).json({ error: `Tabel "${table}" tidak dikenal.` });
+  const syncBlocked = writeBlockReason(actorUser(req), syncTable) || gateFieldBlockReason(actorUser(req), payload);
+  if (syncBlocked) return res.status(403).json({ error: syncBlocked });
   if (action === 'CREATE' && syncTable === 'spk_produksi') {
     const reason = spkBlockReason(payload.orderId);
     if (reason) return res.status(409).json({ error: reason });
   }
 
   try {
+    // Replayed offline writes follow the same rules as live ones.
     if (action === 'CREATE') {
-      insertItem(table, payload);
+      if (payload.id && findById(syncTable, payload.id)) {
+        return res.status(409).json({ error: `Nomor ${payload.id} sudah dipakai.` });
+      }
+      advanceOrderAfterWrite(syncTable, insertItem(syncTable, payload));
     } else if (action === 'UPDATE') {
-      updateItem(table, payload.id, payload);
+      advanceOrderAfterWrite(syncTable, updateItem(syncTable, payload.id, payload));
     } else if (action === 'DELETE') {
-      deleteItem(table, payload.id);
+      const blocked = deleteBlockReason(syncTable, payload.id);
+      if (blocked) return res.status(409).json({ error: blocked });
+      if (deleteItem(syncTable, payload.id)) cleanUpAfterDelete(syncTable, payload.id);
     }
     res.json({ success: true });
   } catch (err: any) {
@@ -2241,18 +2591,23 @@ const CUSTOMER_WRITE_RULES: Record<string, CustomerWriteRule> = {
     allow: ['status', 'notes', 'feedback', 'approvedAt'],
     enums: { status: ['Approved', 'Revision', 'Revision Requested', 'Rejected'] }
   },
-  invoices: {
-    methods: ['PUT'],
-    allow: ['proofUrl', 'updatedAt'],
-    // The amount a customer claims to have paid is a claim, not a receipt.
-    // Finance still records the real money through /api/payments/record.
-    rename: { downPaymentReceived: 'proofAmountClaimed' },
-    force: { status: 'Menunggu Verifikasi' }
-  },
   returns_complaints: {
     methods: ['POST'],
-    allow: ['orderId', 'category', 'quantity', 'description', 'photoUrl', 'createdAt'],
-    force: { status: 'Diajukan' }
+    // The names the Retur screen reads; the old list ('category', 'photoUrl')
+    // matched nothing the portal sent, so every complaint arrived empty.
+    allow: ['orderId', 'defectCategory', 'defectQty', 'description', 'customerEvidenceUrls', 'complaintDate'],
+    force: { status: 'Submitted', actionTaken: 'Perbaikan Gratis' }
+  },
+  /*
+   * The portal's one step in the flow: ACC the mockup. Money never enters
+   * through the portal — the customer sends transfer proof over WhatsApp and
+   * the order's PIC records and verifies it in Keuangan, so there is no
+   * payments or invoices rule here and a customer POST/PUT to either is 403.
+   */
+  designs: {
+    methods: ['PUT'],
+    allow: ['status', 'approvedBy', 'approvedAt', 'feedback', 'notes'],
+    enums: { status: ['Approved', 'Revision Requested'] }
   }
 };
 
@@ -2271,8 +2626,15 @@ function hashIncomingPassword(table: string, body: any) {
   return { ...body, password: hashPassword(plain) };
 }
 
-const ownsRecord = (record: any, customerId: string) =>
-  String(record?.customerId || '').toLowerCase() === String(customerId).toLowerCase();
+const sameCustomer = (a: unknown, b: unknown) =>
+  !!a && String(a).toLowerCase() === String(b).toLowerCase();
+
+/** A design often carries no customerId of its own; the order it belongs to does. */
+const ownsRecord = (record: any, customerId: string) => {
+  if (sameCustomer(record?.customerId, customerId)) return true;
+  if (record?.orderId) return sameCustomer(findById('orders', record.orderId)?.customerId, customerId);
+  return false;
+};
 
 /** Returns the sanitised body, or an error string explaining the refusal. */
 function customerWriteBody(
@@ -2306,29 +2668,224 @@ function customerWriteBody(
   return { body: clean };
 }
 
+/*
+ * Stage records written through the generic routes (QC reports, SPK progress,
+ * payments entered by hand) move the order along the same way the dedicated
+ * routes do.
+ */
+function advanceOrderAfterWrite(tableName: string, item: any): any | null {
+  if (!item) return null;
+  let fresh: any = null;
+  if (tableName === 'spk_produksi') {
+    fresh = recomputeSpk(item.id);
+  } else if (SPK_SOURCE_TABLES.includes(tableName)) {
+    const spk = recomputeSpk(item.spkId);
+    if (spk) syncOrderStatus(spk.orderId);
+  }
+  if (tableName === 'payments') {
+    const invoice = item.invoiceId ? activeInvoiceFor(item.invoiceId) : activeInvoiceForOrder(item.orderId);
+    if (invoice) reconcileInvoice(invoice.id);
+    reconcileOrderPayments(item.orderId);
+    return null;
+  }
+  if (item.orderId && ['spk_produksi', 'qc_reports', 'shipments', 'invoices'].includes(tableName)) {
+    syncOrderStatus(item.orderId);
+  }
+  // An order re-pointed at another template hands its SPK the new chart.
+  if (tableName === 'orders' && item.sizeChartId) {
+    const spk = readTable('spk_produksi').find((s: any) => s.orderId === item.id);
+    if (spk && spk.sizeChartId !== item.sizeChartId) {
+      updateItem('spk_produksi', spk.id, sizeChartSnapshot(item.sizeChartId));
+    }
+  }
+  return fresh;
+}
+
+/**
+ * Why a record may not be deleted, or null. An order that already has an SPK,
+ * money or a shipment behind it is history: removing it left invoices and
+ * payments pointing at nothing, and the next order could inherit its id.
+ */
+function deleteBlockReason(tableName: string, id: string): string | null {
+  if (tableName === 'orders') {
+    const spk = readTable('spk_produksi').find((s: any) => s.orderId === id);
+    if (spk) {
+      return `Pesanan ${id} sudah punya SPK ${spk.id}. Hapus SPK-nya dulu di menu Surat Perintah Kerja kalau pesanan ini memang batal.`;
+    }
+    const payments = readTable('payments').filter((p: any) => p.orderId === id && p.status !== 'Rejected');
+    if (payments.length > 0) {
+      return `Pesanan ${id} sudah punya ${payments.length} pembayaran di Keuangan, jadi tidak bisa dihapus.`;
+    }
+    const shipment = readTable('shipments').find((s: any) => s.orderId === id);
+    if (shipment) return `Pesanan ${id} sudah punya surat jalan ${shipment.id}, jadi tidak bisa dihapus.`;
+  }
+  if (tableName === 'customers') {
+    const orders = readTable('orders').filter((o: any) => o.customerId === id);
+    const quotations = readTable('quotations').filter((q: any) => q.customerId === id);
+    if (orders.length > 0 || quotations.length > 0) {
+      return `Pelanggan ${id} masih punya ${orders.length} pesanan dan ${quotations.length} penawaran. Nonaktifkan akunnya saja.`;
+    }
+  }
+  if (tableName === 'quotations') {
+    const quotation = findById('quotations', id);
+    if (quotation?.supersededBy) {
+      return `Penawaran ${id} adalah riwayat revisi yang sudah diganti ${quotation.supersededBy}, jadi disimpan.`;
+    }
+    if (quotation?.orderId && findById('orders', quotation.orderId)) {
+      return `Penawaran ${id} sudah deal menjadi pesanan ${quotation.orderId}. Hapus pesanannya dulu kalau deal ini batal.`;
+    }
+  }
+  return null;
+}
+
+/** What goes with a deleted record, so nothing is left pointing at it. */
+function cleanUpAfterDelete(tableName: string, id: string) {
+  if (tableName === 'spk_produksi') {
+    for (const table of SPK_SOURCE_TABLES) {
+      for (const row of readTable(table).filter((r: any) => r.spkId === id)) deleteItem(table, row.id);
+    }
+    return;
+  }
+  if (tableName !== 'orders') return;
+  // Only unpaid invoices reach here (deleteBlockReason refuses paid orders).
+  for (const invoice of readTable('invoices').filter((i: any) => i.orderId === id)) {
+    deleteItem('invoices', invoice.id);
+  }
+  // The deal goes back to waiting instead of pointing at an order that is gone.
+  for (const quotation of readTable('quotations').filter((q: any) => q.orderId === id)) {
+    updateItem('quotations', quotation.id, { orderId: '', status: 'Sent' });
+  }
+  /*
+   * Designs, samples and purchases stay (they are real work) but let go of the
+   * order, so an order later given the same number never inherits them.
+   */
+  for (const table of ['designs', 'samples', 'procurements']) {
+    for (const row of readTable(table).filter((r: any) => r.orderId === id)) {
+      updateItem(table, row.id, { orderId: '' });
+    }
+  }
+}
+
+/*
+ * Only known tables. Any name used to create a fresh JSON file in the data
+ * folder; a typo in a client call quietly became a new table.
+ */
+const KNOWN_TABLES = new Set(Object.values(TABLE_MAP));
+function resolveTable(req: Request, res: Response): string | null {
+  const key = String(req.params.resource || '').toLowerCase();
+  const tableName = TABLE_MAP[key] || key;
+  if (!KNOWN_TABLES.has(tableName)) {
+    res.status(404).json({ error: `Tabel "${key}" tidak dikenal.` });
+    return null;
+  }
+  return tableName;
+}
+
+/** The staff record behind the request; the token alone is not trusted for permissions. */
+const actorUser = (req: Request) => (req.actor?.type === 'internal' ? findById('users', req.actor.sub) : null);
+
+/**
+ * Fields that unlock the SPK gates. They are set through the checklist by
+ * people whose role allows it; carried in an ordinary edit they would let a
+ * production account wave its own DP through.
+ */
+const GATE_FIELDS: Record<string, string[]> = {
+  specialTermsApprovedBy: [], // role-checked below
+  specialTermsApprovedAt: [],
+  sampleWaivedBy: ['PPIC'],
+  sampleWaivedAt: ['PPIC'],
+  sampleWaivedReferenceOrderId: ['PPIC', 'Orders'],
+  materialConfirmedBy: ['PPIC'],
+  materialConfirmedAt: ['PPIC']
+};
+function gateFieldBlockReason(user: any, body: any): string | null {
+  if (!body || typeof body !== 'object') return null;
+  if (user?.role === 'Super Admin') return null;
+  for (const [field, modules] of Object.entries(GATE_FIELDS)) {
+    if (body[field] === undefined) continue;
+    if (field.startsWith('specialTerms')) {
+      if (!canApproveSpecialTerms(user?.role)) return 'Termin khusus hanya bisa disetujui Owner atau Super Admin.';
+      continue;
+    }
+    if (!modules.some(m => canOpen(user, m))) {
+      return 'Syarat SPK hanya bisa diubah dari menu Surat Perintah Kerja oleh PPIC.';
+    }
+  }
+  return null;
+}
+
 app.get('/api/:resource', requireStaff, (req: Request, res: Response) => {
-  const tableName = TABLE_MAP[req.params.resource.toLowerCase()] || req.params.resource.toLowerCase();
+  const tableName = resolveTable(req, res);
+  if (!tableName) return;
+  const blocked = readBlockReason(actorUser(req), tableName);
+  if (blocked) return res.status(403).json({ error: blocked });
   const data = readTable(tableName);
   res.json(stripSensitive(data));
 });
 
 app.get('/api/:resource/:id', requireStaff, (req: Request, res: Response) => {
-  const tableName = TABLE_MAP[req.params.resource.toLowerCase()] || req.params.resource.toLowerCase();
+  const tableName = resolveTable(req, res);
+  if (!tableName) return;
+  const blocked = readBlockReason(actorUser(req), tableName);
+  if (blocked) return res.status(403).json({ error: blocked });
   const item = findById(tableName, req.params.id);
   if (!item) return res.status(404).json({ error: 'Data tidak ditemukan.' });
   res.json(stripSensitive(item));
 });
 
 app.post('/api/:resource', requireAuth, (req: Request, res: Response) => {
-  const tableName = TABLE_MAP[req.params.resource.toLowerCase()] || req.params.resource.toLowerCase();
+  const tableName = resolveTable(req, res);
+  if (!tableName) return;
 
   if (req.actor!.type === 'customer') {
     const result = customerWriteBody(tableName, 'POST', req.body, req.actor!.sub);
     if ('error' in result) return res.status(403).json({ error: result.error });
-    return res.status(201).json(stripSensitive(insertItem(tableName, result.body)));
+    const body: Record<string, unknown> = result.body;
+
+    if (tableName === 'returns_complaints') {
+      const order = body.orderId ? findById('orders', String(body.orderId)) : null;
+      if (!order || !sameCustomer(order.customerId, req.actor!.sub)) {
+        return res.status(403).json({ error: 'Pesanan ini bukan milik akun Anda.' });
+      }
+      if (!String(body.description || '').trim()) {
+        return res.status(400).json({ error: 'Tuliskan rincian masalahnya.' });
+      }
+      const customer = findById('customers', req.actor!.sub);
+      body.id = nextId('returns_complaints', 'RMA');
+      body.customerName = customer?.name || order.customerName;
+      body.contactPhone = customer?.contact || customer?.phone || '-';
+      body.complaintDate = body.complaintDate || new Date().toISOString().split('T')[0];
+      body.defectQty = Number(body.defectQty) || 0;
+    }
+
+    if (tableName === 'payments') {
+      if (!(Number(body.amount) > 0)) {
+        return res.status(400).json({ error: 'Isi nominal yang Anda transfer.' });
+      }
+      // Proof may only be filed against the customer's own order and invoice.
+      const order = body.orderId ? findById('orders', String(body.orderId)) : null;
+      if (!order || !sameCustomer(order.customerId, req.actor!.sub)) {
+        return res.status(403).json({ error: 'Pesanan ini bukan milik akun Anda.' });
+      }
+      const invoice = body.invoiceId ? activeInvoiceFor(String(body.invoiceId)) : activeInvoiceForOrder(order.id);
+      body.invoiceId = invoice && invoice.orderId === order.id ? invoice.id : '';
+      body.customerName = order.customerName;
+      body.id = nextId('payments', 'PAY');
+    }
+
+    return res.status(201).json(stripSensitive(insertItem(tableName, body)));
   }
 
+  const staff = actorUser(req);
+  const writeBlocked = writeBlockReason(staff, tableName) || gateFieldBlockReason(staff, req.body);
+  if (writeBlocked) return res.status(403).json({ error: writeBlocked });
+
   req.body = hashIncomingPassword(tableName, req.body);
+
+  // Re-using an id overwrote nothing but made every later lookup hit the wrong row.
+  if (req.body?.id && findById(tableName, req.body.id)) {
+    return res.status(409).json({ error: `Nomor ${req.body.id} sudah dipakai. Muat ulang halaman lalu simpan lagi.` });
+  }
 
   if (tableName === 'spk_produksi') {
     const reason = spkBlockReason(req.body?.orderId);
@@ -2363,11 +2920,13 @@ app.post('/api/:resource', requireAuth, (req: Request, res: Response) => {
   }
 
   const item = insertItem(tableName, req.body);
-  res.status(201).json(item);
+  const fresh = advanceOrderAfterWrite(tableName, item) || item;
+  res.status(201).json(fresh);
 });
 
 app.put('/api/:resource/:id', requireAuth, (req: Request, res: Response) => {
-  const tableName = TABLE_MAP[req.params.resource.toLowerCase()] || req.params.resource.toLowerCase();
+  const tableName = resolveTable(req, res);
+  if (!tableName) return;
 
   if (req.actor!.type === 'customer') {
     const existing = findById(tableName, req.params.id);
@@ -2380,6 +2939,20 @@ app.put('/api/:resource/:id', requireAuth, (req: Request, res: Response) => {
     const updated = updateItem(tableName, req.params.id, result.body);
     if (!updated) return res.status(404).json({ error: 'Data tidak ditemukan.' });
     return res.json(stripSensitive(updated));
+  }
+
+  const staff = actorUser(req);
+  const writeBlocked = writeBlockReason(staff, tableName) || gateFieldBlockReason(staff, req.body);
+  if (writeBlocked) return res.status(403).json({ error: writeBlocked });
+  if (tableName === 'users') {
+    const usersBlocked = usersWriteBlockReason(req.actor!.sub, 'PUT', req.params.id, req.body, readTable('users'));
+    if (usersBlocked) return res.status(403).json({ error: usersBlocked });
+  }
+  // The SPK's figures are owned by the recompute below; a stale status or
+  // progress sent along with an edit must not win over the records.
+  if (tableName === 'spk_produksi' && req.body && typeof req.body === 'object') {
+    const { status: _status, progress: _progress, ...rest } = req.body;
+    req.body = rest;
   }
 
   req.body = hashIncomingPassword(tableName, req.body);
@@ -2413,23 +2986,74 @@ app.put('/api/:resource/:id', requireAuth, (req: Request, res: Response) => {
 
   const item = updateItem(tableName, req.params.id, req.body);
   if (!item) return res.status(404).json({ error: 'Data tidak ditemukan.' });
-  res.json(stripSensitive(item));
+  const fresh = advanceOrderAfterWrite(tableName, item) || item;
+  res.json(stripSensitive(fresh));
 });
 
 app.delete('/api/:resource/:id', requireStaff, (req: Request, res: Response) => {
-  const tableName = TABLE_MAP[req.params.resource.toLowerCase()] || req.params.resource.toLowerCase();
+  const tableName = resolveTable(req, res);
+  if (!tableName) return;
+  const writeBlocked = writeBlockReason(actorUser(req), tableName);
+  if (writeBlocked) return res.status(403).json({ error: writeBlocked });
+  if (tableName === 'users') {
+    const usersBlocked = usersWriteBlockReason(req.actor!.sub, 'DELETE', req.params.id, null, readTable('users'));
+    if (usersBlocked) return res.status(403).json({ error: usersBlocked });
+  }
+  const blocked = deleteBlockReason(tableName, req.params.id);
+  if (blocked) return res.status(409).json({ error: blocked });
+  const victim = findById(tableName, req.params.id);
   const success = deleteItem(tableName, req.params.id);
   if (!success) return res.status(404).json({ error: 'Data tidak ditemukan.' });
+  cleanUpAfterDelete(tableName, req.params.id);
+  if (SPK_SOURCE_TABLES.includes(tableName)) recomputeSpk(victim?.spkId);
   res.json({ success: true });
 });
 
 // Serve frontend in production
 const DIST_DIR = path.join(process.cwd(), 'dist');
+// An unknown API path is a 404, not the app shell.
+app.all('/api/*', (_req: Request, res: Response) => {
+  res.status(404).json({ error: 'Alamat API tidak dikenal.' });
+});
+
 if (fs.existsSync(DIST_DIR)) {
   app.use(express.static(DIST_DIR));
   app.get('*', (_req: Request, res: Response) => {
     res.sendFile(path.join(DIST_DIR, 'index.html'));
   });
+}
+
+/*
+ * Anything a handler throws ends here as JSON the client can show, instead of
+ * Express's HTML page with the stack trace in it.
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
+  console.error('Unhandled error:', err);
+  if (res.headersSent) return;
+  const status = Number(err?.status || err?.statusCode) || 500;
+  const message = err?.type === 'entity.parse.failed'
+    ? 'Isi permintaan bukan JSON yang valid.'
+    : status === 413
+      ? 'Berkas atau data terlalu besar.'
+      : 'Terjadi kesalahan di server. Coba lagi; kalau berulang, hubungi admin.';
+  res.status(status).json({ error: message });
+});
+
+process.on('unhandledRejection', reason => {
+  console.error('Unhandled rejection:', reason);
+});
+
+/*
+ * Orders recorded before status followed the downstream stages sat at
+ * "Diproduksi" however far they had got. Forward-only, so a status someone set
+ * by hand is never pulled back.
+ */
+{
+  const spks = recomputeAllSpks();
+  if (spks > 0) console.log(`   Progres ${spks} SPK dihitung ulang dari catatan produksi.`);
+  const moved = syncAllOrderStatuses();
+  if (moved > 0) console.log(`   Status ${moved} pesanan disesuaikan dengan SPK/QC/pengiriman/pembayaran.`);
 }
 
 app.listen(PORT, () => {

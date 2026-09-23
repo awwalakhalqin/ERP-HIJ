@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { logoutApi, getAuthToken, AUTH_EXPIRED_EVENT } from './services/api';
+import { setAuthToken } from './services/api';
 import { MODULE_SECTIONS } from './config/modules';
 import { 
   LayoutDashboard, 
@@ -35,12 +36,14 @@ import {
   FileText
 } from 'lucide-react';
 import { SOPModule, AuthSession, User } from './types';
-import { db } from './db/dexie';
+import { db, syncOfflineQueue, clearCachedMirror } from './db/dexie';
 // Common Components
 import { LoginModal } from './components/common/LoginModal';
+import { isPortalSite } from './lib/site';
 import { PWAInstallBanner } from './components/common/PWAInstallBanner';
 import { Modal } from './components/ui/Modal';
 import { Button } from './components/ui/Button';
+import { Toast, useToast } from './components/ui/Toast';
 const ScannerModal = React.lazy(() => import('./components/common/ScannerModal').then(m => ({ default: m.ScannerModal })));
 
 // Customer Portal (Code-Split)
@@ -182,7 +185,14 @@ export const App: React.FC = () => {
         localStorage.removeItem('hij_auth_session');
         return null;
       }
-      return JSON.parse(saved);
+      const restored = JSON.parse(saved) as AuthSession;
+      // A staff session has no business on the portal host, nor a customer one on the ERP.
+      if ((isPortalSite && restored.type !== 'customer') || (!isPortalSite && restored.type !== 'internal')) {
+        localStorage.removeItem('hij_auth_session');
+        setAuthToken(undefined);
+        return null;
+      }
+      return restored;
     } catch {
       return null;
     }
@@ -267,32 +277,85 @@ export const App: React.FC = () => {
     document.title = label ? `${label} · HIJ Konveksi` : 'HIJ Konveksi';
   }, [currentModule]);
 
-  // Network listener & sync counter
+  const { toast, showToast } = useToast();
+
+  // Network listener, queue counter, and replay of writes made while offline
+  const isStaffSession = session?.type === 'internal';
   useEffect(() => {
-    const handleOnline = () => setIsOnline(true);
+    let cancelled = false;
+    let replaying = false;
+
+    const checkQueue = async () => {
+      try {
+        /*
+         * Queue rows carry `synced: false`; a boolean is not an IndexedDB key,
+         * so the indexed lookup this replaced always counted zero.
+         */
+        const count = await db.offlineQueue.filter(item => !item.synced).count();
+        if (!cancelled) setPendingSyncCount(count);
+      } catch {
+        // Dexie unavailable (private mode); the counter simply stays at zero.
+      }
+    };
+
+    const replayQueue = async () => {
+      // Only staff writes are queued, and the server needs their token to accept them.
+      if (replaying || !navigator.onLine || !isStaffSession) return;
+      replaying = true;
+      try {
+        const { syncedCount, failed } = await syncOfflineQueue();
+        await checkQueue();
+        if (cancelled) return;
+        if (failed.length > 0) {
+          showToast(
+            `${failed.length} perubahan offline ditolak server: ${failed[0].error}`,
+            'error'
+          );
+        } else if (syncedCount > 0) {
+          showToast(`${syncedCount} perubahan offline berhasil dikirim ke server.`);
+        }
+      } catch {
+        // Dexie unavailable; nothing was queued to begin with.
+      } finally {
+        replaying = false;
+      }
+    };
+
+    const handleOnline = () => {
+      setIsOnline(true);
+      replayQueue();
+    };
     const handleOffline = () => setIsOnline(false);
 
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
 
-    const checkQueue = async () => {
-      try {
-        const count = await db.syncQueue.where('synced').equals(0).count();
-        setPendingSyncCount(count);
-      } catch {
-        // Dexie table check fallback
-      }
-    };
-
     checkQueue();
+    replayQueue();
     const interval = setInterval(checkQueue, 4000);
 
     return () => {
+      cancelled = true;
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
       clearInterval(interval);
     };
-  }, []);
+  }, [isStaffSession, showToast]);
+
+  /*
+   * Rows mirrored in IndexedDB belong to whoever fetched them. When the session
+   * ends they are dropped, so the next person at a shared PC starts empty
+   * instead of seeing the previous user's orders while offline.
+   */
+  const forgetSession = () => {
+    localStorage.removeItem('hij_auth_session');
+    try {
+      sessionStorage.removeItem(ACTIVE_MODULE_KEY);
+    } catch {
+      // Nothing to clean up if storage is unavailable.
+    }
+    clearCachedMirror().catch(() => {});
+  };
 
   const handleLoginSuccess = (newSession: AuthSession) => {
     setSession(newSession);
@@ -309,12 +372,7 @@ export const App: React.FC = () => {
     setSession(null);
     setPreviousStaffUser(null);
     setCurrentModule('Dashboard');
-    localStorage.removeItem('hij_auth_session');
-    try {
-      sessionStorage.removeItem(ACTIVE_MODULE_KEY);
-    } catch {
-      // Nothing to clean up if storage is unavailable.
-    }
+    forgetSession();
     // The signed token outlives the session object unless it is cleared too.
     logoutApi();
   };
@@ -328,11 +386,26 @@ export const App: React.FC = () => {
     const onExpired = () => {
       setSession(null);
       setPreviousStaffUser(null);
-      localStorage.removeItem('hij_auth_session');
+      setCurrentModule('Dashboard');
+      forgetSession();
     };
     window.addEventListener(AUTH_EXPIRED_EVENT, onExpired);
     return () => window.removeEventListener(AUTH_EXPIRED_EVENT, onExpired);
   }, []);
+
+  /*
+   * Every route into a module goes through here — sidebar, dashboard tiles,
+   * the scanner, the flow guide — so a hidden menu item cannot be reached
+   * through a side door, and the refusal reads the same everywhere.
+   */
+  const staffUser = session?.type === 'internal' ? session.user : undefined;
+  const navigateTo = (module: SOPModule) => {
+    if (!canUserOpenModule(staffUser, module)) {
+      showToast('Anda tidak punya akses ke menu ini', 'error');
+      return;
+    }
+    setCurrentModule(module);
+  };
 
   const handlePreviewCustomer = (customer: any) => {
     if (session?.type === 'internal') {
@@ -363,16 +436,16 @@ export const App: React.FC = () => {
 
     if (text.startsWith('BND-')) {
       // WIP Bundle barcode detected
-      setCurrentModule('BundleTracking');
+      navigateTo('BundleTracking');
       setScanNotification(`Bundel ${text} ditemukan. Membuka Lacak Bundel.`);
     } else if (text.startsWith('SPK-')) {
-      setCurrentModule('PPIC');
+      navigateTo('PPIC');
       setScanNotification(`SPK ${text} ditemukan. Membuka Surat Perintah Kerja.`);
     } else if (text.startsWith('ORD-')) {
-      setCurrentModule('Orders');
+      navigateTo('Orders');
       setScanNotification(`Pesanan ${text} ditemukan. Membuka Pesanan.`);
     } else if (text.startsWith('ROL-') || text.startsWith('LOT-')) {
-      setCurrentModule('RawMaterial');
+      navigateTo('RawMaterial');
       setScanNotification(`Roll bahan ${text} ditemukan. Membuka Gudang Bahan Baku.`);
     } else {
       setScanNotification(`Hasil scan: ${text}`);
@@ -420,9 +493,9 @@ export const App: React.FC = () => {
 
   // Internal Staff ERP
   const user = session.user;
-  const isSuperAdmin = user.role === 'Super Admin' || user.allowedModules?.includes('*');
 
   const canOpenModule = (id: SOPModule) => canUserOpenModule(user, id);
+  const canManageAccounts = canOpenModule('Accounts');
 
   // Filter menu sections based on user role permissions
   const filteredSections = MENU_SECTIONS.map(section => ({
@@ -435,9 +508,9 @@ export const App: React.FC = () => {
     switch (currentModule) {
       case 'Dashboard':
         return (
-          <DashboardModule 
-            onNavigate={(mod) => setCurrentModule(mod)} 
-            onOpenScanner={() => setIsScannerOpen(true)} 
+          <DashboardModule
+            onNavigate={navigateTo}
+            onOpenScanner={() => setIsScannerOpen(true)}
           />
         );
       case 'Customers':
@@ -479,15 +552,15 @@ export const App: React.FC = () => {
       case 'HowItWorks':
         return (
           <HowItWorksModule
-            onNavigate={(mod) => setCurrentModule(mod)}
+            onNavigate={navigateTo}
             canOpen={canOpenModule}
           />
         );
       default:
         return (
-          <DashboardModule 
-            onNavigate={(mod) => setCurrentModule(mod)} 
-            onOpenScanner={() => setIsScannerOpen(true)} 
+          <DashboardModule
+            onNavigate={navigateTo}
+            onOpenScanner={() => setIsScannerOpen(true)}
           />
         );
     }
@@ -504,6 +577,8 @@ export const App: React.FC = () => {
           <span className="text-sm font-semibold">{scanNotification}</span>
         </div>
       )}
+
+      <Toast toast={toast} />
 
       {testModeBanner}
 
@@ -599,11 +674,11 @@ export const App: React.FC = () => {
                     <span>Profil Akun</span>
                   </button>
 
-                  {(user.role === 'Super Admin' || user.role === 'Owner') && (
+                  {canManageAccounts && (
                     <button
                       onClick={() => {
                         setIsAccountMenuOpen(false);
-                        setCurrentModule('Accounts');
+                        navigateTo('Accounts');
                       }}
                       className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-black hover:bg-teal-50 hover:text-brand-teal-dark transition-colors cursor-pointer text-left font-semibold"
                     >
@@ -615,7 +690,7 @@ export const App: React.FC = () => {
                   <button
                     onClick={() => {
                       setIsAccountMenuOpen(false);
-                      setCurrentModule('HowItWorks');
+                      navigateTo('HowItWorks');
                     }}
                     className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-black hover:bg-teal-50 hover:text-brand-teal-dark transition-colors cursor-pointer text-left font-semibold"
                   >
@@ -689,7 +764,7 @@ export const App: React.FC = () => {
                     <button
                       key={item.id}
                       onClick={() => {
-                        setCurrentModule(item.id);
+                        navigateTo(item.id);
                         setIsSidebarOpen(false);
                       }}
                       aria-current={isActive ? 'page' : undefined}
@@ -780,12 +855,12 @@ export const App: React.FC = () => {
 
             {/* Actions */}
             <div className="pt-2 flex items-center justify-end gap-2">
-              {(session.user.role === 'Super Admin' || session.user.role === 'Owner') && (
+              {canManageAccounts && (
                 <Button
                   variant="outline"
                   onClick={() => {
                     setIsProfileModalOpen(false);
-                    setCurrentModule('Accounts');
+                    navigateTo('Accounts');
                   }}
                   className="font-bold border-teal-300 text-brand-teal-dark hover:bg-teal-50"
                 >

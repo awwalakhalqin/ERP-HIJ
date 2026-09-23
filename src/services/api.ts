@@ -73,6 +73,34 @@ export async function fetchReadinessData(): Promise<ReadinessData> {
   return { payments, samples, procurements, patterns, designs };
 }
 
+export interface StaffDirectoryEntry {
+  id: string;
+  name: string;
+  role: string;
+}
+
+/** Staff accounts by name and role, for naming a PIC on quotations and orders. */
+export async function fetchStaffDirectory(): Promise<StaffDirectoryEntry[]> {
+  const res = await apiFetch(`${API_BASE}/staff-directory`);
+  if (!res.ok) return [];
+  return res.json();
+}
+
+/** SOP-20: the order's PIC confirms a transfer proof received over WhatsApp; the payment lands verified. */
+export async function approveDpApi(
+  orderId: string,
+  body: { amount: number; date?: string; bankAccount?: string; paymentMethod?: string; notes?: string }
+): Promise<{ message: string; payment: Payment; order: Order; invoice: unknown }> {
+  const res = await apiFetch(`${API_BASE}/orders/${orderId}/approve-dp`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'Gagal menyetujui DP. Coba lagi.');
+  return data;
+}
+
 /** SOP-03: asks the server to issue the SPK. Throws with the server's reason when requirements are unmet. */
 export async function issueSpkApi(
   orderId: string,
@@ -145,9 +173,14 @@ export async function createResource<T = any>(resource: string, payload: any): P
     if (res.status >= 400 && res.status < 500) {
       throw new Error(errorMsg);
     }
-    throw new Error(`Server returned status ${res.status}`);
+    throw new Error(errorMsg.startsWith('Server error') ? 'Server sedang bermasalah. Coba lagi sebentar.' : errorMsg);
   } catch (err: any) {
-    if (err.message && !err.message.includes('Failed to fetch') && !err.message.includes('NetworkError') && !err.message.includes('Server returned status 5')) {
+    /*
+     * Only a request that never reached the server is queued for later. A 5xx
+     * did reach it and failed there; reporting that as saved-offline showed a
+     * success toast over an error and a queue item the server would reject.
+     */
+    if (err.message && !err.message.includes('Failed to fetch') && !err.message.includes('NetworkError')) {
       throw err;
     }
     console.warn(`Server unreachable, saving locally in Dexie offline queue...`);
@@ -195,22 +228,36 @@ export async function updateResource<T = any>(resource: string, id: string, payl
     if (res.status >= 400 && res.status < 500) {
       throw new Error(errorMsg);
     }
-    throw new Error(`Server returned status ${res.status}`);
+    throw new Error(errorMsg.startsWith('Server error') ? 'Server sedang bermasalah. Coba lagi sebentar.' : errorMsg);
   } catch (err: any) {
-    if (err.message && !err.message.includes('Failed to fetch') && !err.message.includes('NetworkError') && !err.message.includes('Server returned status 5')) {
+    /*
+     * Only a request that never reached the server is queued for later. A 5xx
+     * did reach it and failed there; reporting that as saved-offline showed a
+     * success toast over an error and a queue item the server would reject.
+     */
+    if (err.message && !err.message.includes('Failed to fetch') && !err.message.includes('NetworkError')) {
       throw err;
     }
     console.warn(`Server unreachable, updating offline queue...`);
-    const fallbackItem = { ...payload, id };
+    const queuedPatch = { ...payload, id };
+    /*
+     * Most updates send only the changed fields. Writing that patch over the
+     * cached full row would leave a stub with no customer, quantity or price
+     * until the next fetch; merge onto what is already cached instead.
+     */
+    let fallbackItem: any = queuedPatch;
     try {
       const tableName = resource.replace('-', '');
-      if ((db as any)[tableName]) {
-        await (db as any)[tableName].put(fallbackItem);
+      const mirror = (db as any)[tableName];
+      if (mirror) {
+        const existing = await mirror.get(id).catch(() => undefined);
+        fallbackItem = { ...(existing || {}), ...queuedPatch };
+        await mirror.put(fallbackItem);
       }
       await db.offlineQueue.add({
         table: resource,
         action: 'UPDATE',
-        payload: fallbackItem,
+        payload: queuedPatch,
         timestamp: new Date().toISOString(),
         synced: false
       });
@@ -220,18 +267,9 @@ export async function updateResource<T = any>(resource: string, id: string, payl
 }
 
 export async function deleteResource(resource: string, id: string): Promise<boolean> {
+  let res: Response;
   try {
-    const res = await apiFetch(`${API_BASE}/${resource}/${id}`, { method: 'DELETE' });
-    if (res.ok) {
-      try {
-        const tableName = resource.replace('-', '');
-        if ((db as any)[tableName]) {
-          await (db as any)[tableName].delete(id);
-        }
-      } catch {}
-      return true;
-    }
-    return false;
+    res = await apiFetch(`${API_BASE}/${resource}/${id}`, { method: 'DELETE' });
   } catch (err) {
     try {
       const tableName = resource.replace('-', '');
@@ -248,7 +286,27 @@ export async function deleteResource(resource: string, id: string): Promise<bool
     } catch {}
     return true;
   }
+
+  /*
+   * A refusal is not a success. The server declines to delete an order that
+   * already has an SPK or payments, and callers used to toast "berhasil
+   * dihapus" over it because this returned false instead of throwing.
+   */
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({} as any));
+    throw new Error(data.error || `Gagal menghapus (${res.status}).`);
+  }
+  try {
+    const tableName = resource.replace('-', '');
+    if ((db as any)[tableName]) {
+      await (db as any)[tableName].delete(id);
+    }
+  } catch {}
+  return true;
 }
+
+/** fetch with the session token attached, for the few routes outside the generic CRUD helpers. */
+export const authFetch = apiFetch;
 
 export async function scanWIPBundle(bundleId: string, nextStage: string, operatorName: string, status?: string) {
   const res = await apiFetch(`${API_BASE}/wip-bundles/scan`, {
@@ -270,8 +328,10 @@ export async function uploadMedia(file: File): Promise<string> {
     method: 'POST',
     body: formData
   });
-  if (!res.ok) throw new Error('Failed to upload file');
-  const data = await res.json();
+  // The server says why it refused (type, size); that reason is the useful message.
+  const data = await res.json().catch(() => ({} as any));
+  if (!res.ok) throw new Error(data.error || `Gagal mengunggah file (${res.status}).`);
+  if (!data.url) throw new Error('Server tidak mengembalikan alamat file.');
   return data.url;
 }
 
@@ -300,10 +360,18 @@ export async function unifiedLoginApi(identifier: string, password?: string): Pr
     throw new Error('Tidak bisa menghubungi server. Periksa koneksi, lalu coba lagi.');
   }
 
-  const data = await res.json().catch(() => ({} as any));
-
+  /*
+   * Only the server's own 401 means the credentials were wrong. A dead API
+   * behind the dev proxy (502/504, HTML body) or a crashed server (500) used
+   * to fall through to the same "salah" message, sending people to retype a
+   * correct password.
+   */
+  const data = await res.json().catch(() => null);
+  if (data === null || (res.status >= 500 && !data?.error)) {
+    throw new Error(`Server ERP tidak bisa dihubungi (kode ${res.status}). Pastikan server API berjalan, lalu coba lagi.`);
+  }
   if (!res.ok || !data.success) {
-    throw new Error(data.error || 'Username atau kata sandi salah.');
+    throw new Error(data.error || (res.status === 401 ? 'Username atau kata sandi salah.' : `Login gagal (kode ${res.status}).`));
   }
 
   setAuthToken(data.token);
@@ -363,47 +431,39 @@ export async function loginCustomerApi(query: string, password: string) {
   return data.customer;
 }
 
-export async function fetchCustomerPortalDataApi(customerId: string) {
+export interface CustomerPortalData {
+  orders: any[];
+  spks: any[];
+  designs: any[];
+  samples: any[];
+  invoices: any[];
+  shipments: any[];
+  returns: any[];
+}
+
+/*
+ * The server scopes this to the signed-in customer. There is deliberately no
+ * client-side fallback: the old one fetched every customer's orders and showed
+ * the first three when nothing matched, which is another customer's data.
+ */
+export async function fetchCustomerPortalDataApi(customerId: string): Promise<CustomerPortalData> {
+  let res: Response;
   try {
-    const res = await apiFetch(`${API_BASE}/customer-portal/data/${customerId}`);
-    if (res.ok) {
-      const data = await res.json();
-      if (data && (data.orders?.length > 0 || data.spks?.length > 0)) {
-        return data;
-      }
-    }
-  } catch (err) {
-    console.warn('Customer portal API network error, falling back to local storage/resource fetch:', err);
+    res = await apiFetch(`${API_BASE}/customer-portal/data/${encodeURIComponent(customerId)}`);
+  } catch {
+    throw new Error('Tidak bisa menghubungi server. Periksa koneksi, lalu muat ulang.');
   }
-
-  // Graceful fallback from individual tables
-  const [orders, spks, designs, samples, invoices, shipments, returns] = await Promise.all([
-    fetchResource<any>('orders').catch(() => []),
-    fetchResource<any>('spk_produksi').catch(() => []),
-    fetchResource<any>('designs').catch(() => []),
-    fetchResource<any>('samples').catch(() => []),
-    fetchResource<any>('invoices').catch(() => []),
-    fetchResource<any>('shipments').catch(() => []),
-    fetchResource<any>('returns_complaints').catch(() => [])
-  ]);
-
-  const cleanId = String(customerId || '').toLowerCase();
-  const filterByCust = (items: any[]) => {
-    const filtered = items.filter(item => 
-      String(item.customerId || '').toLowerCase() === cleanId || 
-      String(item.customerName || '').toLowerCase().includes('arkato')
-    );
-    return filtered.length > 0 ? filtered : items.slice(0, 3);
-  };
-
+  if (res.status === 401 || res.status === 403) throw new AuthExpiredError();
+  const data = await res.json().catch(() => ({} as any));
+  if (!res.ok) throw new Error(data.error || `Gagal memuat data pesanan (${res.status}).`);
   return {
-    orders: filterByCust(orders),
-    spks: filterByCust(spks),
-    designs: filterByCust(designs),
-    samples: filterByCust(samples),
-    invoices: filterByCust(invoices),
-    shipments: filterByCust(shipments),
-    returns: returns.filter(r => String(r.customerId || '').toLowerCase() === cleanId)
+    orders: data.orders || [],
+    spks: data.spks || [],
+    designs: data.designs || [],
+    samples: data.samples || [],
+    invoices: data.invoices || [],
+    shipments: data.shipments || [],
+    returns: data.returns || []
   };
 }
 

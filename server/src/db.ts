@@ -42,9 +42,24 @@ export function readTable(tableName: string): any[] {
       memoryCache[key] = Array.isArray(parsed) ? parsed : [];
       return memoryCache[key];
     } catch (e) {
-      console.warn(`Error reading ${filePath}, initializing empty:`, e);
-      memoryCache[key] = [];
-      return [];
+      /*
+       * Carrying on with an empty table would persist that emptiness over the
+       * real data on the next write — and for users.json, initAdmin would then
+       * create a fresh admin and every login would be gone. Set the damaged
+       * file aside and stop, so someone restores it from backup.
+       */
+      const aside = `${filePath}.corrupt-${Date.now()}`;
+      try {
+        fs.renameSync(filePath, aside);
+      } catch {
+        // If even the rename fails the original stays where it is.
+      }
+      console.error(`
+Tabel ${tableName} rusak dan tidak bisa dibaca: ${e}
+Berkasnya dipindahkan ke ${aside}.
+Pulihkan dari backup lalu jalankan server lagi.
+`);
+      process.exit(1);
     }
   }
 
@@ -141,9 +156,12 @@ export function updateItem(tableName: string, id: string, updates: any): any | n
   const index = records.findIndex(r => String(r.id).toLowerCase() === String(id).toLowerCase());
   if (index === -1) return null;
 
+  // A key sent as undefined means "no change", not "erase" — re-running an
+  // Excel import wiped values that had been fixed in the app.
+  const changes = Object.fromEntries(Object.entries(updates || {}).filter(([, v]) => v !== undefined));
   records[index] = {
     ...records[index],
-    ...updates,
+    ...changes,
     id: records[index].id, // keep original ID
     updatedAt: new Date().toISOString()
   };

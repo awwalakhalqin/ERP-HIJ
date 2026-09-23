@@ -56,15 +56,47 @@ export const sanitizeColorsForCanvas = (clonedDoc: Document) => {
   });
 };
 
-async function renderPage(element: HTMLElement): Promise<string> {
-  const canvas = await html2canvas(element, {
+/*
+ * html2canvas paints whatever the DOM holds at that instant. A mockup still
+ * downloading is simply missing from the PDF, with no error to explain it, so
+ * every image is given the chance to finish first. A broken URL resolves too —
+ * one unreachable picture must not hold the whole document hostage.
+ */
+async function waitForImages(element: HTMLElement): Promise<void> {
+  const images = Array.from(element.querySelectorAll('img'));
+  await Promise.all(
+    images.map(img => {
+      if (img.complete && img.naturalWidth > 0) return Promise.resolve();
+      return new Promise<void>(resolve => {
+        const done = () => resolve();
+        img.addEventListener('load', done, { once: true });
+        img.addEventListener('error', done, { once: true });
+        // A stalled request should not stall the export either.
+        setTimeout(done, 8000);
+      });
+    })
+  );
+}
+
+/*
+ * allowTaint stays off: a tainted canvas renders fine but throws on
+ * toDataURL, which is the one call every export needs. Cross-origin images
+ * are fetched with CORS instead; one that refuses is skipped, not fatal.
+ */
+async function renderToCanvas(element: HTMLElement): Promise<HTMLCanvasElement> {
+  await waitForImages(element);
+  return html2canvas(element, {
     scale: RENDER_SCALE,
     useCORS: true,
-    allowTaint: true,
+    allowTaint: false,
     backgroundColor: '#ffffff',
     logging: false,
     onclone: (clonedDoc) => sanitizeColorsForCanvas(clonedDoc)
   });
+}
+
+async function renderPage(element: HTMLElement): Promise<string> {
+  const canvas = await renderToCanvas(element);
   return canvas.toDataURL('image/jpeg', JPEG_QUALITY);
 }
 
@@ -98,15 +130,7 @@ export async function exportPagesToPdf(elementIds: string[], fileName: string) {
  */
 export async function exportElementToPdf(elementId: string, fileName: string) {
   const element = requireElement(elementId);
-
-  const canvas = await html2canvas(element, {
-    scale: RENDER_SCALE,
-    useCORS: true,
-    allowTaint: true,
-    backgroundColor: '#ffffff',
-    logging: false,
-    onclone: (clonedDoc) => sanitizeColorsForCanvas(clonedDoc)
-  });
+  const canvas = await renderToCanvas(element);
 
   const pdf = new jsPDF('p', 'mm', 'a4');
   const pageWidth = pdf.internal.pageSize.getWidth();

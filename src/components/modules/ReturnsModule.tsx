@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Search, Download, RotateCcw } from 'lucide-react';
+import { Search, Download, RotateCcw, Wrench } from 'lucide-react';
 import { CustomerReturnComplaint } from '../../types';
 import { fetchResource, updateResource } from '../../services/api';
 import { formatDate, exportTableToExcel, statusLabel } from '../../lib/utils';
@@ -9,7 +9,7 @@ import { Card } from '../ui/Card';
 import { Button } from '../ui/Button';
 import { Input } from '../ui/Input';
 import { PageHeader } from '../ui/PageHeader';
-import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell, TableRowActions, TableEmptyRow, TableSkeletonRows } from '../ui/Table';
+import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell, TableRowActions, RowActionButton, TableEmptyRow, TableSkeletonRows } from '../ui/Table';
 import { DetailDrawer, DetailSection, DetailField, DetailStats, DetailBlock, RowDetailButton } from '../ui/DetailDrawer';
 import { newestFirst } from '../../lib/ordering';
 
@@ -42,23 +42,8 @@ export const ReturnsModule: React.FC = () => {
     try {
       setLoading(true);
       const res = await fetchResource<CustomerReturnComplaint>('returns');
-      setComplaints(res.length > 0 ? res : [
-        {
-          id: 'RMA-2026-001',
-          orderId: 'ORD-001',
-          customerId: 'CUST-001',
-          customerName: 'PT Arkato Kreasi Nusantara',
-          contactPhone: '081234567890',
-          complaintDate: '2026-09-08',
-          defectCategory: 'Jahitan Lepas/Cacat',
-          defectQty: 2,
-          description: 'Ada 2 jaket yang jahitan ketiak terlepas.',
-          rootCauseAnalysis: 'Jarum tumpul pada stasiun obras line 2 & tarikan benang kurang kencang.',
-          actionTaken: 'Perbaikan Gratis',
-          status: 'Resolved',
-          resolvedAt: '2026-09-09'
-        }
-      ]);
+      // Show what is really there; an empty table is the honest state.
+      setComplaints(res || []);
     } catch (err) {
       console.error(err);
     } finally {
@@ -74,7 +59,9 @@ export const ReturnsModule: React.FC = () => {
     setSelectedComplaint(complaint);
     setRootCause(complaint.rootCauseAnalysis || '');
     setActionTaken(complaint.actionTaken || 'Perbaikan Gratis');
-    setStatus(complaint.status || 'Investigating');
+    // A complaint filed from the portal arrives as 'Submitted'; opening it
+    // means handling has begun, so the form starts at 'Investigating'.
+    setStatus(complaint.status && complaint.status !== 'Submitted' ? complaint.status : 'Investigating');
     setIsInvestigationModalOpen(true);
   };
 
@@ -90,15 +77,19 @@ export const ReturnsModule: React.FC = () => {
       });
       setIsInvestigationModalOpen(false);
       loadData();
-    } catch (err) {
-      alert('Gagal menyimpan penanganan retur. Coba lagi.');
+    } catch (err: any) {
+      alert(err?.message || 'Gagal menyimpan penanganan retur. Coba lagi.');
     }
   };
 
+  // Portal complaints may arrive without every field; never call methods on a missing one.
+  const query = searchQuery.trim().toLowerCase();
   const filteredComplaints = newestFirst(complaints.filter(c =>
-    c.id.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    c.customerName.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    c.orderId.toLowerCase().includes(searchQuery.toLowerCase())
+    !query ||
+    String(c.id || '').toLowerCase().includes(query) ||
+    String(c.customerName || '').toLowerCase().includes(query) ||
+    String(c.orderId || '').toLowerCase().includes(query) ||
+    String(c.defectCategory || '').toLowerCase().includes(query)
   ));
 
   const openInvestigateFromDetail = (complaint: CustomerReturnComplaint) => {
@@ -144,7 +135,7 @@ export const ReturnsModule: React.FC = () => {
               <TableHead className="cell-sticky-start">No. Tiket</TableHead>
               <TableHead className="hidden md:table-cell">No. Pesanan</TableHead>
               <TableHead className="hidden md:table-cell">Pelanggan</TableHead>
-              <TableHead className="hidden md:table-cell">Kontak</TableHead>
+              <TableHead className="hidden xl:table-cell">Kontak</TableHead>
               <TableHead className="hidden lg:table-cell">Masalah</TableHead>
               <TableHead className="text-center">Status</TableHead>
               <TableHead className="cell-sticky-end text-right">Aksi</TableHead>
@@ -171,32 +162,37 @@ export const ReturnsModule: React.FC = () => {
                     <span className="font-mono font-bold text-slate-900">{c.id}</span>
                   </TableCell>
                   <TableCell className="hidden md:table-cell whitespace-nowrap font-mono text-slate-700">
-                    {c.orderId}
+                    {c.orderId || '—'}
                   </TableCell>
                   <TableCell className="hidden md:table-cell font-semibold text-slate-900">
-                    {c.customerName}
+                    <span className="block max-w-[180px] truncate" title={c.customerName || ''}>
+                      {c.customerName || '—'}
+                    </span>
                   </TableCell>
-                  <TableCell className="hidden md:table-cell whitespace-nowrap font-mono text-slate-700">
+                  <TableCell className="hidden xl:table-cell whitespace-nowrap font-mono text-slate-700">
                     {c.contactPhone || '—'}
                   </TableCell>
                   <TableCell className="hidden lg:table-cell whitespace-nowrap">
-                    <Badge variant="rose">{c.defectCategory}</Badge>
+                    <Badge variant="idle" size="sm">
+                      <span className="block max-w-[160px] truncate" title={c.defectCategory || ''}>
+                        {c.defectCategory || '—'}
+                      </span>
+                    </Badge>
                   </TableCell>
                   <TableCell className="text-center whitespace-nowrap">
-                    <StatusBadge status={c.status} />
+                    <StatusBadge status={c.status} size="sm" solid />
                   </TableCell>
                   <TableCell className="cell-sticky-end text-right">
                     <TableRowActions>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
+                      <RowActionButton
+                        label="Tangani"
+                        icon={Wrench}
+                        display="labeled"
+                        tone="primary"
                         onClick={() => handleOpenInvestigate(c)}
-                        aria-label={`Tangani ${c.id}`}
-                        className="hidden sm:inline-flex h-8 px-2.5 text-xs"
-                      >
-                        Tangani
-                      </Button>
+                        ariaLabel={`Tangani ${c.id}`}
+                        title="Tangani retur"
+                      />
                       <RowDetailButton label={c.id} onClick={() => setDetailComplaint(c)} />
                     </TableRowActions>
                   </TableCell>
@@ -225,15 +221,15 @@ export const ReturnsModule: React.FC = () => {
           <>
             <DetailStats
               items={[
-                { label: 'Jumlah', value: `${detailComplaint.defectQty} Pcs`, tone: 'danger' },
+                { label: 'Jumlah', value: `${Number(detailComplaint.defectQty) || 0} Pcs`, tone: 'danger' },
                 { label: 'Tanggal keluhan', value: formatDate(detailComplaint.complaintDate) }
               ]}
             />
             <DetailSection title="Keluhan">
               <DetailField label="Masalah">
-                <Badge variant="rose">{detailComplaint.defectCategory}</Badge>
+                {detailComplaint.defectCategory && <Badge variant="rose">{detailComplaint.defectCategory}</Badge>}
               </DetailField>
-              <DetailField label="Jumlah">{detailComplaint.defectQty} Pcs</DetailField>
+              <DetailField label="Jumlah">{Number(detailComplaint.defectQty) || 0} Pcs</DetailField>
               <DetailField label="Deskripsi" full>{detailComplaint.description}</DetailField>
             </DetailSection>
             {evidenceUrls(detailComplaint).length > 0 && (
@@ -296,8 +292,8 @@ export const ReturnsModule: React.FC = () => {
       >
         <form onSubmit={handleSaveInvestigation} className="space-y-5">
           <div className="p-4 bg-slate-50 rounded-xl border border-slate-200 space-y-1.5 text-sm">
-            <p className="font-bold text-slate-900">{selectedComplaint?.customerName} · {selectedComplaint?.orderId}</p>
-            <p className="text-slate-700">Keluhan: <strong>{selectedComplaint?.defectCategory}</strong> ({selectedComplaint?.defectQty} Pcs)</p>
+            <p className="font-bold text-slate-900">{selectedComplaint?.customerName || '—'} · {selectedComplaint?.orderId || '—'}</p>
+            <p className="text-slate-700">Keluhan: <strong>{selectedComplaint?.defectCategory || '—'}</strong> ({Number(selectedComplaint?.defectQty) || 0} Pcs)</p>
             {selectedComplaint?.description && (
               <p className="text-slate-600">"{selectedComplaint.description}"</p>
             )}

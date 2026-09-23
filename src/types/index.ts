@@ -146,9 +146,6 @@ export interface PaymentTerm {
   label: string;
   percentage: number;
   amount: number;
-  /** When it falls due, e.g. "Saat deal", "Sebelum pengiriman". */
-  dueRule?: string;
-  dueDate?: string;
   paidAmount?: number;
   paidAt?: string;
 }
@@ -166,6 +163,13 @@ export interface Quotation {
   material?: string;
   color?: string;
   size?: string;
+  /** Template from the Size Chart page the garment is measured against; required before an SPK. */
+  sizeChartId?: string;
+  sizeChartName?: string;
+  /** Staff account responsible for this deal — a named user with their role, not a generic "petugas". */
+  picUserId?: string;
+  picName?: string;
+  picRole?: string;
   accessories?: string;
   needsProcurement?: string;
   notes?: string;
@@ -225,6 +229,20 @@ export interface Order {
   size?: string;
   accessories?: string;
   sizeChart?: string; // JSON string of OrderItemSize[]
+  /**
+   * Template from the Size Chart page (standard HIJ or the customer's own).
+   * The SPK sheet prints its measurements, so an order needs one before PPIC
+   * may issue the SPK.
+   */
+  sizeChartId?: string;
+  sizeChartName?: string;
+  /** Staff account responsible for this order — a named user with their role, not a generic "petugas". */
+  picUserId?: string;
+  picName?: string;
+  picRole?: string;
+  /** Set when the PIC confirms the WhatsApp transfer proof (POST /orders/:id/approve-dp). */
+  dpApprovedBy?: string;
+  dpApprovedAt?: string;
   needsProcurement?: 'Perlu Pengadaan' | 'Tanpa Pengadaan' | string;
   paymentTerms?: string;
   notes?: string;
@@ -321,7 +339,12 @@ export interface SPK {
   qc: number;
   progress: number;
   status: 'Queued' | 'In Progress' | 'Finishing' | 'QC Passed' | 'Completed';
+  /** Pieces per size ("S: 20, M: 40"), from the order. */
   sizeChart?: string;
+  /** The size chart template the SPK was issued against, and a JSON copy of its measurements. */
+  sizeChartId?: string;
+  sizeChartName?: string;
+  sizeChartTemplate?: string;
   employeeProgress?: string;
   user?: string;
   timestamp?: string;
@@ -345,7 +368,6 @@ export interface Procurement {
   purchaseDate: string;
   estimatedDelivery?: string;
   category: 'Kain Utama' | 'Furing' | 'Kain Kombinasi' | 'Rib / Kerah' | 'Sablon/Bordir Khusus' | 'Aksesoris Khusus' | string;
-  status: 'Requested' | 'PO Created' | 'Paid' | 'Shipped' | 'Received';
   notes?: string;
   user?: string;
   timestamp?: string;
@@ -750,8 +772,9 @@ export interface Invoice {
   total: number;
   downPaymentReceived: number;
   balanceRemaining: number;
-  dueDate: string;
-  status: 'Belum Bayar' | 'DP Dibayar' | 'Lunas' | 'Jatuh Tempo' | 'Sebagian';
+  /** Older records may still carry one; the app neither sets nor chases due dates. */
+  dueDate?: string;
+  status: 'Belum Bayar' | 'DP Dibayar' | 'Lunas' | 'Sebagian';
   paymentMethod?: string;
   notes?: string;
   user?: string;
@@ -786,6 +809,9 @@ export interface Payment {
   paymentMethod?: string;
   proofImageUrl?: string;
   status: 'Pending Verification' | 'Verified' | 'Pending' | 'Rejected';
+  /** The PIC who confirmed the WhatsApp proof, when recorded from the order. */
+  approvedBy?: string;
+  approvedById?: string;
   notes?: string;
   user?: string;
   timestamp?: string;

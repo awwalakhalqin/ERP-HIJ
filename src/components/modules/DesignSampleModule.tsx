@@ -2,11 +2,12 @@ import React, { useState, useEffect, useRef } from 'react';
 import {
   Palette, Plus, Download, CheckCircle2, FlaskConical,
   Link2, RefreshCw, Check, Ruler, UploadCloud, FolderOpen, Trash2, Loader2, Pencil,
-  ChevronDown, ChevronUp, Maximize2
+  Maximize2
 } from 'lucide-react';
 import { Design, Sample, Order, Customer } from '../../types';
 import { fetchResource, createResource, updateResource, uploadMedia } from '../../services/api';
 import { formatDate, formatDateTime, generateId, statusLabel } from '../../lib/utils';
+import { getCurrentUser } from '../../lib/session';
 import { StatusBadge } from '../ui/Badge';
 import { Modal } from '../ui/Modal';
 import { Toast, useToast } from '../ui/Toast';
@@ -33,6 +34,7 @@ import {
   TableRow,
   TableCell,
   TableRowActions,
+  RowActionButton,
   TableEmptyRow,
   TableSkeletonRows,
   TableSortHead,
@@ -110,6 +112,8 @@ const MAX_UPLOAD_MB = 25;
 interface MockupSlotProps {
   /** "Tampak Depan" / "Tampak Belakang" */
   label: string;
+  /** Marks the view the SPK sheet and the quotation both print. */
+  required?: boolean;
   value?: string;
   uploading: boolean;
   dragOver: boolean;
@@ -123,6 +127,7 @@ interface MockupSlotProps {
 /** One mockup image: drop target when empty, preview with actions once filled. */
 const MockupSlot: React.FC<MockupSlotProps> = ({
   label,
+  required,
   value,
   uploading,
   dragOver,
@@ -134,16 +139,41 @@ const MockupSlot: React.FC<MockupSlotProps> = ({
 }) => {
   const lower = label.toLowerCase();
 
+  const heading = (
+    <span className="flex items-center justify-between text-xs font-bold text-slate-700">
+      <span>
+        {label}
+        {required
+          ? <span className="ml-1 font-semibold text-brand-red">wajib</span>
+          : <span className="ml-1 font-medium text-muted-foreground">opsional</span>}
+      </span>
+      {value && !uploading && (
+        <span className="inline-flex items-center gap-1 font-semibold text-brand-teal-dark">
+          <Check size={13} aria-hidden="true" /> Siap
+        </span>
+      )}
+    </span>
+  );
+
   if (uploading) {
     return (
       <div className="space-y-2">
-        <span className="block text-xs font-bold text-slate-700">{label}</span>
+        {heading}
         <div
           role="status"
-          className="flex aspect-[3/4] flex-col items-center justify-center rounded-xl border-2 border-dashed border-brand-teal bg-teal-50/60 p-3 text-center"
+          aria-busy="true"
+          className="flex h-44 w-full flex-col items-center justify-center rounded-xl border-2 border-dashed border-brand-teal bg-teal-50/60 p-3 text-center"
         >
           <Loader2 className="mb-2 size-7 animate-spin text-brand-teal-dark motion-reduce:animate-none" aria-hidden="true" />
           <span className="text-xs font-semibold text-teal-950">Mengunggah {lower}…</span>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <Button type="button" variant="outline" size="sm" disabled className="h-8 flex-1 px-2 text-xs">
+            <FolderOpen size={13} aria-hidden="true" /> Ganti
+          </Button>
+          <Button type="button" variant="outline" size="sm" disabled className="h-8 flex-1 px-2 text-xs">
+            <Trash2 size={13} aria-hidden="true" /> Hapus
+          </Button>
         </div>
       </div>
     );
@@ -152,13 +182,14 @@ const MockupSlot: React.FC<MockupSlotProps> = ({
   if (value) {
     return (
       <div className="space-y-2">
-        <span className="flex items-center justify-between text-xs font-bold text-slate-700">
-          <span>{label}</span>
-          <span className="inline-flex items-center gap-1 font-semibold text-brand-teal-dark">
-            <Check size={13} aria-hidden="true" /> Siap
-          </span>
-        </span>
-        <div className="relative flex aspect-[3/4] items-center justify-center overflow-hidden rounded-xl border border-border bg-white">
+        {heading}
+        <button
+          type="button"
+          onClick={onPreview}
+          aria-label={`Perbesar mockup ${lower}`}
+          title="Klik untuk memperbesar"
+          className={`group relative flex h-44 w-full cursor-zoom-in items-center justify-center overflow-hidden rounded-xl border border-border bg-white ${focusRing}`}
+        >
           <img
             src={value}
             alt={`Mockup ${lower}`}
@@ -168,18 +199,16 @@ const MockupSlot: React.FC<MockupSlotProps> = ({
               (e.target as HTMLImageElement).src = '/logo.png';
             }}
           />
-        </div>
-        <div className="flex items-center gap-1">
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={onPreview}
-            aria-label={`Perbesar mockup ${lower}`}
-            className="h-8 flex-1 px-2 text-xs"
+          <span
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-0 flex items-center justify-center bg-slate-900/0 text-white opacity-0 transition-[background-color,opacity] group-hover:bg-slate-900/35 group-hover:opacity-100 group-focus-visible:bg-slate-900/35 group-focus-visible:opacity-100"
           >
-            <Maximize2 size={13} aria-hidden="true" /> Perbesar
-          </Button>
+            <span className="inline-flex items-center gap-1 rounded-full bg-slate-900/70 px-2.5 py-1 text-[11px] font-semibold">
+              <Maximize2 size={12} /> Perbesar
+            </span>
+          </span>
+        </button>
+        <div className="flex items-center gap-1.5">
           <Button
             type="button"
             variant="outline"
@@ -196,10 +225,9 @@ const MockupSlot: React.FC<MockupSlotProps> = ({
             size="sm"
             onClick={onClear}
             aria-label={`Hapus mockup ${lower}`}
-            title="Hapus gambar"
-            className="h-8 w-9 px-0 text-brand-red hover:border-brand-red/40 hover:bg-rose-50 hover:text-brand-red"
+            className="h-8 flex-1 px-2 text-xs text-brand-red hover:border-brand-red/40 hover:bg-rose-50 hover:text-brand-red"
           >
-            <Trash2 size={14} aria-hidden="true" />
+            <Trash2 size={13} aria-hidden="true" /> Hapus
           </Button>
         </div>
       </div>
@@ -208,7 +236,7 @@ const MockupSlot: React.FC<MockupSlotProps> = ({
 
   return (
     <div className="space-y-2">
-      <span className="block text-xs font-bold text-slate-700">{label}</span>
+      {heading}
       <button
         type="button"
         onClick={onPick}
@@ -223,20 +251,19 @@ const MockupSlot: React.FC<MockupSlotProps> = ({
           const file = e.dataTransfer.files?.[0];
           if (file) onFile(file);
         }}
-        className={`flex aspect-[3/4] w-full cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed p-3 text-center transition-colors ${focusRing} ${
+        aria-label={`Unggah mockup ${lower}`}
+        className={`flex h-44 w-full cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed p-3 text-center transition-colors ${focusRing} ${
           dragOver
             ? 'border-brand-teal-dark bg-teal-50/80'
             : 'border-slate-300 bg-white hover:border-brand-teal hover:bg-teal-50/30'
         }`}
       >
-        <span className="mb-2 flex size-10 items-center justify-center rounded-full bg-teal-50 text-brand-teal-dark">
-          <UploadCloud size={20} aria-hidden="true" />
+        <span className="mb-2 flex size-11 items-center justify-center rounded-full bg-teal-50 text-brand-teal-dark">
+          <UploadCloud size={22} aria-hidden="true" />
         </span>
         <span className="text-xs font-bold leading-tight text-slate-800">Unggah {lower}</span>
-        <span className="mt-1 text-[11px] leading-tight text-slate-500">
-          Tarik file ke sini atau klik untuk memilih
-        </span>
-        <span className="mt-1.5 text-[11px] text-slate-400">PNG, JPG, WebP, maks {MAX_UPLOAD_MB}MB</span>
+        <span className="mt-1 text-[11px] leading-tight text-slate-500">Klik untuk memilih atau tarik file ke sini</span>
+        <span className="mt-1 text-[11px] leading-tight text-slate-400">PNG, JPG, WebP · maks. {MAX_UPLOAD_MB}MB</span>
       </button>
     </div>
   );
@@ -273,7 +300,6 @@ export const DesignSampleModule: React.FC = () => {
   const [backUploading, setBackUploading] = useState(false);
   const [dragOverFront, setDragOverFront] = useState(false);
   const [dragOverBack, setDragOverBack] = useState(false);
-  const [showManualUrl, setShowManualUrl] = useState(false);
 
   // Form submit state and messages
   const [savingDesign, setSavingDesign] = useState(false);
@@ -344,19 +370,15 @@ export const DesignSampleModule: React.FC = () => {
         ...prev,
         [side === 'front' ? 'mockupFront' : 'mockupBack']: url
       }));
-    } catch (err) {
-      console.warn('Gagal upload ke server API, menggunakan fallback FileReader data URL:', err);
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        const dataUrl = event.target?.result as string;
-        if (dataUrl) {
-          setNewDesign(prev => ({
-            ...prev,
-            [side === 'front' ? 'mockupFront' : 'mockupBack']: dataUrl
-          }));
-        }
-      };
-      reader.readAsDataURL(file);
+    } catch (err: any) {
+      /*
+       * A failed upload is reported, not papered over. The old fallback stored
+       * the whole image as a base64 data URL on the design record, which bloated
+       * every list response and PDF export that carried it.
+       */
+      setUploadError(
+        `Unggah gagal: ${err?.message || 'server tidak merespons'}. Periksa koneksi lalu coba lagi.`
+      );
     } finally {
       if (side === 'front') setFrontUploading(false);
       if (side === 'back') setBackUploading(false);
@@ -381,36 +403,10 @@ export const DesignSampleModule: React.FC = () => {
         fetchResource<Order>('orders'),
         fetchResource<Customer>('customers')
       ]);
-      setDesigns(desRes.length > 0 ? desRes : [
-        {
-          id: 'DSN-001',
-          name: 'Jaket Taslan Arkato',
-          orderId: 'ORD-001',
-          customerId: 'CUST-001',
-          category: 'Jaket',
-          status: 'Approved',
-          description: 'Bordir dada kiri 8cm & furing polar hitam.',
-          mockupFront: '/templates/Halaman1.png',
-          mockupBack: '/templates/Halaman2.png',
-          approvedBy: 'Pak Rezza',
-          approvedAt: '2026-09-02T10:00:00Z'
-        }
-      ]);
-      setSamples(samRes.length > 0 ? samRes : [
-        {
-          id: 'SMP-001',
-          orderId: 'ORD-001',
-          customerId: 'CUST-001',
-          productName: 'Sample Jaket Arkato Size L',
-          quantity: 1,
-          vendor: 'Sampling Room HIJ (Internal)',
-          status: 'Approved',
-          qcNote: 'Ukuran dada 54cm, resleting YKK lancar, jahitan rapi.',
-          feedback: 'Klien puas dengan sampel bahan dan jahitan.'
-        }
-      ]);
-      setOrders(ordRes);
-      setCustomers(custRes);
+      setDesigns(desRes || []);
+      setSamples(samRes || []);
+      setOrders(ordRes || []);
+      setCustomers(custRes || []);
     } catch (err) {
       // Silence here left the client dropdowns empty with no explanation.
       setLoadError('Data desain dan sampel gagal dimuat. Periksa koneksi ke server, lalu muat ulang halaman.');
@@ -449,10 +445,36 @@ export const DesignSampleModule: React.FC = () => {
       description: design.description || '',
       mockupFront: design.mockupFront || '',
       mockupBack: design.mockupBack || '',
+      approvedBy: design.approvedBy || '',
       approvedAt: design.approvedAt || ''
     });
     setIsDesignModalOpen(true);
   };
+
+  /*
+   * The order a design is attached to must point back at it, or the SPK gate
+   * (which reads order.designId) and the design list disagree about whether
+   * the order has an approved design. Failure here is reported, not fatal:
+   * the design itself is already saved.
+   */
+  const syncOrderDesign = async (orderId: string, design: Pick<Design, 'id' | 'name' | 'mockupFront' | 'mockupBack'>) => {
+    const linked = orders.find(o => o.id === orderId);
+    if (!linked) return;
+    const designUrl = design.mockupFront || design.mockupBack || '';
+    if (linked.designId === design.id && linked.designName === design.name && (linked.designUrl || '') === designUrl) return;
+    try {
+      await updateResource('orders', orderId, { designId: design.id, designName: design.name, designUrl });
+    } catch {
+      showToast(`Desain tersimpan, tapi pesanan ${linked.po || orderId} gagal ditautkan. Coba simpan ulang.`, 'error');
+    }
+  };
+
+  /** The order chosen in the form already carries a different design. */
+  const linkedOrderForForm = orders.find(o => o.id === newDesign.orderId);
+  const linkedOrderDesignConflict =
+    !!linkedOrderForForm?.designId && linkedOrderForForm.designId !== (editingDesignId || '')
+      ? linkedOrderForForm.designId
+      : '';
 
   const handleSaveDesign = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -461,11 +483,16 @@ export const DesignSampleModule: React.FC = () => {
     const errors: Record<string, string> = {};
     if (!newDesign.customerId) errors.customerId = 'Pilih klien pemilik desain ini.';
     if (!newDesign.name?.trim()) errors.name = 'Isi nama desain agar mudah dicari.';
+    const status = (newDesign.status as Design['status']) || 'Pending Review';
+    // Same rule as the list's Setujui: an approved design is one the SPK can print.
+    if (status === 'Approved' && !newDesign.mockupFront && !newDesign.mockupBack) {
+      errors.status = 'Unggah gambar mockup dulu — desain tanpa gambar tidak bisa disetujui atau dicetak di SPK.';
+    }
 
     if (Object.keys(errors).length > 0) {
       setDesignFieldErrors(errors);
       setDesignError('Lengkapi isian yang ditandai merah, lalu simpan lagi.');
-      document.getElementById(errors.customerId ? 'dsn-customer' : 'dsn-name')?.focus();
+      document.getElementById(errors.customerId ? 'dsn-customer' : errors.name ? 'dsn-name' : 'dsn-status')?.focus();
       return;
     }
 
@@ -475,14 +502,19 @@ export const DesignSampleModule: React.FC = () => {
     try {
       /*
        * Approval is what lets a design be pulled into a penawaran, so the moment
-       * it happens is recorded. Moving the status back clears the stamp rather
-       * than leaving a stale approval date behind.
+       * it happens — and who did it — is recorded, exactly as the list's Setujui
+       * does. Moving the status back clears both rather than leaving a stale
+       * approval behind.
        */
-      const status = (newDesign.status as Design['status']) || 'Pending Review';
+      const wasApproved = !!editingDesignId && designs.find(d => d.id === editingDesignId)?.status === 'Approved';
       const approvalStamp = status === 'Approved'
-        ? { approvedAt: newDesign.approvedAt || new Date().toISOString() }
-        : { approvedAt: '' };
+        ? {
+            approvedBy: (wasApproved && newDesign.approvedBy) || getCurrentUser()?.name || newDesign.approvedBy || '',
+            approvedAt: (wasApproved && newDesign.approvedAt) || new Date().toISOString()
+          }
+        : { approvedBy: '', approvedAt: '' };
 
+      let saved: Pick<Design, 'id' | 'name' | 'mockupFront' | 'mockupBack'>;
       if (editingDesignId) {
         await updateResource('designs', editingDesignId, {
           name: newDesign.name.trim(),
@@ -495,6 +527,12 @@ export const DesignSampleModule: React.FC = () => {
           mockupBack: newDesign.mockupBack || undefined,
           ...approvalStamp
         });
+        saved = {
+          id: editingDesignId,
+          name: newDesign.name.trim(),
+          mockupFront: newDesign.mockupFront || undefined,
+          mockupBack: newDesign.mockupBack || undefined
+        };
       } else {
         const item: Design = {
           id: generateId('DSN'),
@@ -509,7 +547,12 @@ export const DesignSampleModule: React.FC = () => {
           ...approvalStamp,
           timestamp: new Date().toISOString()
         };
-        await createResource('designs', item);
+        const created = await createResource<Design>('designs', item);
+        saved = { ...item, id: created?.id || item.id };
+      }
+
+      if (newDesign.orderId) {
+        await syncOrderDesign(newDesign.orderId, saved);
       }
 
       setIsDesignModalOpen(false);
@@ -526,8 +569,8 @@ export const DesignSampleModule: React.FC = () => {
       });
       showToast(editingDesignId ? `Desain ${editingDesignId} diperbarui.` : 'Desain baru tersimpan.');
       loadData();
-    } catch (err) {
-      setDesignError('Desain gagal disimpan. Periksa koneksi ke server, lalu coba simpan lagi.');
+    } catch (err: any) {
+      setDesignError(err?.message || 'Desain gagal disimpan. Periksa koneksi ke server, lalu coba simpan lagi.');
     } finally {
       setSavingDesign(false);
     }
@@ -608,6 +651,44 @@ export const DesignSampleModule: React.FC = () => {
     }
   };
 
+  /*
+   * Approving a design is what releases the SPK: the readiness gate wants an
+   * approved design on the order, and the SPK sheet prints its artwork. Doing
+   * it from here saves opening the whole edit form just to change one field.
+   */
+  const handleApproveDesign = async (design: Design) => {
+    if (!design.mockupFront && !design.mockupBack) {
+      showToast('Unggah gambar mockup dulu — desain tanpa gambar tidak bisa dicetak di SPK.', 'error');
+      return;
+    }
+    const where = design.orderId ? ` untuk pesanan ${design.orderId}` : '';
+    if (!window.confirm(`Setujui desain ${design.id}${where}? Desain ini yang akan tercetak di surat SPK.`)) return;
+    try {
+      await updateResource('designs', design.id, {
+        status: 'Approved',
+        approvedBy: getCurrentUser()?.name,
+        approvedAt: new Date().toISOString()
+      });
+      showToast(`Desain ${design.id} disetujui. SPK untuk pesanan terkait sudah bisa diterbitkan.`);
+      loadData();
+    } catch (err) {
+      showToast('Gagal menyetujui desain. Periksa koneksi ke server, lalu coba lagi.', 'error');
+    }
+  };
+
+  /*
+   * Anti-Skip: an approved sample marks the linked order's sampleStatus, and
+   * moves an order that is still waiting on the sample ('Sample') on to
+   * 'Order'. An order that has already moved on (e.g. 'In Production') keeps
+   * its status, so re-saving an approved sample never pushes it backwards.
+   */
+  const orderUpdateForApprovedSample = (orderId: string): Partial<Order> => {
+    const linked = orders.find(o => o.id === orderId);
+    return linked?.status === 'Sample'
+      ? { sampleStatus: 'Approved', status: 'Order' }
+      : { sampleStatus: 'Approved' };
+  };
+
   const handleApproveSample = async (sample: Sample) => {
     if (!window.confirm(`Setujui sampel ${sample.id}? Sampel ini menjadi acuan produksi massal.`)) return;
     try {
@@ -615,13 +696,9 @@ export const DesignSampleModule: React.FC = () => {
         status: 'Approved',
         approvedAt: new Date().toISOString()
       });
-      // Anti-Skip: Auto-sync status pesanan terkait menjadi 'Order' dan sampleStatus: 'Approved'
       if (sample.orderId) {
         try {
-          await updateResource('orders', sample.orderId, {
-            sampleStatus: 'Approved',
-            status: 'Order'
-          });
+          await updateResource('orders', sample.orderId, orderUpdateForApprovedSample(sample.orderId));
         } catch (syncErr) {
           console.warn('Auto-sync order status failed:', syncErr);
         }
@@ -652,13 +729,10 @@ export const DesignSampleModule: React.FC = () => {
     }
     try {
       await updateResource('samples', statusSample.id, updates);
-      // Anti-Skip: Auto-sync status pesanan jika status berubah menjadi Approved
+      // Anti-Skip: sync the linked order when the sample is (still) Approved.
       if (statusValue === 'Approved' && statusSample.orderId) {
         try {
-          await updateResource('orders', statusSample.orderId, {
-            sampleStatus: 'Approved',
-            status: 'Order'
-          });
+          await updateResource('orders', statusSample.orderId, orderUpdateForApprovedSample(statusSample.orderId));
         } catch (syncErr) {
           console.warn('Auto-sync order status failed:', syncErr);
         }
@@ -749,16 +823,16 @@ export const DesignSampleModule: React.FC = () => {
                     Kode Desain
                   </TableSortHead>
                   {/* Staff recognise a design by its mockup, so a thumbnail sits beside the code. */}
-                  <TableHead className="hidden sm:table-cell">Mockup</TableHead>
+                  <TableHead className="hidden xl:table-cell">Mockup</TableHead>
                   <TableSortHead className="hidden md:table-cell" sortKey="name" sort={designSort} onSortChange={setDesignSort}>
                     Nama Desain
                   </TableSortHead>
                   <TableHead className="hidden md:table-cell">Klien</TableHead>
                   <TableHead className="hidden lg:table-cell">Pesanan</TableHead>
+                  <TableHead className="hidden 2xl:table-cell">Kategori</TableHead>
                   <TableSortHead className="hidden lg:table-cell" sortKey="timestamp" sort={designSort} onSortChange={setDesignSort}>
                     Tanggal
                   </TableSortHead>
-                  <TableHead className="hidden xl:table-cell">Kategori</TableHead>
                   <TableHead className="text-center">Status</TableHead>
                   <TableHead className="cell-sticky-end text-right">Aksi</TableHead>
                 </TableRow>
@@ -783,7 +857,7 @@ export const DesignSampleModule: React.FC = () => {
                   return (
                     <TableRow key={design.id}>
                       <TableCell className="cell-sticky-start whitespace-nowrap font-mono font-bold text-slate-900">{design.id}</TableCell>
-                      <TableCell className="hidden sm:table-cell">
+                      <TableCell className="hidden xl:table-cell">
                         <img
                           src={design.mockupFront || '/logo.png'}
                           alt={`Mockup ${design.name}`}
@@ -792,35 +866,46 @@ export const DesignSampleModule: React.FC = () => {
                         />
                       </TableCell>
                       <TableCell className="hidden md:table-cell">
-                        <span className="font-semibold text-slate-900 break-words">{design.name}</span>
+                        <span className="block max-w-[180px] truncate font-semibold text-slate-900" title={design.name}>
+                          {design.name}
+                        </span>
                       </TableCell>
-                      <TableCell className="hidden md:table-cell break-words">
-                        {cust?.name || design.customerId || '—'}
+                      <TableCell className="hidden md:table-cell">
+                        <span className="block max-w-[180px] truncate" title={cust?.name || design.customerId || undefined}>
+                          {cust?.name || design.customerId || '—'}
+                        </span>
                       </TableCell>
-                      <TableCell className="hidden lg:table-cell whitespace-nowrap font-mono text-teal-700">
+                      <TableCell className="hidden lg:table-cell font-mono text-teal-700">
                         {orderRef(design.orderId) || '—'}
                       </TableCell>
-                      <TableCell className="hidden lg:table-cell whitespace-nowrap">
-                        {design.timestamp ? formatDate(design.timestamp) : '—'}
-                      </TableCell>
-                      <TableCell className="hidden xl:table-cell whitespace-nowrap text-slate-500">
+                      <TableCell className="hidden 2xl:table-cell text-slate-500">
                         {design.category || '—'}
                       </TableCell>
-                      <TableCell className="text-center whitespace-nowrap">
+                      <TableCell className="hidden lg:table-cell">
+                        {design.timestamp ? formatDate(design.timestamp) : '—'}
+                      </TableCell>
+                      <TableCell className="text-center">
                         <StatusBadge status={design.status} size="sm" solid />
                       </TableCell>
                       <TableCell className="cell-sticky-end text-right">
                         <TableRowActions>
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
+                          {design.status !== 'Approved' && (
+                            <RowActionButton
+                              label="Setujui"
+                              icon={Check}
+                              display="labeled"
+                              tone="primary"
+                              onClick={() => handleApproveDesign(design)}
+                              ariaLabel={`Setujui desain ${design.id}`}
+                              title="Setujui desain ini supaya SPK bisa terbit"
+                            />
+                          )}
+                          <RowActionButton
+                            label="Ubah"
+                            icon={Pencil}
                             onClick={() => handleEditDesign(design)}
-                            aria-label={`Edit desain ${design.id}`}
-                            className="hidden sm:inline-flex h-8 gap-1.5 px-2.5 text-xs"
-                          >
-                            <Pencil size={14} aria-hidden="true" /> Edit
-                          </Button>
+                            ariaLabel={`Ubah desain ${design.id}`}
+                          />
                           <RowDetailButton label={design.id} onClick={() => setDetailDesignId(design.id)} />
                         </TableRowActions>
                       </TableCell>
@@ -846,19 +931,19 @@ export const DesignSampleModule: React.FC = () => {
                   <TableSortHead className="hidden md:table-cell" sortKey="productName" sort={sampleSort} onSortChange={setSampleSort}>
                     Nama Sampel
                   </TableSortHead>
+                  <TableHead className="hidden md:table-cell">Klien</TableHead>
+                  <TableHead className="hidden lg:table-cell">Pesanan</TableHead>
+                  <TableHead className="hidden xl:table-cell">Pembuat</TableHead>
                   {/* Fitting size is the point of a sample, so it earns its own column. */}
                   <TableSortHead className="hidden lg:table-cell" sortKey="size" sort={sampleSort} onSortChange={setSampleSort}>
                     Ukuran
                   </TableSortHead>
-                  <TableHead className="hidden md:table-cell">Klien</TableHead>
-                  <TableHead className="hidden lg:table-cell">Pesanan</TableHead>
-                  <TableSortHead className="hidden sm:table-cell" align="right" sortKey="quantity" sort={sampleSort} onSortChange={setSampleSort}>
+                  <TableSortHead className="hidden sm:table-cell tabular-nums" align="right" sortKey="quantity" sort={sampleSort} onSortChange={setSampleSort}>
                     Jumlah
                   </TableSortHead>
                   <TableSortHead className="hidden lg:table-cell" sortKey="timestamp" sort={sampleSort} onSortChange={setSampleSort}>
                     Tanggal
                   </TableSortHead>
-                  <TableHead className="hidden xl:table-cell">Pembuat</TableHead>
                   <TableHead className="text-center">Status</TableHead>
                   <TableHead className="cell-sticky-end text-right">Aksi</TableHead>
                 </TableRow>
@@ -884,41 +969,49 @@ export const DesignSampleModule: React.FC = () => {
                     <TableRow key={sample.id}>
                       <TableCell className="cell-sticky-start whitespace-nowrap font-mono font-bold text-slate-900">{sample.id}</TableCell>
                       <TableCell className="hidden md:table-cell">
-                        <span className="font-semibold text-slate-900 break-words">{sample.productName}</span>
+                        <span className="block max-w-[180px] truncate font-semibold text-slate-900" title={sample.productName}>
+                          {sample.productName}
+                        </span>
                       </TableCell>
-                      <TableCell className="hidden lg:table-cell whitespace-nowrap font-semibold text-slate-700">
-                        {sample.size || '—'}
+                      <TableCell className="hidden md:table-cell">
+                        <span className="block max-w-[180px] truncate" title={sample.customerName || cust?.name || undefined}>
+                          {sample.customerName || cust?.name || '—'}
+                        </span>
                       </TableCell>
-                      <TableCell className="hidden md:table-cell break-words">
-                        {sample.customerName || cust?.name || '—'}
-                      </TableCell>
-                      <TableCell className="hidden lg:table-cell whitespace-nowrap font-mono text-teal-700">
+                      <TableCell className="hidden lg:table-cell font-mono text-teal-700">
                         {orderRef(sample.orderId) || '—'}
                       </TableCell>
-                      <TableCell className="hidden sm:table-cell text-right font-semibold text-slate-900 whitespace-nowrap">
+                      <TableCell className="hidden xl:table-cell text-slate-500">
+                        <span className="block max-w-[180px] truncate" title={sample.vendor || undefined}>
+                          {sample.vendor || '—'}
+                        </span>
+                      </TableCell>
+                      <TableCell className="hidden lg:table-cell font-semibold text-slate-700">
+                        <span className="block max-w-[140px] truncate" title={sample.size || undefined}>
+                          {sample.size || '—'}
+                        </span>
+                      </TableCell>
+                      <TableCell className="hidden sm:table-cell text-right tabular-nums font-semibold text-slate-900">
                         {sample.quantity || 1}
                       </TableCell>
-                      <TableCell className="hidden lg:table-cell whitespace-nowrap">
+                      <TableCell className="hidden lg:table-cell">
                         {sample.timestamp ? formatDate(sample.timestamp) : '—'}
                       </TableCell>
-                      <TableCell className="hidden xl:table-cell break-words text-slate-500">
-                        {sample.vendor || '—'}
-                      </TableCell>
-                      <TableCell className="text-center whitespace-nowrap">
+                      <TableCell className="text-center">
                         <StatusBadge status={sample.status} size="sm" solid />
                       </TableCell>
                       <TableCell className="cell-sticky-end text-right">
                         <TableRowActions>
                           {sample.status !== 'Approved' && (
-                            <Button
-                              type="button"
-                              size="sm"
+                            <RowActionButton
+                              label="Setujui"
+                              icon={Check}
+                              display="labeled"
+                              tone="primary"
                               onClick={() => handleApproveSample(sample)}
-                              aria-label={`Setujui sampel ${sample.id}`}
-                              className="hidden sm:inline-flex h-8 gap-1.5 px-2.5 text-xs"
-                            >
-                              <CheckCircle2 size={14} aria-hidden="true" /> Setujui
-                            </Button>
+                              ariaLabel={`Setujui sampel ${sample.id}`}
+                              title="Setujui sampel ini sebagai acuan produksi"
+                            />
                           )}
                           <RowDetailButton label={sample.id} onClick={() => setDetailSampleId(sample.id)} />
                         </TableRowActions>
@@ -1117,19 +1210,12 @@ export const DesignSampleModule: React.FC = () => {
         <form id="design-form" noValidate onSubmit={handleSaveDesign} className="space-y-5">
           <FormError>{designError}</FormError>
 
-          <div className="grid grid-cols-1 gap-5 lg:grid-cols-12">
-            {/* Left: identity & specification */}
-            <div className="space-y-4 lg:col-span-7">
-              <div>
-                <h3 className="flex items-center gap-1.5 text-sm font-bold text-foreground">
-                  <Palette size={16} className="text-brand-teal-dark" aria-hidden="true" />
-                  Identitas & spesifikasi desain
-                </h3>
-                <p className="mt-0.5 text-xs text-muted-foreground text-pretty">
-                  Data ini yang tercetak di surat penawaran dan SPK produksi.
-                </p>
-              </div>
-
+          <FormSection
+            step={1}
+            title="Identitas & spesifikasi desain"
+            description="Data ini yang tercetak di surat penawaran dan SPK produksi."
+          >
+            <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
               <div>
                 <FieldLabel htmlFor="dsn-customer" required>Klien / calon pelanggan</FieldLabel>
                 <Select
@@ -1163,39 +1249,12 @@ export const DesignSampleModule: React.FC = () => {
                 )}
               </div>
 
-              <fieldset>
-                <legend className="mb-1.5 block text-sm font-semibold text-foreground">
-                  Kategori pakaian
-                </legend>
-                <div className="mb-2 flex flex-wrap gap-1.5">
-                  {DESIGN_CATEGORIES.map(cat => (
-                    <ChipButton
-                      key={cat}
-                      selected={newDesign.category === cat}
-                      onClick={() => setNewDesign({ ...newDesign, category: cat })}
-                    >
-                      {cat}
-                    </ChipButton>
-                  ))}
-                </div>
-                <FieldLabel htmlFor="dsn-category" className="text-xs font-medium text-muted-foreground">
-                  Atau ketik kategori lain
-                </FieldLabel>
-                <Input
-                  id="dsn-category"
-                  type="text"
-                  placeholder="Contoh: Apron / Topi Rimba"
-                  value={newDesign.category}
-                  onChange={(e) => setNewDesign({ ...newDesign, category: e.target.value })}
-                />
-              </fieldset>
-
               <div>
                 <FieldLabel htmlFor="dsn-name" required>Nama desain & mockup</FieldLabel>
                 <Input
                   id="dsn-name"
                   type="text"
-                  placeholder="Contoh: Kemeja PDL Ripstop Lapangan PT Adhi Karya"
+                  placeholder="Contoh: Kemeja PDL Ripstop Lapangan"
                   value={newDesign.name}
                   aria-invalid={!!designFieldErrors.name}
                   aria-describedby={designFieldErrors.name ? 'dsn-name-error' : undefined}
@@ -1206,170 +1265,186 @@ export const DesignSampleModule: React.FC = () => {
                 />
                 <FieldError id="dsn-name-error">{designFieldErrors.name}</FieldError>
               </div>
-
-              <div>
-                <FieldLabel htmlFor="dsn-description" aside="Opsional">
-                  Instruksi sablon / bordir & spesifikasi
-                </FieldLabel>
-                <Textarea
-                  id="dsn-description"
-                  rows={3}
-                  placeholder="Contoh: Bordir komputer dada kiri 8 cm, sablon DTF punggung 28×10 cm, benang senada kain."
-                  value={newDesign.description}
-                  onChange={(e) => setNewDesign({ ...newDesign, description: e.target.value })}
-                />
-              </div>
-
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                <div>
-                  <FieldLabel htmlFor="dsn-status">Status desain</FieldLabel>
-                  <Select
-                    id="dsn-status"
-                    value={newDesign.status}
-                    aria-describedby="dsn-status-hint"
-                    onChange={(e) => setNewDesign({ ...newDesign, status: e.target.value as any })}
-                  >
-                    <option value="Draft">Draf internal (R&D)</option>
-                    <option value="Pending Review">Menunggu review klien</option>
-                    <option value="Revision Requested">Perlu revisi</option>
-                    <option value="Approved">Disetujui klien</option>
-                    <option value="Rejected">Ditolak klien</option>
-                  </Select>
-                  <FieldHint id="dsn-status-hint">
-                    Hanya desain berstatus disetujui yang bisa ditarik ke surat penawaran.
-                  </FieldHint>
-                </div>
-
-                <div>
-                  <FieldLabel htmlFor="dsn-order" aside="Opsional">Pesanan terkait</FieldLabel>
-                  <Select
-                    id="dsn-order"
-                    value={newDesign.orderId}
-                    onChange={(e) => {
-                      const ord = orders.find(o => o.id === e.target.value);
-                      setNewDesign({
-                        ...newDesign,
-                        orderId: e.target.value,
-                        customerId: ord?.customerId || newDesign.customerId
-                      });
-                    }}
-                  >
-                    <option value="">Belum ada pesanan (pra-penawaran)</option>
-                    {orders.map(o => (
-                      <option key={o.id} value={o.id}>{o.po || o.id} · {o.customerName}</option>
-                    ))}
-                  </Select>
-                </div>
-              </div>
             </div>
 
-            {/* Right: mockup upload */}
-            <div className="lg:col-span-5">
-              <div className="space-y-4 rounded-2xl border border-border bg-muted/30 p-4">
-                <div>
-                  <h3 className="flex items-center gap-1.5 text-sm font-bold text-foreground">
-                    <UploadCloud size={16} className="text-brand-teal-dark" aria-hidden="true" />
-                    Aset gambar mockup
-                  </h3>
-                  <p className="mt-0.5 text-xs text-muted-foreground text-pretty">
-                    Unggah file mockup yang sudah dibuat di software desain (Corel, Photoshop, Illustrator, Canva, CLO 3D).
-                  </p>
-                </div>
+            <fieldset>
+              <legend className="mb-1.5 block text-sm font-semibold text-foreground">
+                Kategori pakaian
+              </legend>
+              <div className="mb-2 flex flex-wrap gap-1.5">
+                {DESIGN_CATEGORIES.map(cat => (
+                  <ChipButton
+                    key={cat}
+                    selected={newDesign.category === cat}
+                    onClick={() => setNewDesign({ ...newDesign, category: cat })}
+                  >
+                    {cat}
+                  </ChipButton>
+                ))}
+              </div>
+              <FieldLabel htmlFor="dsn-category" className="text-xs font-medium text-muted-foreground">
+                Atau ketik kategori lain
+              </FieldLabel>
+              <Input
+                id="dsn-category"
+                type="text"
+                placeholder="Contoh: Apron / Topi Rimba"
+                value={newDesign.category}
+                onChange={(e) => setNewDesign({ ...newDesign, category: e.target.value })}
+              />
+            </fieldset>
 
-                {/* Hidden native file inputs */}
-                <input
-                  type="file"
-                  ref={frontFileInputRef}
-                  accept={ACCEPTED_IMAGE_TYPES}
-                  className="hidden"
-                  onChange={(e) => handleFileInputChange(e, 'front')}
-                />
-                <input
-                  type="file"
-                  ref={backFileInputRef}
-                  accept={ACCEPTED_IMAGE_TYPES}
-                  className="hidden"
-                  onChange={(e) => handleFileInputChange(e, 'back')}
-                />
+            <div>
+              <FieldLabel htmlFor="dsn-description" aside="Opsional">
+                Instruksi sablon / bordir & spesifikasi
+              </FieldLabel>
+              <Textarea
+                id="dsn-description"
+                rows={3}
+                placeholder="Contoh: Bordir komputer dada kiri 8 cm, sablon DTF punggung 28×10 cm, benang senada kain."
+                value={newDesign.description}
+                onChange={(e) => setNewDesign({ ...newDesign, description: e.target.value })}
+              />
+            </div>
 
-                <div className="grid grid-cols-2 gap-3">
-                  <MockupSlot
-                    label="Tampak Depan"
-                    value={newDesign.mockupFront}
-                    uploading={frontUploading}
-                    dragOver={dragOverFront}
-                    onDragOverChange={setDragOverFront}
-                    onFile={(file) => handleDesignImageUpload(file, 'front')}
-                    onPick={() => frontFileInputRef.current?.click()}
-                    onClear={() => setNewDesign({ ...newDesign, mockupFront: '' })}
-                    onPreview={() => setPreviewImage({ title: 'Mockup Tampak Depan', path: newDesign.mockupFront! })}
-                  />
-                  <MockupSlot
-                    label="Tampak Belakang"
-                    value={newDesign.mockupBack}
-                    uploading={backUploading}
-                    dragOver={dragOverBack}
-                    onDragOverChange={setDragOverBack}
-                    onFile={(file) => handleDesignImageUpload(file, 'back')}
-                    onPick={() => backFileInputRef.current?.click()}
-                    onClear={() => setNewDesign({ ...newDesign, mockupBack: '' })}
-                    onPreview={() => setPreviewImage({ title: 'Mockup Tampak Belakang', path: newDesign.mockupBack! })}
-                  />
-                </div>
-
-                <FieldError>{uploadError}</FieldError>
-
-                {!newDesign.mockupFront && (
-                  <FieldHint>
-                    Tampak depan dipakai sebagai thumbnail di tabel desain dan pada surat penawaran.
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <div>
+                <FieldLabel htmlFor="dsn-status">Status desain</FieldLabel>
+                <Select
+                  id="dsn-status"
+                  value={newDesign.status}
+                  aria-invalid={!!designFieldErrors.status}
+                  aria-describedby={designFieldErrors.status ? 'dsn-status-error' : 'dsn-status-hint'}
+                  onChange={(e) => {
+                    setDesignFieldErrors(prev => ({ ...prev, status: '' }));
+                    setNewDesign({ ...newDesign, status: e.target.value as any });
+                  }}
+                >
+                  <option value="Draft">Draf internal (R&D)</option>
+                  <option value="Pending Review">Menunggu review klien</option>
+                  <option value="Revision Requested">Perlu revisi</option>
+                  <option value="Approved">Disetujui klien</option>
+                  <option value="Rejected">Ditolak klien</option>
+                </Select>
+                {designFieldErrors.status ? (
+                  <FieldError id="dsn-status-error">{designFieldErrors.status}</FieldError>
+                ) : (
+                  <FieldHint id="dsn-status-hint">
+                    Hanya desain berstatus disetujui (dengan gambar mockup) yang bisa ditarik ke surat penawaran.
                   </FieldHint>
                 )}
+              </div>
 
-                <div>
-                  <button
-                    type="button"
-                    onClick={() => setShowManualUrl(!showManualUrl)}
-                    aria-expanded={showManualUrl}
-                    aria-controls="dsn-manual-url"
-                    className={`-ml-1 inline-flex h-8 cursor-pointer items-center gap-1 rounded px-1 text-xs font-medium text-slate-600 transition-colors hover:text-brand-teal-dark ${focusRing}`}
-                  >
-                    {showManualUrl
-                      ? <ChevronUp size={14} aria-hidden="true" />
-                      : <ChevronDown size={14} aria-hidden="true" />}
-                    <span>{showManualUrl ? 'Sembunyikan URL manual' : 'Atau masukkan URL gambar manual'}</span>
-                  </button>
-
-                  {showManualUrl && (
-                    <div id="dsn-manual-url" className="mt-2 space-y-3 rounded-xl border border-border bg-white p-3">
-                      <div>
-                        <FieldLabel htmlFor="dsn-mockup-front" className="text-xs">URL tampak depan</FieldLabel>
-                        <Input
-                          id="dsn-mockup-front"
-                          type="text"
-                          className="h-9 font-mono text-xs"
-                          placeholder="https://… atau /uploads/…"
-                          value={newDesign.mockupFront || ''}
-                          onChange={(e) => setNewDesign({ ...newDesign, mockupFront: e.target.value })}
-                        />
-                      </div>
-                      <div>
-                        <FieldLabel htmlFor="dsn-mockup-back" className="text-xs">URL tampak belakang</FieldLabel>
-                        <Input
-                          id="dsn-mockup-back"
-                          type="text"
-                          className="h-9 font-mono text-xs"
-                          placeholder="https://… atau /uploads/…"
-                          value={newDesign.mockupBack || ''}
-                          onChange={(e) => setNewDesign({ ...newDesign, mockupBack: e.target.value })}
-                        />
-                      </div>
-                    </div>
-                  )}
-                </div>
-
+              <div>
+                <FieldLabel htmlFor="dsn-order">Pesanan terkait</FieldLabel>
+                <Select
+                  id="dsn-order"
+                  value={newDesign.orderId}
+                  onChange={(e) => {
+                    const ord = orders.find(o => o.id === e.target.value);
+                    setNewDesign({
+                      ...newDesign,
+                      orderId: e.target.value,
+                      customerId: ord?.customerId || newDesign.customerId
+                    });
+                  }}
+                >
+                  <option value="">Belum ada pesanan (pra-penawaran)</option>
+                  {orders.map(o => (
+                    <option key={o.id} value={o.id}>{o.po || o.id} · {o.customerName}</option>
+                  ))}
+                </Select>
+                {linkedOrderDesignConflict ? (
+                  <FieldHint className="text-amber-800">
+                    Pesanan ini sekarang memakai desain <b className="font-mono">{linkedOrderDesignConflict}</b>.
+                    Menyimpan akan mengalihkan pesanan ke desain ini, dan SPK akan mencetak mockup yang baru.
+                  </FieldHint>
+                ) : (
+                  <FieldHint>
+                    Pilih pesanannya kalau desain ini sudah dipesan &mdash; pesanan ikut ditautkan ke desain ini
+                    dan SPK-nya baru bisa terbit setelah desain disetujui. Biarkan kosong hanya untuk
+                    desain yang belum ada pesanannya.
+                  </FieldHint>
+                )}
               </div>
             </div>
-          </div>
+          </FormSection>
+
+          <FormSection
+            step={2}
+            title="Mockup / gambar desain"
+            description={
+              <>
+                Gambar tampak depan inilah yang tercetak di <b>surat SPK</b> dan dipakai di surat
+                penawaran. Tanpa gambar, desain tidak bisa disetujui dan SPK tidak bisa terbit.
+              </>
+            }
+            aside={
+              frontUploading || backUploading ? (
+                <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-brand-teal-dark">
+                  <Loader2 size={14} className="animate-spin motion-reduce:animate-none" aria-hidden="true" />
+                  Mengunggah…
+                </span>
+              ) : undefined
+            }
+          >
+            <div>
+              {/* Hidden native file inputs; the tiles below open them. */}
+              <input
+                type="file"
+                ref={frontFileInputRef}
+                accept={ACCEPTED_IMAGE_TYPES}
+                className="hidden"
+                onChange={(e) => handleFileInputChange(e, 'front')}
+              />
+              <input
+                type="file"
+                ref={backFileInputRef}
+                accept={ACCEPTED_IMAGE_TYPES}
+                className="hidden"
+                onChange={(e) => handleFileInputChange(e, 'back')}
+              />
+
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                <MockupSlot
+                  required
+                  label="Tampak Depan"
+                  value={newDesign.mockupFront}
+                  uploading={frontUploading}
+                  dragOver={dragOverFront}
+                  onDragOverChange={setDragOverFront}
+                  onFile={(file) => handleDesignImageUpload(file, 'front')}
+                  onPick={() => frontFileInputRef.current?.click()}
+                  onClear={() => setNewDesign({ ...newDesign, mockupFront: '' })}
+                  onPreview={() => setPreviewImage({ title: 'Mockup Tampak Depan', path: newDesign.mockupFront! })}
+                />
+                <MockupSlot
+                  label="Tampak Belakang"
+                  value={newDesign.mockupBack}
+                  uploading={backUploading}
+                  dragOver={dragOverBack}
+                  onDragOverChange={setDragOverBack}
+                  onFile={(file) => handleDesignImageUpload(file, 'back')}
+                  onPick={() => backFileInputRef.current?.click()}
+                  onClear={() => setNewDesign({ ...newDesign, mockupBack: '' })}
+                  onPreview={() => setPreviewImage({ title: 'Mockup Tampak Belakang', path: newDesign.mockupBack! })}
+                />
+              </div>
+
+              <FieldError>{uploadError}</FieldError>
+
+              {newDesign.status === 'Approved' && !newDesign.mockupFront && !newDesign.mockupBack ? (
+                <FieldHint className="text-amber-800">
+                  Desain berstatus disetujui wajib punya minimal satu gambar mockup, kalau tidak SPK-nya
+                  tidak bisa dicetak.
+                </FieldHint>
+              ) : (
+                <FieldHint>
+                  Tampak belakang boleh dikosongkan kalau desainnya polos.
+                </FieldHint>
+              )}
+            </div>
+          </FormSection>
         </form>
       </Modal>
 
@@ -1568,7 +1643,7 @@ export const DesignSampleModule: React.FC = () => {
               <Textarea
                 id="smp-notes"
                 rows={2}
-                placeholder="Contoh: Kain sisa roll lot 3, dijahit penjahit subkon Pak Dedi."
+                placeholder="Contoh: Kain sisa roll lot 3, dijahit penjahit subkon."
                 value={newSample.notes || ''}
                 onChange={(e) => setNewSample({ ...newSample, notes: e.target.value })}
               />

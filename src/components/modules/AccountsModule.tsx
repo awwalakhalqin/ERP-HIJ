@@ -12,6 +12,8 @@ import { User, SOPModule, StaffRole, STAFF_ROLE_MODULES } from '../../types';
 import { ALL_MODULES } from '../../config/modules';
 import { fetchResource, createResource, updateResource, deleteResource } from '../../services/api';
 import { formatDate, formatDateTime, generateId } from '../../lib/utils';
+import { getCurrentUser } from '../../lib/session';
+import { Toast, useToast } from '../ui/Toast';
 import { Badge } from '../ui/Badge';
 import { Modal } from '../ui/Modal';
 import { Card } from '../ui/Card';
@@ -28,6 +30,7 @@ import {
   TableSortHead,
   sortRows,
   TableRowActions,
+  RowActionButton,
   TableEmptyRow,
   TableSkeletonRows,
   type SortState
@@ -69,13 +72,31 @@ const hasFullAccess = (user: User) => !!user.allowedModules?.includes('*');
 const moduleCount = (user: User) =>
   hasFullAccess(user) ? ALL_MODULES.length : user.allowedModules?.length || 0;
 
-// The seeded Super Admin keeps the system reachable, so it can never be deleted.
-const isProtectedAccount = (user: User) => user.username === 'admin.rezza' || user.id === 'USR-001';
+/*
+ * One rule for who can never be deleted, shared by the table, the drawer and
+ * the delete handler so they cannot disagree: the seeded Super Admin, and the
+ * last account that can still open every menu (the server refuses this too).
+ */
+const isProtectedAccount = (user: User, allUsers: User[]) =>
+  user.username === 'admin.rezza' ||
+  user.id === 'USR-001' ||
+  (hasFullAccess(user) && allUsers.filter(hasFullAccess).length <= 1);
+
+const PROTECTED_TITLE = 'Akun Super Admin utama atau satu-satunya akun akses penuh tidak bisa dihapus';
+const SELF_DELETE_TITLE = 'Anda tidak bisa menghapus akun yang sedang dipakai';
+const SELF_EDIT_HINT = 'Jabatan dan akses menu akun Anda sendiri hanya bisa diubah oleh admin lain.';
 
 export const AccountsModule: React.FC = () => {
   const [users, setUsers] = useState<User[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
+  const { toast, showToast } = useToast();
+
+  // Who is signed in, so the screen cannot lock its own operator out.
+  const currentUser = getCurrentUser();
+  const isSelf = (user: User) => !!currentUser && user.id === currentUser.id;
+  const deleteBlockedTitle = (user: User) =>
+    isSelf(user) ? SELF_DELETE_TITLE : isProtectedAccount(user, users) ? PROTECTED_TITLE : undefined;
 
   const [sort, setSort] = useState<SortState>({ key: 'newest', direction: 'desc' });
 
@@ -86,6 +107,10 @@ export const AccountsModule: React.FC = () => {
 
   // Detail Drawer State
   const [detailUser, setDetailUser] = useState<User | null>(null);
+
+  // Why the last save was refused, shown inside the modal beside the form
+  const [formError, setFormError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
 
   // Form State
   const [formData, setFormData] = useState<Partial<User>>({
@@ -125,6 +150,7 @@ export const AccountsModule: React.FC = () => {
   const handleOpenAdd = () => {
     setIsEditMode(false);
     setSelectedUser(null);
+    setFormError(null);
     setFormData({
       id: generateId('USR'),
       username: '',
@@ -139,11 +165,16 @@ export const AccountsModule: React.FC = () => {
   const handleOpenEdit = (user: User) => {
     setIsEditMode(true);
     setSelectedUser(user);
+    setFormError(null);
     setFormData({ ...user, password: '' });
     setIsModalOpen(true);
   };
 
+  // Editing the signed-in account: name and password only, never its own permissions.
+  const editingSelf = isEditMode && !!selectedUser && isSelf(selectedUser);
+
   const handleToggleModule = (modId: SOPModule) => {
+    if (editingSelf) return;
     const current = formData.allowedModules || [];
     if (current.includes('*')) {
       // If was all, now deselect this one
@@ -172,46 +203,59 @@ export const AccountsModule: React.FC = () => {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!formData.username || !formData.name) {
-      alert('Username dan nama wajib diisi.');
+      setFormError('Username dan nama wajib diisi.');
       return;
     }
 
+    setSaving(true);
+    setFormError(null);
     try {
       if (isEditMode && selectedUser) {
         // If password is blank on edit, keep existing
-        const payload = { ...formData };
+        const payload: Partial<User> = { ...formData };
         if (!payload.password) delete payload.password;
+        if (editingSelf) {
+          // The server rejects these for one's own account; not sending them keeps a name change working.
+          delete payload.role;
+          delete payload.allowedModules;
+        }
         await updateResource('users', selectedUser.id, payload);
       } else {
         if (!formData.password) {
-          alert('Password wajib diisi untuk akun baru.');
+          setFormError('Password wajib diisi untuk akun baru.');
           return;
         }
         await createResource('users', formData);
       }
       setIsModalOpen(false);
+      showToast(isEditMode ? 'Perubahan akun disimpan.' : 'Akun baru ditambahkan.');
       loadData();
-    } catch (err) {
+    } catch (err: any) {
       console.error('Save user error:', err);
-      alert('Gagal menyimpan akun. Coba lagi.');
+      // 403/409 from the server carry the reason (own role, last full-access account); show it as is.
+      setFormError(err?.message || 'Gagal menyimpan akun. Coba lagi.');
+    } finally {
+      setSaving(false);
     }
   };
 
-  const handleDelete = async (id: string) => {
-    if (id === 'admin' || id === 'USR-001') {
-      alert('Akun Super Admin utama tidak bisa dihapus.');
+  const handleDelete = async (user: User) => {
+    const blocked = deleteBlockedTitle(user);
+    if (blocked) {
+      showToast(blocked, 'error');
       return false;
     }
-    if (window.confirm('Hapus akun ini?')) {
-      try {
-        await deleteResource('users', id);
-        loadData();
-      } catch (err) {
-        console.error('Delete user error:', err);
-      }
+    if (!window.confirm(`Hapus akun ${user.name || user.username}?`)) return false;
+    try {
+      await deleteResource('users', user.id);
+      showToast('Akun dihapus.');
+      loadData();
       return true;
+    } catch (err: any) {
+      console.error('Delete user error:', err);
+      showToast(err?.message || 'Gagal menghapus akun. Coba lagi.', 'error');
+      return false;
     }
-    return false;
   };
 
   const filteredUsers = users.filter(u =>
@@ -279,7 +323,7 @@ export const AccountsModule: React.FC = () => {
                 sort={sort}
                 onSortChange={setSort}
                 align="right"
-                className="hidden sm:table-cell"
+                className="hidden sm:table-cell tabular-nums"
               >
                 Akses Menu
               </TableSortHead>
@@ -319,7 +363,7 @@ export const AccountsModule: React.FC = () => {
               />
             ) : (
               sortedUsers.map(user => {
-                const isProtected = isProtectedAccount(user);
+                const blockedTitle = deleteBlockedTitle(user);
 
                 return (
                   <TableRow key={user.id}>
@@ -327,12 +371,21 @@ export const AccountsModule: React.FC = () => {
                       {user.id}
                     </TableCell>
                     <TableCell className="hidden md:table-cell font-semibold text-slate-900">
-                      {user.name || '—'}
+                      <span className="block max-w-[180px] truncate" title={user.name || undefined}>
+                        {user.name || '—'}
+                      </span>
                     </TableCell>
                     <TableCell className="hidden md:table-cell whitespace-nowrap font-mono text-teal-700">
-                      @{user.username}
+                      <span className="block max-w-[180px] truncate" title={`@${user.username}`}>
+                        @{user.username}
+                        {isSelf(user) && (
+                          <span className="ml-1.5 font-sans text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                            Anda
+                          </span>
+                        )}
+                      </span>
                     </TableCell>
-                    <TableCell className="hidden sm:table-cell text-right whitespace-nowrap">
+                    <TableCell className="hidden sm:table-cell text-right tabular-nums whitespace-nowrap">
                       {hasFullAccess(user) ? (
                         <Badge variant="done" size="sm" solid>Semua menu</Badge>
                       ) : (
@@ -347,29 +400,22 @@ export const AccountsModule: React.FC = () => {
                     </TableCell>
                     <TableCell className="cell-sticky-end text-right">
                       <TableRowActions>
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="icon"
-                          onClick={() => handleDelete(user.id)}
-                          disabled={isProtected}
-                          aria-label={`Hapus akun ${user.name}`}
-                          title={isProtected ? 'Akun Super Admin utama tidak bisa dihapus' : 'Hapus akun'}
-                          className="hidden size-8 text-brand-red hover:bg-rose-50 hover:text-brand-red sm:inline-flex"
-                        >
-                          <Trash2 size={14} aria-hidden="true" />
-                        </Button>
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="icon"
+                        <RowActionButton
+                          label="Ubah"
+                          icon={Edit}
                           onClick={() => handleOpenEdit(user)}
-                          aria-label={`Ubah akun ${user.name}`}
+                          ariaLabel={`Ubah akun ${user.name}`}
                           title="Ubah akun"
-                          className="hidden size-8 sm:inline-flex"
-                        >
-                          <Edit size={14} aria-hidden="true" />
-                        </Button>
+                        />
+                        <RowActionButton
+                          label="Hapus"
+                          icon={Trash2}
+                          tone="danger"
+                          onClick={() => handleDelete(user)}
+                          disabled={!!blockedTitle}
+                          ariaLabel={`Hapus akun ${user.name}`}
+                          title={blockedTitle || 'Hapus akun'}
+                        />
                         <RowDetailButton label={user.name || user.id} onClick={() => setDetailUser(user)} />
                       </TableRowActions>
                     </TableCell>
@@ -393,11 +439,11 @@ export const AccountsModule: React.FC = () => {
               type="button"
               variant="outline"
               onClick={async () => {
-                const deleted = await handleDelete(detailUser.id);
+                const deleted = await handleDelete(detailUser);
                 if (deleted) setDetailUser(null);
               }}
-              disabled={isProtectedAccount(detailUser)}
-              title={isProtectedAccount(detailUser) ? 'Akun Super Admin utama tidak bisa dihapus' : undefined}
+              disabled={!!deleteBlockedTitle(detailUser)}
+              title={deleteBlockedTitle(detailUser)}
               className="text-brand-red hover:bg-rose-50 hover:text-brand-red"
             >
               <Trash2 size={16} aria-hidden="true" /> Hapus
@@ -456,6 +502,8 @@ export const AccountsModule: React.FC = () => {
         )}
       </DetailDrawer>
 
+      <Toast toast={toast} />
+
       {/* Modal Add / Edit User */}
       <Modal
         isOpen={isModalOpen}
@@ -464,6 +512,16 @@ export const AccountsModule: React.FC = () => {
         size="2xl"
       >
         <form onSubmit={handleSubmit} className="space-y-5">
+          {formError && (
+            <div role="alert" className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-sm text-brand-red-cta">
+              {formError}
+            </div>
+          )}
+          {editingSelf && (
+            <div role="note" className="p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm text-slate-700">
+              {SELF_EDIT_HINT}
+            </div>
+          )}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <label htmlFor="acc-username" className={labelClass}>
@@ -526,7 +584,9 @@ export const AccountsModule: React.FC = () => {
                 id="acc-role"
                 value={formData.role}
                 onChange={(e) => handleRoleChange(e.target.value as StaffRole)}
-                className={fieldClass}
+                className={`${fieldClass} disabled:bg-slate-100 disabled:text-slate-500`}
+                disabled={editingSelf}
+                title={editingSelf ? SELF_EDIT_HINT : undefined}
               >
                 <option value="Super Admin">Super Admin (Akses Penuh Seluruh Sistem)</option>
                 <option value="Owner">Owner (Eksekutif, Keuangan, Pesanan & Toko)</option>
@@ -548,12 +608,18 @@ export const AccountsModule: React.FC = () => {
                 variant="ghost"
                 onClick={handleSelectAllModules}
                 className="-mr-2"
+                disabled={editingSelf}
+                title={editingSelf ? SELF_EDIT_HINT : undefined}
               >
                 Pilih Semua
               </Button>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-72 overflow-y-auto p-3 bg-slate-50 border border-slate-200 rounded-xl">
+            <div
+              className={`grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-72 overflow-y-auto p-3 bg-slate-50 border border-slate-200 rounded-xl ${
+                editingSelf ? 'opacity-70' : ''
+              }`}
+            >
               {ALL_MODULES.map((m) => {
                 const isSelected = !!(
                   formData.allowedModules?.includes('*') ||
@@ -564,7 +630,9 @@ export const AccountsModule: React.FC = () => {
                   <label
                     key={m.id}
                     htmlFor={`acc-module-${m.id}`}
-                    className={`flex min-h-10 items-center gap-2.5 px-3 py-2.5 rounded-lg cursor-pointer transition select-none text-sm border has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-teal-600 ${
+                    className={`flex min-h-10 items-center gap-2.5 px-3 py-2.5 rounded-lg transition select-none text-sm border has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-teal-600 ${
+                      editingSelf ? 'cursor-not-allowed' : 'cursor-pointer'
+                    } ${
                       isSelected
                         ? 'bg-white border-teal-300 shadow-xs text-slate-900 font-medium'
                         : 'border-transparent text-slate-600 hover:bg-slate-100'
@@ -575,6 +643,7 @@ export const AccountsModule: React.FC = () => {
                       type="checkbox"
                       checked={isSelected}
                       onChange={() => handleToggleModule(m.id)}
+                      disabled={editingSelf}
                       className="sr-only"
                     />
                     {isSelected ? (
@@ -599,8 +668,9 @@ export const AccountsModule: React.FC = () => {
             </Button>
             <Button
               type="submit"
+              disabled={saving}
             >
-              {isEditMode ? 'Simpan Perubahan' : 'Tambah Akun'}
+              {saving ? 'Menyimpan…' : isEditMode ? 'Simpan Perubahan' : 'Tambah Akun'}
             </Button>
           </div>
         </form>

@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { Package, Search, Plus, Download, CheckCircle2, AlertTriangle } from 'lucide-react';
-import { PackagingSlip, SPK } from '../../types';
+import { Package, Search, Plus, Download, CheckCircle2, AlertTriangle, ShieldCheck } from 'lucide-react';
+import { PackagingSlip, SPK, QCReport } from '../../types';
 import { fetchResource, createResource } from '../../services/api';
 import { formatDate, formatDateTime, exportTableToExcel, generateId } from '../../lib/utils';
 import { StatusBadge } from '../ui/Badge';
@@ -13,6 +13,7 @@ import {
   FieldHint,
   FieldError,
   FormError,
+  FormNotice,
   FormSection,
   Select
 } from '../ui/Field';
@@ -74,6 +75,7 @@ const packingStatus = (slip: PackagingSlip) =>
 export const PackagingModule: React.FC = () => {
   const [slips, setSlips] = useState<PackagingSlip[]>([]);
   const [spks, setSpks] = useState<SPK[]>([]);
+  const [qcReports, setQcReports] = useState<QCReport[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -92,37 +94,20 @@ export const PackagingModule: React.FC = () => {
     steamedAndFoldedOk: true,
     polybagCleanOk: true,
     boxLabelAttached: true,
-    packedBy: 'Packing Team'
+    packedBy: ''
   });
 
   const loadData = async () => {
     try {
       setLoading(true);
-      const [packRes, spkRes] = await Promise.all([
+      const [packRes, spkRes, qcRes] = await Promise.all([
         fetchResource<PackagingSlip>('packaging-slips'),
-        fetchResource<SPK>('spk_produksi')
+        fetchResource<SPK>('spk_produksi'),
+        fetchResource<QCReport>('qc-reports')
       ]);
-      setSlips(packRes.length > 0 ? packRes : [
-        {
-          id: 'BOX-ORD002-01',
-          orderId: 'ORD-002',
-          spkId: 'SPK-ORD-002',
-          boxNumber: 1,
-          totalBoxes: 1,
-          itemsInBox: [{ size: 'S', color: 'Turquoise', qty: 2 }, { size: 'M', color: 'Turquoise', qty: 5 }, { size: 'L', color: 'Turquoise', qty: 10 }],
-          totalQtyInBox: 37,
-          weightKg: 8.2,
-          steamedAndFoldedOk: true,
-          polybagCleanOk: true,
-          boxLabelAttached: true,
-          packedBy: 'Dewi & Maya',
-          timestamp: '2026-09-02T16:00:00Z'
-        }
-      ]);
+      setSlips(packRes);
       setSpks(spkRes);
-      if (spkRes.length > 0 && !formData.spkId) {
-        setFormData(prev => ({ ...prev, spkId: spkRes[0].id }));
-      }
+      setQcReports(qcRes || []);
     } catch (err) {
       console.error(err);
     } finally {
@@ -134,6 +119,16 @@ export const PackagingModule: React.FC = () => {
     loadData();
   }, []);
 
+  /*
+   * SOP-13: only a lot QC has accepted may be boxed. The server enforces the
+   * same rule; filtering here keeps the dropdown honest about what it offers.
+   */
+  const acceptedSpkIds = new Set(
+    qcReports.filter(r => r.status === 'Accept').map(r => String(r.spkId || '').toLowerCase())
+  );
+  const packableSpks = spks.filter(s => acceptedSpkIds.has(String(s.id).toLowerCase()));
+  const selectedSpk = packableSpks.find(s => s.id === formData.spkId);
+
   const handleCreatePacking = async (e: React.FormEvent) => {
     e.preventDefault();
     if (saving) return;
@@ -142,9 +137,11 @@ export const PackagingModule: React.FC = () => {
     const boxTotal = Number(formData.totalBoxes);
     const qtyInBox = Number(formData.totalQtyInBox);
     const weight = Number(formData.weightKg);
+    const spk = selectedSpk;
 
     const errors: Record<string, string> = {};
     if (!formData.spkId) errors.spkId = 'Pilih SPK yang isinya dikemas di box ini.';
+    else if (!spk) errors.spkId = 'SPK ini belum lolos QC (Accept), jadi belum boleh dikemas.';
     if (!(boxNo > 0)) errors.boxNumber = 'Nomor box minimal 1.';
     else if (boxTotal > 0 && boxNo > boxTotal) {
       errors.boxNumber = `Nomor box tidak boleh melebihi total ${boxTotal} box.`;
@@ -153,7 +150,7 @@ export const PackagingModule: React.FC = () => {
     if (!(qtyInBox > 0)) errors.totalQtyInBox = 'Isi box minimal 1 pcs.';
     if (!(weight > 0)) errors.weightKg = 'Berat box harus lebih dari 0 Kg.';
 
-    if (Object.keys(errors).length > 0) {
+    if (Object.keys(errors).length > 0 || !spk) {
       setFieldErrors(errors);
       setFormError('Lengkapi isian yang ditandai merah, lalu simpan lagi.');
       const fieldIds: Record<string, string> = {
@@ -173,11 +170,11 @@ export const PackagingModule: React.FC = () => {
     setFormError(null);
     setSaving(true);
 
-    const spk = spks.find(s => s.id === formData.spkId);
+    // The box belongs to the SPK's real order; there is no generic fallback.
     const slip: PackagingSlip = {
       id: generateId('BOX'),
-      orderId: spk?.orderId || 'ORD-GEN',
-      spkId: formData.spkId || 'SPK-GEN',
+      orderId: spk.orderId,
+      spkId: spk.id,
       boxNumber: Number(formData.boxNumber) || 1,
       totalBoxes: Number(formData.totalBoxes) || 1,
       itemsInBox: [{ size: 'All Size', color: 'Mix', qty: Number(formData.totalQtyInBox) || 10 }],
@@ -194,8 +191,8 @@ export const PackagingModule: React.FC = () => {
       await createResource('packaging-slips', slip);
       setIsModalOpen(false);
       loadData();
-    } catch (err) {
-      setFormError('Data box gagal disimpan. Periksa koneksi ke server, lalu simpan lagi.');
+    } catch (err: any) {
+      setFormError(err?.message || 'Data box gagal disimpan. Periksa koneksi ke server, lalu simpan lagi.');
     } finally {
       setSaving(false);
     }
@@ -276,12 +273,15 @@ export const PackagingModule: React.FC = () => {
               <TableSortHead sortKey="spkId" sort={sort} onSortChange={setSort} className="hidden md:table-cell">
                 SPK
               </TableSortHead>
+              <TableSortHead sortKey="packedBy" sort={sort} onSortChange={setSort} className="hidden md:table-cell">
+                Petugas
+              </TableSortHead>
               <TableSortHead
                 sortKey="boxNumber"
                 sort={sort}
                 onSortChange={setSort}
                 align="right"
-                className="hidden sm:table-cell"
+                className="hidden sm:table-cell tabular-nums"
               >
                 Box ke-
               </TableSortHead>
@@ -290,7 +290,7 @@ export const PackagingModule: React.FC = () => {
                 sort={sort}
                 onSortChange={setSort}
                 align="right"
-                className="hidden sm:table-cell"
+                className="hidden sm:table-cell tabular-nums"
               >
                 Isi (Pcs)
               </TableSortHead>
@@ -299,12 +299,9 @@ export const PackagingModule: React.FC = () => {
                 sort={sort}
                 onSortChange={setSort}
                 align="right"
-                className="hidden sm:table-cell"
+                className="hidden sm:table-cell tabular-nums"
               >
                 Berat (Kg)
-              </TableSortHead>
-              <TableSortHead sortKey="packedBy" sort={sort} onSortChange={setSort} className="hidden xl:table-cell">
-                Petugas
               </TableSortHead>
               <TableSortHead sortKey="timestamp" sort={sort} onSortChange={setSort} className="hidden lg:table-cell">
                 Tanggal
@@ -341,28 +338,30 @@ export const PackagingModule: React.FC = () => {
             ) : (
               sortedSlips.map(slip => (
                 <TableRow key={slip.id}>
-                  <TableCell className="cell-sticky-start whitespace-nowrap font-mono font-bold text-slate-900">
+                  <TableCell className="cell-sticky-start font-mono font-bold text-slate-900">
                     {slip.id}
                   </TableCell>
-                  <TableCell className="hidden md:table-cell whitespace-nowrap font-mono text-teal-700">
+                  <TableCell className="hidden md:table-cell font-mono text-teal-700">
                     {slip.spkId || '—'}
                   </TableCell>
-                  <TableCell className="hidden sm:table-cell text-right whitespace-nowrap">
+                  <TableCell className="hidden md:table-cell">
+                    <span className="block max-w-[180px] truncate" title={slip.packedBy}>
+                      {slip.packedBy || '—'}
+                    </span>
+                  </TableCell>
+                  <TableCell className="hidden sm:table-cell text-right tabular-nums">
                     {slip.boxNumber}
                   </TableCell>
-                  <TableCell className="hidden sm:table-cell text-right whitespace-nowrap font-bold text-slate-900">
+                  <TableCell className="hidden sm:table-cell text-right tabular-nums font-bold text-slate-900">
                     {slip.totalQtyInBox}
                   </TableCell>
-                  <TableCell className="hidden sm:table-cell text-right whitespace-nowrap">
+                  <TableCell className="hidden sm:table-cell text-right tabular-nums">
                     {slip.weightKg}
                   </TableCell>
-                  <TableCell className="hidden xl:table-cell">
-                    {slip.packedBy || '—'}
-                  </TableCell>
-                  <TableCell className="hidden lg:table-cell whitespace-nowrap">
+                  <TableCell className="hidden lg:table-cell">
                     {formatDate(slip.timestamp)}
                   </TableCell>
-                  <TableCell className="text-center whitespace-nowrap">
+                  <TableCell className="text-center">
                     <StatusBadge status={packingStatus(slip)} size="sm" solid />
                   </TableCell>
                   <TableCell className="cell-sticky-end text-right">
@@ -473,32 +472,43 @@ export const PackagingModule: React.FC = () => {
           <FormError>{formError}</FormError>
 
           <FormSection step={1} title="Pesanan & box" description="Box ini milik SPK mana, dan nomor berapa dari total kiriman.">
+            <FormNotice icon={<ShieldCheck size={18} />} title="Hanya SPK yang sudah lolos QC (Accept) yang bisa dikemas">
+              Lot yang ditolak atau masih diperbaiki tidak muncul di daftar. Catat hasil QC Accept dulu di halaman
+              Pemeriksaan QC.
+            </FormNotice>
+
             <div>
               <FieldLabel htmlFor="pkg-spk" required>SPK</FieldLabel>
               <Select
                 id="pkg-spk"
                 value={formData.spkId}
                 aria-invalid={!!fieldErrors.spkId}
-                aria-describedby={
-                  fieldErrors.spkId ? 'pkg-spk-error' : spks.length === 0 ? 'pkg-spk-hint' : undefined
-                }
+                aria-describedby={fieldErrors.spkId ? 'pkg-spk-error' : 'pkg-spk-hint'}
                 onChange={(e) => {
                   setFieldErrors(prev => ({ ...prev, spkId: '' }));
                   setFormData({ ...formData, spkId: e.target.value });
                 }}
               >
-                <option value="">Pilih SPK produksi</option>
-                {spks.map(s => (
+                <option value="">Pilih SPK yang lolos QC</option>
+                {packableSpks.map(s => (
                   <option key={s.id} value={s.id}>{s.id} - {s.productName} ({s.targetQty} Pcs)</option>
                 ))}
               </Select>
               {fieldErrors.spkId ? (
                 <FieldError id="pkg-spk-error">{fieldErrors.spkId}</FieldError>
-              ) : spks.length === 0 ? (
+              ) : packableSpks.length === 0 ? (
                 <FieldHint id="pkg-spk-hint">
-                  Belum ada SPK produksi yang bisa dipilih. Minta PPIC menerbitkan SPK dulu.
+                  {spks.length === 0
+                    ? 'Belum ada SPK produksi. Minta PPIC menerbitkan SPK dulu.'
+                    : 'Belum ada SPK yang lolos QC. Box baru bisa dicatat setelah ada hasil QC Accept.'}
                 </FieldHint>
-              ) : null}
+              ) : (
+                <FieldHint id="pkg-spk-hint">
+                  {selectedSpk
+                    ? `Pesanan ${selectedSpk.po || selectedSpk.orderId} · ${selectedSpk.customerName}`
+                    : `${packableSpks.length} SPK lolos QC dan siap dikemas.`}
+                </FieldHint>
+              )}
             </div>
 
             <div className="grid grid-cols-2 gap-4">

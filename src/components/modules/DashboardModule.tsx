@@ -82,16 +82,10 @@ interface DashboardProps {
 }
 
 export const DashboardModule: React.FC<DashboardProps> = ({ onNavigate, onOpenScanner }) => {
-  const [stats, setStats] = useState<any>({
-    totalOrders: 0,
-    activeOrdersCount: 0,
-    totalPcsInProduction: 0,
-    totalRevenue: 0,
-    pendingPayment: 0,
-    defectRate: '0%',
-    totalCustomers: 0,
-    activeBundlesCount: 0
-  });
+  // Only the defect rate is read from the stats endpoint; everything else is
+  // computed here from the records themselves.
+  const [stats, setStats] = useState<{ defectRate?: string }>({});
+  const [statsError, setStatsError] = useState<string | null>(null);
 
   const [activeSpks, setActiveSpks] = useState<SPK[]>([]);
   const [recentOrders, setRecentOrders] = useState<Order[]>([]);
@@ -103,20 +97,31 @@ export const DashboardModule: React.FC<DashboardProps> = ({ onNavigate, onOpenSc
   const loadDashboardData = useCallback(async (isManual = false) => {
     if (isManual) setRefreshing(true);
     try {
-      const [statsData, spkData, orderData, materialData] = await Promise.all([
+      /*
+       * Each request stands on its own: the stats endpoint failing used to
+       * blank the whole page although the SPK and order lists had loaded fine.
+       */
+      const [statsRes, spkRes, orderRes, materialRes] = await Promise.allSettled([
         fetchDashboardStatsApi(),
         fetchResource<SPK>('spk_produksi'),
         fetchResource<Order>('orders'),
         fetchResource<any>('raw-materials')
       ]);
-      setStats(statsData);
-      setActiveSpks(spkData || []);
-      setRecentOrders(orderData || []);
-      setRawMaterials(materialData || []);
+      if (statsRes.status === 'fulfilled') {
+        setStats(statsRes.value || {});
+        setStatsError(null);
+      } else {
+        console.error('Failed to load dashboard stats:', statsRes.reason);
+        setStatsError(statsRes.reason?.message || 'Statistik ringkas belum bisa dimuat.');
+      }
+      if (spkRes.status === 'fulfilled') setActiveSpks(spkRes.value || []);
+      else console.error('Failed to load SPKs:', spkRes.reason);
+      if (orderRes.status === 'fulfilled') setRecentOrders(orderRes.value || []);
+      else console.error('Failed to load orders:', orderRes.reason);
+      if (materialRes.status === 'fulfilled') setRawMaterials(materialRes.value || []);
+      else console.error('Failed to load raw materials:', materialRes.reason);
       const now = new Date();
       setLastUpdated(now.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }));
-    } catch (err) {
-      console.error('Failed to load dashboard:', err);
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -136,12 +141,15 @@ export const DashboardModule: React.FC<DashboardProps> = ({ onNavigate, onOpenSc
     const qcPcs = inProgress.reduce((a, s) => a + (Number(s.qc) || 0), 0);
     const finishedPcs = inProgress.reduce((a, s) => a + (Number(s.finishing) || 0), 0);
 
-    const totalOrdersAmount = recentOrders.reduce((a, o) => a + (Number(o.totalPrice) || 0), 0);
-    const totalDp = recentOrders.reduce((a, o) => a + (Number(o.downPayment) || 0), 0);
+    // A cancelled order is neither an incoming order nor money on the table.
+    const liveOrders = recentOrders.filter(o => o.status !== 'Cancelled');
+    const totalOrdersAmount = liveOrders.reduce((a, o) => a + (Number(o.totalPrice) || 0), 0);
+    const totalDp = liveOrders.reduce((a, o) => a + (Number(o.downPayment) || 0), 0);
     const dpPercent = totalOrdersAmount > 0 ? Math.round((totalDp / totalOrdersAmount) * 100) : 0;
 
     return {
       inProgress,
+      liveOrderCount: liveOrders.length,
       targetPcs,
       cutPcs,
       cutPct: targetPcs > 0 ? Math.min(100, Math.round((cutPcs / targetPcs) * 100)) : 0,
@@ -157,6 +165,16 @@ export const DashboardModule: React.FC<DashboardProps> = ({ onNavigate, onOpenSc
     };
   }, [activeSpks, recentOrders]);
 
+  /*
+   * "Progres SPK" is about work in flight, so finished SPKs step aside while
+   * anything is still running. With nothing running, the finished ones are the
+   * only story to tell and are shown instead of an empty panel.
+   */
+  const spotlightSpks = useMemo(
+    () => (metrics.inProgress.length > 0 ? metrics.inProgress : activeSpks),
+    [metrics.inProgress, activeSpks]
+  );
+
   // Attention items (SOP-03 & SOP-04/05)
   const awaitingSpkCount = useMemo(() => ordersAwaitingSpk(recentOrders, activeSpks).length, [recentOrders, activeSpks]);
   const lowStockCount = useMemo(() => rawMaterials.filter(r =>
@@ -165,6 +183,19 @@ export const DashboardModule: React.FC<DashboardProps> = ({ onNavigate, onOpenSc
     r?.minStock !== undefined && r?.minStock !== null && !isNaN(Number(r.minStock)) &&
     Number(r.stock) <= Number(r.minStock)
   ).length, [rawMaterials]);
+
+  /*
+   * The deadline panel answers "which order is due next", so it lists open
+   * orders that actually have a deadline, soonest (and overdue) first. Newest-
+   * created order is a different question, and finished orders are not due.
+   */
+  const deadlineOrders = useMemo(
+    () =>
+      recentOrders
+        .filter(o => !!o.deadline && o.status !== 'Completed' && o.status !== 'Cancelled')
+        .sort((a, b) => String(a.deadline).localeCompare(String(b.deadline))),
+    [recentOrders]
+  );
 
   /* Deadline chip: overdue reads critical, due within 3 days warning, the rest idle. */
   const getDeadlineTag = (dateStr?: string, status?: string) => {
@@ -295,13 +326,23 @@ export const DashboardModule: React.FC<DashboardProps> = ({ onNavigate, onOpenSc
         </div>
       )}
 
+      {statsError && (
+        <p
+          role="status"
+          className="flex items-start gap-2 rounded-xl border border-status-warning-border bg-status-warning-bg px-3.5 py-2.5 text-sm font-medium text-status-warning"
+        >
+          <AlertTriangle size={16} className="mt-0.5 shrink-0" aria-hidden="true" />
+          <span>Statistik ringkas (tingkat cacat) belum bisa dimuat: {statsError}. Angka lain di halaman ini tetap dari data terbaru.</span>
+        </p>
+      )}
+
       {/* 4 CORE KPI METRICS */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
         <KpiCard
           label="Pesanan Masuk"
           destination="Pesanan Masuk"
           icon={<ShoppingCart size={18} className="shrink-0 text-brand-teal" aria-hidden="true" />}
-          value={recentOrders.length}
+          value={metrics.liveOrderCount}
           detail={<>{metrics.inProgress.length} SPK berjalan &middot; target {metrics.targetPcs.toLocaleString('id-ID')} Pcs</>}
           onClick={() => onNavigate('Orders')}
         />
@@ -320,7 +361,7 @@ export const DashboardModule: React.FC<DashboardProps> = ({ onNavigate, onOpenSc
           destination="Pemeriksaan QC"
           icon={<ShieldCheck size={18} className="shrink-0 text-brand-teal" aria-hidden="true" />}
           value={<>{metrics.qcPcs.toLocaleString('id-ID')} <span className="text-base font-medium text-slate-500">Pcs</span></>}
-          detail={<>Tingkat cacat {stats.defectRate || '0%'}</>}
+          detail={<>Tingkat cacat {statsError ? '—' : stats.defectRate || '0%'}</>}
           onClick={() => onNavigate('QC')}
         />
 
@@ -394,12 +435,14 @@ export const DashboardModule: React.FC<DashboardProps> = ({ onNavigate, onOpenSc
 
           {loading && activeSpks.length === 0 ? (
             <p className="py-6 text-center text-sm text-slate-500" role="status">Memuat SPK…</p>
-          ) : activeSpks.length === 0 && (
+          ) : activeSpks.length === 0 ? (
             <p className="py-6 text-center text-sm text-slate-500">Belum ada SPK.</p>
+          ) : metrics.inProgress.length === 0 && (
+            <p className="text-xs text-slate-500">Semua SPK sudah selesai; menampilkan yang terakhir.</p>
           )}
 
           <div className="space-y-3">
-            {activeSpks.slice(0, 6).map(spk => (
+            {spotlightSpks.slice(0, 6).map(spk => (
               <div
                 key={spk.id}
                 className="p-4 bg-teal-50/30 rounded-xl border border-teal-200/60 space-y-2.5"
@@ -468,14 +511,17 @@ export const DashboardModule: React.FC<DashboardProps> = ({ onNavigate, onOpenSc
 
           {loading && recentOrders.length === 0 ? (
             <p className="py-6 text-center text-sm text-slate-500" role="status">Memuat pesanan…</p>
-          ) : recentOrders.length === 0 && (
-            <p className="py-6 text-center text-sm text-slate-500">Belum ada pesanan.</p>
+          ) : deadlineOrders.length === 0 && (
+            <p className="py-6 text-center text-sm text-slate-500">
+              {recentOrders.length === 0 ? 'Belum ada pesanan.' : 'Tidak ada pesanan berjalan yang punya deadline.'}
+            </p>
           )}
 
           <div className="space-y-3">
-            {recentOrders.slice(0, 6).map(order => {
-              const isPaid = (order.downPayment || 0) >= (order.totalPrice || 0) && (order.totalPrice || 0) > 0;
-              const dpPct = (order.totalPrice || 0) > 0 ? Math.round(((order.downPayment || 0) / order.totalPrice) * 100) : 0;
+            {deadlineOrders.slice(0, 6).map(order => {
+              const priced = (Number(order.totalPrice) || 0) > 0;
+              const isPaid = priced && (order.downPayment || 0) >= (order.totalPrice || 0);
+              const dpPct = priced ? Math.round(((order.downPayment || 0) / order.totalPrice) * 100) : 0;
 
               return (
                 <div
@@ -500,10 +546,10 @@ export const DashboardModule: React.FC<DashboardProps> = ({ onNavigate, onOpenSc
                     </div>
                     <div className="text-right shrink-0">
                       <div className="text-sm font-bold text-black whitespace-nowrap tabular-nums">
-                        {formatCurrency(order.totalPrice)}
+                        {priced ? formatCurrency(order.totalPrice) : <span className="font-normal text-slate-500">Harga belum diisi</span>}
                       </div>
                       <div className="text-xs font-semibold text-slate-600">
-                        {isPaid ? (
+                        {!priced ? null : isPaid ? (
                           <span className="font-bold text-status-done">Lunas</span>
                         ) : (
                           <span className="font-bold text-status-warning">DP {dpPct}%</span>

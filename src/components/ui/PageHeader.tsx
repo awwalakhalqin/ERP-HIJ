@@ -18,6 +18,7 @@ export const PageHeader: React.FC<PageHeaderProps> = ({ title, description, acti
         <p className="mt-1 max-w-2xl text-sm text-muted-foreground text-pretty">{description}</p>
       )}
     </div>
-    {actions && <div className="flex flex-wrap items-center gap-2 sm:justify-end">{actions}</div>}
+    {/* The description gives way first; the buttons stay on one right-aligned row from lg up. */}
+    {actions && <div className="flex flex-wrap items-center gap-2 sm:ml-auto sm:justify-end lg:shrink-0">{actions}</div>}
   </div>
 );

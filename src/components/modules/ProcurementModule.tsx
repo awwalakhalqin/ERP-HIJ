@@ -16,14 +16,14 @@ import {
 } from 'lucide-react';
 import { Procurement, Order } from '../../types';
 import { fetchResource, createResource, updateResource, deleteResource } from '../../services/api';
-import { formatCurrency, formatDate, formatDateTime, generateId, exportTableToExcel, statusLabel } from '../../lib/utils';
-import { Badge, StatusBadge } from '../ui/Badge';
+import { formatCurrency, formatDate, formatDateTime, generateId, exportTableToExcel, todayLocal } from '../../lib/utils';
+import { Badge } from '../ui/Badge';
 import { Modal } from '../ui/Modal';
 import { Card } from '../ui/Card';
 import { Button } from '../ui/Button';
 import { Input } from '../ui/Input';
 import { PageHeader } from '../ui/PageHeader';
-import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell, TableRowActions, TableEmptyRow, TableSkeletonRows } from '../ui/Table';
+import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell, TableRowActions, RowActionButton, TableEmptyRow, TableSkeletonRows } from '../ui/Table';
 import { DetailDrawer, DetailSection, DetailField, DetailStats, RowDetailButton } from '../ui/DetailDrawer';
 import { newestFirst } from '../../lib/ordering';
 
@@ -41,7 +41,6 @@ export const ProcurementModule: React.FC = () => {
   const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
-  const [statusFilter, setStatusFilter] = useState('ALL');
   const [categoryFilter, setCategoryFilter] = useState('ALL');
   const [projectFilter, setProjectFilter] = useState('ALL');
   const [detailId, setDetailId] = useState<string | null>(null);
@@ -68,7 +67,6 @@ export const ProcurementModule: React.FC = () => {
     purchaseDate: new Date().toISOString().split('T')[0],
     estimatedDelivery: '',
     category: 'Kain Utama',
-    status: 'Requested',
     notes: ''
   });
 
@@ -112,14 +110,13 @@ export const ProcurementModule: React.FC = () => {
       orderId: defaultIntended,
       customerName: firstOrder?.customerName || '',
       projectName: firstOrder ? `${firstOrder.productType} - ${firstOrder.customerName}` : '',
-      quantity: 25,
+      quantity: 1,
       unit: 'Kg',
-      unitPrice: 85000,
-      totalPrice: 25 * 85000,
+      unitPrice: 0,
+      totalPrice: 0,
       purchaseDate: new Date().toISOString().split('T')[0],
       estimatedDelivery: new Date(Date.now() + 3 * 86400000).toISOString().split('T')[0],
       category: 'Kain Utama',
-      status: 'Requested',
       notes: ''
     });
     setIsModalOpen(true);
@@ -186,27 +183,18 @@ export const ProcurementModule: React.FC = () => {
       loadData();
     } catch (err) {
       console.error('Save procurement error:', err);
-      alert('Gagal menyimpan PO. Coba lagi.');
+      alert('Gagal menyimpan catatan pembelian. Coba lagi.');
     }
   };
 
   const handleDelete = async (id: string) => {
-    if (window.confirm(`Hapus PO ${id}?`)) {
+    if (window.confirm(`Hapus catatan pembelian ${id}?`)) {
       try {
         await deleteResource('procurements', id);
         loadData();
       } catch (err) {
         console.error('Delete error:', err);
       }
-    }
-  };
-
-  const handleQuickStatusChange = async (item: Procurement, nextStatus: Procurement['status']) => {
-    try {
-      await updateResource('procurements', item.id, { ...item, status: nextStatus });
-      loadData();
-    } catch (err) {
-      console.error('Status update failed:', err);
     }
   };
 
@@ -220,25 +208,23 @@ export const ProcurementModule: React.FC = () => {
       (item.customerName || '').toLowerCase().includes(q) ||
       (item.projectName || '').toLowerCase().includes(q);
 
-    const matchesStatus = statusFilter === 'ALL' || item.status === statusFilter;
     const matchesCategory = categoryFilter === 'ALL' || item.category === categoryFilter;
     const matchesProject = projectFilter === 'ALL' || item.intendedFor === projectFilter || item.orderId === projectFilter;
 
-    return matchesSearch && matchesStatus && matchesCategory && matchesProject;
+    return matchesSearch && matchesCategory && matchesProject;
   }));
 
-  const isFiltered = searchQuery !== '' || statusFilter !== 'ALL' || categoryFilter !== 'ALL' || projectFilter !== 'ALL';
+  const isFiltered = searchQuery !== '' || categoryFilter !== 'ALL' || projectFilter !== 'ALL';
 
   const handleExport = () => {
     const rows = filteredItems.map(item => {
       const linkedOrder = orders.find(o => o.id === item.intendedFor || o.id === item.orderId);
       return {
-        'No. PO': item.id,
+        'No. Catatan': item.id,
         'Proyek / Pesanan': item.intendedFor || item.orderId || '-',
         'Pelanggan': linkedOrder?.customerName || item.customerName || '-',
         'Produk Proyek': linkedOrder?.productType || item.projectName || '-',
         'Tanggal Beli': formatDate(item.purchaseDate),
-        'Estimasi Tiba': item.estimatedDelivery ? formatDate(item.estimatedDelivery) : '-',
         'Barang / Bahan': item.itemName,
         'Kategori': item.category || '-',
         'Pemasok': item.supplierName || '-',
@@ -247,20 +233,23 @@ export const ProcurementModule: React.FC = () => {
         'Satuan': item.unit,
         'Harga Satuan': Number(item.unitPrice) || 0,
         'Total': Number(item.totalPrice) || 0,
-        'Status': statusLabel(item.status),
+        'Perkiraan Tiba': item.estimatedDelivery ? formatDate(item.estimatedDelivery) : '-',
         'Catatan': item.notes || '',
         'Dicatat Oleh': item.user || '',
         'Dicatat Pada': item.timestamp ? formatDateTime(item.timestamp) : ''
       };
     });
-    exportTableToExcel(rows, 'Laporan_Pembelian_Bahan_Proyek_HIJ');
+    exportTableToExcel(rows, 'Riwayat_Pengadaan_Bahan_HIJ');
   };
 
   // Summary Metrics
   const totalSpend = items.reduce((sum, i) => sum + (Number(i.totalPrice) || 0), 0);
-  const pendingCount = items.filter(i => i.status === 'Requested' || i.status === 'PO Created').length;
-  const inTransitCount = items.filter(i => i.status === 'Shipped').length;
-  const receivedCount = items.filter(i => i.status === 'Received').length;
+  // A purchase ledger answers "how much, on what, for whom" — not "where is it now".
+  const thisMonth = todayLocal().slice(0, 7);
+  const monthItems = items.filter(i => (i.purchaseDate || '').startsWith(thisMonth));
+  const monthSpend = monthItems.reduce((sum, i) => sum + (Number(i.totalPrice) || 0), 0);
+  const projectCount = new Set(items.map(i => i.orderId || i.intendedFor).filter(Boolean)).size;
+  const supplierCount = new Set(items.map(i => (i.supplierName || '').trim()).filter(Boolean)).size;
 
   const detailItem = detailId ? items.find(i => i.id === detailId) ?? null : null;
   const detailOrder = detailItem ? orders.find(o => o.id === detailItem.intendedFor || o.id === detailItem.orderId) : undefined;
@@ -274,15 +263,15 @@ export const ProcurementModule: React.FC = () => {
   return (
     <div className="space-y-6">
       <PageHeader
-        title="Pembelian Bahan Proyek"
-        description="Pengadaan material & bahan khusus untuk kebutuhan proyek/pesanan (Make-to-Order)."
+        title="Pengadaan Bahan"
+        description="Riwayat pembelian bahan per proyek. Tiap baris satu pembelian yang sudah terjadi — bukan PO yang ditunggu, dan tidak ada stok yang diisi ulang di sini."
         actions={
           <>
             <Button variant="outline" size="sm" onClick={handleExport}>
               <Download size={16} aria-hidden="true" /> Unduh Excel
             </Button>
             <Button size="sm" onClick={handleOpenAdd}>
-              <Plus size={16} aria-hidden="true" /> Buat PO Proyek
+              <Plus size={16} aria-hidden="true" /> Catat Pembelian
             </Button>
           </>
         }
@@ -302,7 +291,7 @@ export const ProcurementModule: React.FC = () => {
             >
               {formatCurrency(totalSpend)}
             </div>
-            <div className="text-xs text-slate-500 mt-0.5">{items.length} PO Terkait Proyek</div>
+            <div className="text-xs text-slate-500 mt-0.5">{items.length} catatan pembelian</div>
           </div>
         </Card>
 
@@ -311,9 +300,9 @@ export const ProcurementModule: React.FC = () => {
             <Clock className="w-5 h-5" />
           </div>
           <div className="min-w-0">
-            <div className="text-sm text-slate-500">Menunggu Proses</div>
-            <div className="text-base sm:text-lg font-bold text-brand-teal-dark tabular-nums whitespace-nowrap mt-0.5">{pendingCount} PO</div>
-            <div className="text-xs text-slate-500 mt-0.5">{statusLabel('Requested')} & {statusLabel('PO Created')}</div>
+            <div className="text-sm text-slate-500">Belanja Bulan Ini</div>
+            <div className="text-base sm:text-lg font-bold text-brand-teal-dark tabular-nums whitespace-nowrap mt-0.5 truncate" title={formatCurrency(monthSpend)}>{formatCurrency(monthSpend)}</div>
+            <div className="text-xs text-slate-500 mt-0.5">{monthItems.length} pembelian</div>
           </div>
         </Card>
 
@@ -322,9 +311,9 @@ export const ProcurementModule: React.FC = () => {
             <Truck className="w-5 h-5" />
           </div>
           <div className="min-w-0">
-            <div className="text-sm text-slate-500">Dalam Pengiriman</div>
-            <div className="text-base sm:text-lg font-bold text-amber-800 tabular-nums whitespace-nowrap mt-0.5">{inTransitCount} PO</div>
-            <div className="text-xs text-slate-500 mt-0.5">Menuju pabrik</div>
+            <div className="text-sm text-slate-500">Proyek Dibelanjai</div>
+            <div className="text-base sm:text-lg font-bold text-amber-800 tabular-nums whitespace-nowrap mt-0.5">{projectCount}</div>
+            <div className="text-xs text-slate-500 mt-0.5">Pesanan yang pernah dibelikan bahan</div>
           </div>
         </Card>
 
@@ -333,21 +322,21 @@ export const ProcurementModule: React.FC = () => {
             <PackageCheck className="w-5 h-5" />
           </div>
           <div className="min-w-0">
-            <div className="text-sm text-slate-500">Bahan Diterima</div>
-            <div className="text-base sm:text-lg font-bold text-emerald-800 tabular-nums whitespace-nowrap mt-0.5">{receivedCount} PO</div>
-            <div className="text-xs text-slate-500 mt-0.5">Siap masuk potong/SPK</div>
+            <div className="text-sm text-slate-500">Pemasok</div>
+            <div className="text-base sm:text-lg font-bold text-emerald-800 tabular-nums whitespace-nowrap mt-0.5">{supplierCount}</div>
+            <div className="text-xs text-slate-500 mt-0.5">Pernah dipakai</div>
           </div>
         </Card>
       </div>
 
       {/* Filter and Search Bar */}
       <Card className="p-4 flex flex-col md:flex-row gap-3 md:items-center justify-between">
-        <div className="relative w-full md:w-80">
+        <div className="relative w-full md:w-96">
           <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" aria-hidden="true" />
           <Input
             type="search"
-            aria-label="Cari PO"
-            placeholder="Cari bahan, pemasok, no. PO, atau proyek…"
+            aria-label="Cari catatan pembelian"
+            placeholder="Cari bahan, pemasok, no. catatan, atau proyek…"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             className="pl-9"
@@ -381,19 +370,6 @@ export const ProcurementModule: React.FC = () => {
             ))}
           </select>
 
-          <select
-            value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value)}
-            aria-label="Filter status"
-            className={filterClass}
-          >
-            <option value="ALL">Semua Status</option>
-            <option value="Requested">{statusLabel('Requested')}</option>
-            <option value="PO Created">{statusLabel('PO Created')}</option>
-            <option value="Paid">{statusLabel('Paid')}</option>
-            <option value="Shipped">{statusLabel('Shipped')}</option>
-            <option value="Received">{statusLabel('Received')}</option>
-          </select>
         </div>
       </Card>
 
@@ -402,15 +378,15 @@ export const ProcurementModule: React.FC = () => {
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead className="cell-sticky-start">No. PO</TableHead>
-              <TableHead>Proyek / Pesanan</TableHead>
-              <TableHead>Bahan / Barang</TableHead>
-              <TableHead className="hidden md:table-cell">Kategori</TableHead>
+              <TableHead className="cell-sticky-start">No. Catatan</TableHead>
+              <TableHead className="hidden md:table-cell">Pesanan</TableHead>
+              <TableHead className="hidden md:table-cell">Pelanggan</TableHead>
+              <TableHead className="hidden md:table-cell">Bahan / Barang</TableHead>
+              <TableHead className="hidden xl:table-cell">Kategori</TableHead>
               <TableHead className="hidden md:table-cell">Pemasok</TableHead>
-              <TableHead className="text-right">Kuantitas</TableHead>
-              <TableHead className="hidden lg:table-cell text-right">Total</TableHead>
-              <TableHead className="hidden xl:table-cell">Tanggal</TableHead>
-              <TableHead className="text-center">Status</TableHead>
+              <TableHead className="hidden sm:table-cell text-right tabular-nums">Kuantitas</TableHead>
+              <TableHead className="hidden sm:table-cell text-right tabular-nums">Total</TableHead>
+              <TableHead className="hidden lg:table-cell">Tanggal Beli</TableHead>
               <TableHead className="cell-sticky-end text-right">Aksi</TableHead>
             </TableRow>
           </TableHeader>
@@ -421,80 +397,85 @@ export const ProcurementModule: React.FC = () => {
               <TableEmptyRow
                 colSpan={10}
                 icon={<ShoppingBag size={20} />}
-                title={isFiltered && items.length > 0 ? 'Tidak ada PO yang cocok' : 'Belum ada PO Pengadaan Bahan'}
+                title={isFiltered && items.length > 0 ? 'Tidak ada catatan yang cocok' : 'Belum ada pembelian bahan dicatat'}
                 description={
                   isFiltered && items.length > 0
-                    ? 'Coba kata kunci lain atau ubah filter proyek, kategori, dan status.'
-                    : 'Klik "Buat PO Proyek" untuk melakukan pengadaan bahan make-to-order per pesanan.'
+                    ? 'Coba kata kunci lain atau ubah filter proyek dan kategori.'
+                    : 'Klik "Catat Pembelian" untuk mencatat bahan yang sudah dibeli untuk sebuah pesanan.'
+                }
+                action={
+                  isFiltered && items.length > 0 ? undefined : (
+                    <Button size="sm" onClick={handleOpenAdd}>
+                      <Plus size={16} aria-hidden="true" /> Catat Pembelian
+                    </Button>
+                  )
                 }
               />
             ) : (
               filteredItems.map((item) => {
                 const linkedOrder = orders.find(o => o.id === item.intendedFor || o.id === item.orderId);
+                const customerName = linkedOrder?.customerName || item.customerName;
                 return (
                   <TableRow key={item.id}>
-                    <TableCell className="cell-sticky-start whitespace-nowrap font-mono font-bold text-slate-900">
+                    <TableCell className="cell-sticky-start font-mono font-bold text-slate-900">
                       {item.id}
                     </TableCell>
 
-                    <TableCell>
-                      <div className="flex flex-col">
-                        <div className="flex items-center gap-1.5">
-                          <Badge variant="blue" className="font-mono text-xs px-2 py-0.5">
-                            {item.intendedFor || item.orderId || 'Proyek'}
-                          </Badge>
-                        </div>
-                        <span className="text-xs text-slate-600 font-medium truncate max-w-[180px] mt-1">
-                          {linkedOrder?.customerName || item.customerName || '-'} • {linkedOrder?.productType || item.projectName || ''}
-                        </span>
-                      </div>
-                    </TableCell>
-
-                    <TableCell>
-                      <span className="font-semibold text-slate-900 break-words">{item.itemName}</span>
+                    <TableCell className="hidden md:table-cell font-mono text-slate-700">
+                      {item.intendedFor || item.orderId || '—'}
                     </TableCell>
 
                     <TableCell className="hidden md:table-cell">
-                      <span className="text-xs font-medium px-2 py-1 bg-slate-100 text-slate-700 rounded-md">
-                        {item.category || '-'}
+                      <span className="block max-w-[180px] truncate" title={customerName || undefined}>
+                        {customerName || '—'}
                       </span>
                     </TableCell>
 
-                    <TableCell className="hidden md:table-cell font-semibold text-slate-800">
-                      {item.supplierName || '-'}
+                    <TableCell className="hidden md:table-cell">
+                      <span className="block max-w-[180px] truncate font-semibold text-slate-900" title={item.itemName}>
+                        {item.itemName}
+                      </span>
                     </TableCell>
 
-                    <TableCell className="text-right whitespace-nowrap font-medium text-slate-900">
+                    <TableCell className="hidden xl:table-cell">
+                      {item.category ? <Badge variant="idle" size="sm">{item.category}</Badge> : '—'}
+                    </TableCell>
+
+                    <TableCell className="hidden md:table-cell font-semibold text-slate-800">
+                      <span className="block max-w-[180px] truncate" title={item.supplierName || undefined}>
+                        {item.supplierName || '—'}
+                      </span>
+                    </TableCell>
+
+                    <TableCell className="hidden sm:table-cell text-right tabular-nums font-medium text-slate-900">
                       {item.quantity} {item.unit}
                     </TableCell>
 
-                    <TableCell className="hidden lg:table-cell text-right font-bold text-slate-900 whitespace-nowrap">
+                    <TableCell className="hidden sm:table-cell text-right tabular-nums font-bold text-slate-900">
                       {formatCurrency(item.totalPrice)}
                     </TableCell>
 
-                    <TableCell className="hidden xl:table-cell whitespace-nowrap text-xs text-slate-600">
+                    <TableCell className="hidden lg:table-cell text-slate-600">
                       {formatDate(item.purchaseDate)}
-                    </TableCell>
-
-                    <TableCell className="text-center whitespace-nowrap">
-                      <StatusBadge status={item.status} />
                     </TableCell>
 
                     <TableCell className="cell-sticky-end text-right">
                       <TableRowActions>
-                        {item.status === 'Shipped' && (
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={() => handleQuickStatusChange(item, 'Received')}
-                            aria-label={`Tandai Diterima ${item.id}`}
-                            title="Tandai Diterima"
-                            className="h-8 min-w-8 px-2.5 text-xs text-emerald-700 hover:bg-emerald-50"
-                          >
-                            <PackageCheck size={14} aria-hidden="true" />
-                            <span className="hidden sm:inline">Terima</span>
-                          </Button>
-                        )}
+                        <RowActionButton
+                          label="Ubah"
+                          icon={Pencil}
+                          onClick={() => handleOpenEdit(item)}
+                          ariaLabel={`Ubah catatan ${item.id}`}
+                          title="Ubah catatan pembelian"
+                        />
+                        <RowActionButton
+                          label="Hapus"
+                          icon={Trash2}
+                          tone="danger"
+                          onClick={() => handleDelete(item.id)}
+                          ariaLabel={`Hapus catatan ${item.id}`}
+                          title="Hapus catatan pembelian"
+                        />
                         <RowDetailButton label={item.id} onClick={() => setDetailId(item.id)} />
                       </TableRowActions>
                     </TableCell>
@@ -506,51 +487,33 @@ export const ProcurementModule: React.FC = () => {
         </Table>
       </Card>
 
-      {/* PO Detail Drawer */}
+      {/* Purchase detail drawer */}
       <DetailDrawer
         isOpen={!!detailItem}
         onClose={() => setDetailId(null)}
         title={detailItem?.itemName}
         subtitle={detailItem && <span className="font-mono">{detailItem.id} · {formatDate(detailItem.purchaseDate)}</span>}
-        status={detailItem && <StatusBadge status={detailItem.status} />}
         footer={
           detailItem && (
             <>
-              {detailItem.status === 'Shipped' && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => {
-                    setDetailId(null);
-                    handleOpenEdit(detailItem);
-                  }}
-                >
-                  <Pencil size={16} aria-hidden="true" /> Ubah PO
-                </Button>
-              )}
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  setDetailId(null);
+                  handleOpenEdit(detailItem);
+                }}
+              >
+                <Pencil size={16} aria-hidden="true" /> Ubah Catatan
+              </Button>
               <Button
                 variant="outline"
                 size="sm"
                 onClick={() => handleDelete(detailItem.id)}
                 className={destructiveOutline}
               >
-                <Trash2 size={16} aria-hidden="true" /> Hapus PO
+                <Trash2 size={16} aria-hidden="true" /> Hapus Catatan
               </Button>
-              {detailItem.status === 'Shipped' ? (
-                <Button size="sm" onClick={() => handleQuickStatusChange(detailItem, 'Received')}>
-                  <PackageCheck size={16} aria-hidden="true" /> Tandai Diterima
-                </Button>
-              ) : (
-                <Button
-                  size="sm"
-                  onClick={() => {
-                    setDetailId(null);
-                    handleOpenEdit(detailItem);
-                  }}
-                >
-                  <Pencil size={16} aria-hidden="true" /> Ubah PO
-                </Button>
-              )}
             </>
           )
         }
@@ -595,9 +558,8 @@ export const ProcurementModule: React.FC = () => {
               </div>
             </div>
 
-            <DetailSection title="PO & Pengadaan">
-              <DetailField label="No. PO" mono>{detailItem.id}</DetailField>
-              <DetailField label="Status"><StatusBadge status={detailItem.status} /></DetailField>
+            <DetailSection title="Catatan Pembelian">
+              <DetailField label="No. catatan" mono>{detailItem.id}</DetailField>
               <DetailField label="Tanggal Beli">{formatDate(detailItem.purchaseDate)}</DetailField>
               <DetailField label="Estimasi Tiba">
                 {detailItem.estimatedDelivery ? formatDate(detailItem.estimatedDelivery) : '-'}
@@ -645,7 +607,7 @@ export const ProcurementModule: React.FC = () => {
         )}
       </DetailDrawer>
 
-      {/* Modal Add / Edit PO Proyek */}
+      {/* Modal: record or correct one purchase */}
       <Modal
         isOpen={isModalOpen}
         onClose={() => setIsModalOpen(false)}
@@ -839,21 +801,6 @@ export const ProcurementModule: React.FC = () => {
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-            <div>
-              <label htmlFor="po-status" className={labelClass}>Status PO</label>
-              <select
-                id="po-status"
-                value={formData.status}
-                onChange={(e) => setFormData({ ...formData, status: e.target.value as any })}
-                className={fieldClass}
-              >
-                <option value="Requested">{statusLabel('Requested')}</option>
-                <option value="PO Created">{statusLabel('PO Created')}</option>
-                <option value="Paid">{statusLabel('Paid')}</option>
-                <option value="Shipped">{statusLabel('Shipped')}</option>
-                <option value="Received">{statusLabel('Received')}</option>
-              </select>
-            </div>
 
             <div>
               <label htmlFor="po-date" className={labelClass}>Tanggal Beli</label>

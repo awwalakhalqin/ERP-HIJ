@@ -6,6 +6,7 @@
 // the work order back.
 //
 //   DP diterima         SOP-01 & SOP-20  blocking  verified payments >= agreed DP, or owner-approved special terms
+//   Template size chart SOP-03           blocking  the order names a template from the Size Chart page; the SPK prints it
 //   Desain & pola final SOP-02 & SOP-06  blocking  an approved design or sample, or a repeat order waiver.
 //                                                  The pattern is reported on the same line but never holds
 //                                                  the SPK back: cutting can start from an approved mockup.
@@ -14,7 +15,7 @@
 import type { Order, Payment, Sample, Procurement, Pattern, Design, SPK } from '../types';
 import { statusLabel } from './status';
 
-export type RequirementKey = 'dp' | 'sample' | 'material';
+export type RequirementKey = 'dp' | 'sizeChart' | 'sample' | 'material';
 
 export interface RequirementStatus {
   key: RequirementKey;
@@ -47,12 +48,13 @@ export interface ReadinessData {
 
 export const REQUIREMENT_LABELS: Record<RequirementKey, string> = {
   dp: 'DP diterima',
+  sizeChart: 'Template size chart',
   sample: 'Desain & pola final',
   material: 'Bahan baku tersedia'
 };
 
 /** Requirements that actually hold the SPK back. The rest are shown for awareness. */
-export const BLOCKING_REQUIREMENTS: RequirementKey[] = ['dp', 'sample'];
+export const BLOCKING_REQUIREMENTS: RequirementKey[] = ['dp', 'sizeChart', 'sample'];
 
 const rupiah = (n: number) => `Rp ${Math.round(n).toLocaleString('id-ID')}`;
 
@@ -93,23 +95,61 @@ function checkDp(order: Order, data: ReadinessData): RequirementStatus {
     : { ...base, met: false, detail: 'Belum ada pembayaran DP' };
 }
 
+/*
+ * The SPK sheet prints the size chart the garment is cut to, exactly as the
+ * Size Chart page holds it — so an order must name a template before the
+ * sheet can be issued. Repeat orders and small runs are not exempt.
+ */
+function checkSizeChart(order: Order): RequirementStatus {
+  const base = { key: 'sizeChart' as const, label: REQUIREMENT_LABELS.sizeChart, blocking: true };
+  if (order.sizeChartId) {
+    return { ...base, met: true, detail: `Template ${order.sizeChartName || order.sizeChartId}` };
+  }
+  return {
+    ...base,
+    met: false,
+    detail: 'Pilih template di Edit Pesanan (standar HIJ atau khusus pelanggan) — detail ukurannya dicetak di SPK'
+  };
+}
+
+/**
+ * The design attached to an order, approved or not. An order points at a design
+ * (`designId`), or a design points back at an order (`orderId`); both are used
+ * in practice, so both are accepted here.
+ */
+export function designForOrder(order: Order, designs: Design[] = []): Design | undefined {
+  return (
+    designs.find(d => !!order.designId && d.id === order.designId) ||
+    designs.find(d => d.orderId === order.id)
+  );
+}
+
 function checkSample(order: Order, data: ReadinessData): RequirementStatus {
   const base = { key: 'sample' as const, label: REQUIREMENT_LABELS.sample, blocking: true };
   // Appended to whatever the design outcome is, so one line answers both.
-  const pattern = ` \u2014 ${patternNote(order, data)}`;
+  const pattern = ` — ${patternNote(order, data)}`;
 
-  // An approved mockup is enough to cut: the sample only matters when the
-  // quotation asked for a physical one.
-  const approvedDesign = (data.designs || []).find(
-    d => d.status === 'Approved' && (d.orderId === order.id || (!!order.designId && d.id === order.designId))
-  );
-  if (approvedDesign && order.needsSample !== true) {
-    return { ...base, met: true, detail: `Desain ${approvedDesign.id} disetujui${pattern}` };
+  /*
+   * Nothing is cut from a description. The SPK sheet carries the artwork the
+   * floor works from, so an order with no design attached cannot produce one —
+   * whatever the sample arrangement says.
+   */
+  const design = designForOrder(order, data.designs || []);
+  if (!design) {
+    return { ...base, met: false, detail: `Desain belum dilampirkan ke pesanan ini${pattern}` };
+  }
+  if (design.status !== 'Approved') {
+    return {
+      ...base,
+      met: false,
+      detail: `Desain ${design.id} belum disetujui (${statusLabel(design.status)})${pattern}`
+    };
   }
 
-  // Anti-Skip Logic: Jika pesanan tanpa sampel fisik, otomatis lulus
-  if (order.needsSample === false) {
-    return { ...base, met: true, detail: `Dilewati: penawaran tanpa sampel fisik${pattern}` };
+  // Approved artwork is enough to cut; a physical sample only matters when the
+  // quotation asked for one.
+  if (order.needsSample !== true) {
+    return { ...base, met: true, detail: `Desain ${design.id} disetujui${pattern}` };
   }
 
   // Jika status sampel pada pesanan sudah Approved
@@ -136,22 +176,29 @@ function checkSample(order: Order, data: ReadinessData): RequirementStatus {
 
 function checkMaterial(order: Order, data: ReadinessData): RequirementStatus {
   const base = { key: 'material' as const, label: REQUIREMENT_LABELS.material, blocking: false };
-  const pos = data.procurements.filter(p => procurementIsForOrder(p, order));
-  const received = pos.filter(p => p.status === 'Received').length;
+  /*
+   * Pengadaan records purchases that already happened — there is no order-to-
+   * receipt lifecycle to wait on, so a record for this order means the material
+   * was bought.
+   */
+  const purchases = data.procurements.filter(p => procurementIsForOrder(p, order));
 
   if (order.materialConfirmedBy) {
     return { ...base, met: true, detail: `Stok gudang dikonfirmasi ${order.materialConfirmedBy}` };
   }
-  if (pos.length > 0) {
-    return received === pos.length
-      ? { ...base, met: true, detail: `${pos.length} PO bahan sudah diterima` }
-      : { ...base, met: false, detail: `${received} dari ${pos.length} PO bahan diterima` };
+  if (purchases.length > 0) {
+    const spend = purchases.reduce((sum, p) => sum + (Number(p.totalPrice) || 0), 0);
+    return {
+      ...base,
+      met: true,
+      detail: `${purchases.length} pembelian bahan tercatat${spend > 0 ? ` (Rp ${spend.toLocaleString('id-ID')})` : ''}`
+    };
   }
   return {
     ...base,
     met: false,
     detail: order.needsProcurement === 'Perlu Pengadaan'
-      ? 'Belum ada PO bahan untuk pesanan ini'
+      ? 'Belum ada pembelian bahan untuk pesanan ini'
       : 'Stok gudang belum dikonfirmasi PPIC'
   };
 }
@@ -185,18 +232,26 @@ export function getOrderReadiness(order: Order, data: ReadinessData): OrderReadi
   const isOptional = isSpkOptionalForOrder(order);
   const requirements = [
     checkDp(order, data),
+    checkSizeChart(order),
     checkSample(order, data),
     checkMaterial(order, data)
   ];
   const metCount = requirements.filter(r => r.met).length;
   const blocking = requirements.filter(r => r.blocking);
   const blockingMetCount = blocking.filter(r => r.met).length;
+  /*
+   * The fast path skips DP and sample, not the artwork: the server refuses any
+   * SPK whose order has no approved design. Reporting such an order as ready
+   * showed "Siap Produksi" on a button that then failed.
+   */
+  const designApproved = designForOrder(order, data.designs || [])?.status === 'Approved';
+  const chartPicked = !!order.sizeChartId;
   return {
     orderId: order.id,
     requirements,
     metCount,
     total: requirements.length,
-    ready: isOptional ? true : blockingMetCount === blocking.length,
+    ready: isOptional ? designApproved && chartPicked : blockingMetCount === blocking.length,
     isSpkOptional: isOptional,
     blockingMetCount,
     blockingTotal: blocking.length
@@ -204,12 +259,17 @@ export function getOrderReadiness(order: Order, data: ReadinessData): OrderReadi
 }
 
 /**
- * Approved orders (status 'Order') that have no SPK yet. Issuing the SPK moves an order to
- * 'In Production', so older orders already in production without an SPK record are not listed.
+ * Orders with no SPK yet, still before production ('Order', or 'Sample' while
+ * the sample is being made). Issuing the SPK moves an order to 'In Production',
+ * so older orders already in production without an SPK record are not listed.
+ *
+ * 'Sample' is included because nothing reliably flips it to 'Order' — linking an
+ * already-approved sample did not — and the order then vanished from PPIC while
+ * its checklist was complete. The checklist still shows what the sample needs.
  */
 export function ordersAwaitingSpk(orders: Order[], spks: SPK[]): Order[] {
   const withSpk = new Set(spks.map(s => s.orderId));
-  return orders.filter(o => o.status === 'Order' && !withSpk.has(o.id));
+  return orders.filter(o => (o.status === 'Order' || o.status === 'Sample') && !withSpk.has(o.id));
 }
 
 /** Roles allowed to approve special payment terms (SOP-20 step 8). */

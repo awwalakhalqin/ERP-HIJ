@@ -46,7 +46,7 @@ export const MODULE_SECTIONS: ModuleSection[] = [
     title: 'Perencanaan & Bahan Baku',
     items: [
       { id: 'PPIC', label: 'Surat Perintah Kerja', sop: 'SOP-03' },
-      { id: 'Procurement', label: 'Pembelian Bahan Proyek', sop: 'SOP-04' },
+      { id: 'Procurement', label: 'Pengadaan Bahan', sop: 'SOP-04' },
       { id: 'RawMaterial', label: 'Gudang Aksesoris & Kain', sop: 'SOP-05' },
       { id: 'PatternGrading', label: 'Size Chart', sop: 'SOP-06' }
     ]

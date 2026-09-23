@@ -4,13 +4,13 @@ import { Pattern, Order, SizeChart, SizeChartRow, Customer } from '../../types';
 import { fetchResource, createResource, updateResource, deleteResource } from '../../services/api';
 import { calculateFabricYield, exportTableToExcel, formatDateTime } from '../../lib/utils';
 import { getCurrentUser } from '../../lib/session';
-import { StatusBadge } from '../ui/Badge';
+import { Badge, StatusBadge } from '../ui/Badge';
 import { Modal } from '../ui/Modal';
 import { Card } from '../ui/Card';
 import { Button } from '../ui/Button';
 import { Input } from '../ui/Input';
 import { PageHeader } from '../ui/PageHeader';
-import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell, TableRowActions, TableEmptyRow, TableSkeletonRows } from '../ui/Table';
+import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell, TableRowActions, RowActionButton, TableEmptyRow, TableSkeletonRows } from '../ui/Table';
 import { DetailDrawer, DetailSection, DetailField, DetailStats, DetailBlock, RowDetailButton } from '../ui/DetailDrawer';
 import { newestFirst } from '../../lib/ordering';
 import { FieldLabel, FieldHint, FieldError, FormError, Select } from '../ui/Field';
@@ -344,7 +344,7 @@ export const PatternGradingModule: React.FC = () => {
     : [];
 
   const orderRefs = (p: Pattern) =>
-    (p.orderIds || []).map(id => orders.find(o => o.id === id)?.po || id).join(', ');
+    (p.orderIds || []).map(id => orders.find(o => o.id === id)?.po || id);
 
   const detailPattern = detailPatternId ? patterns.find(p => p.id === detailPatternId) ?? null : null;
 
@@ -513,7 +513,7 @@ export const PatternGradingModule: React.FC = () => {
                     <TableRow>
                       <TableHead className="cell-sticky-start">Ukuran</TableHead>
                       {selectedChart.measurements.map(m => (
-                        <TableHead key={m.key} className="text-right">
+                        <TableHead key={m.key} className="text-right tabular-nums">
                           {m.label}
                           {m.code ? <span className="ml-1 font-normal text-muted-foreground">({m.code})</span> : null}
                         </TableHead>
@@ -521,14 +521,25 @@ export const PatternGradingModule: React.FC = () => {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {selectedChart.rows.map(r => (
+                    {selectedChart.rows.length === 0 ? (
+                      <TableEmptyRow
+                        colSpan={selectedChart.measurements.length + 1}
+                        icon={<Ruler size={20} />}
+                        title="Belum ada baris ukuran"
+                        description={
+                          selectedChart.scope === 'customer'
+                            ? 'Klik Ubah untuk menambahkan ukuran dan nilai ukurnya.'
+                            : 'Size chart ini belum punya ukuran. Salin untuk pelanggan lalu isi ukurannya.'
+                        }
+                      />
+                    ) : selectedChart.rows.map(r => (
                       <TableRow key={r.size}>
-                        <TableCell className="cell-sticky-start whitespace-nowrap font-mono font-bold text-slate-900">
+                        <TableCell className="cell-sticky-start font-mono font-bold text-slate-900">
                           {r.size}
                         </TableCell>
                         {selectedChart.measurements.map(m => (
-                          <TableCell key={m.key} className="text-right font-semibold tabular-nums text-slate-800 whitespace-nowrap">
-                            {r.values[m.key] || '\u2014'}
+                          <TableCell key={m.key} className="text-right font-semibold tabular-nums text-slate-800">
+                            {r.values[m.key] || '—'}
                           </TableCell>
                         ))}
                       </TableRow>
@@ -575,45 +586,62 @@ export const PatternGradingModule: React.FC = () => {
                 icon={<Scissors size={20} />}
                 title="Belum ada pola"
                 description="Klik Tambah Pola untuk mendaftarkan pola pertama. Pola baru disimpan sebagai draf."
+                action={
+                  <Button size="sm" onClick={handleOpenAdd}>
+                    <Plus size={16} aria-hidden="true" /> Tambah Pola
+                  </Button>
+                }
               />
-            ) : sortedPatterns.map(p => (
-              <TableRow key={p.id}>
-                <TableCell className="cell-sticky-start whitespace-nowrap font-mono font-bold text-slate-900">{p.id}</TableCell>
-                <TableCell className="hidden md:table-cell">
-                  <span className="font-semibold text-slate-900 break-words">{p.productName || '-'}</span>
-                </TableCell>
-                <TableCell className="hidden lg:table-cell">
-                  {(p.orderIds || []).length === 0 ? (
-                    <span className="text-slate-500">Belum terhubung ke pesanan</span>
-                  ) : (
-                    <span className="font-mono">{orderRefs(p)}</span>
-                  )}
-                </TableCell>
-                <TableCell className="hidden lg:table-cell whitespace-nowrap">{p.baseSize || '—'}</TableCell>
-                <TableCell className="hidden xl:table-cell">{p.sizes || '—'}</TableCell>
-                <TableCell className="text-center whitespace-nowrap">
-                  <StatusBadge status={p.status} />
-                </TableCell>
-                <TableCell className="cell-sticky-end text-right">
-                  <TableRowActions>
-                    {p.status === 'Draft' && (
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => handleFinalize(p)}
-                        aria-label={`Tandai Final ${p.id}`}
-                        title="Tandai Final"
-                        className="h-8 min-w-8 px-2.5 text-xs"
-                      >
-                        <CheckCircle2 size={14} aria-hidden="true" />
-                        <span className="hidden sm:inline">Tandai Final</span>
-                      </Button>
+            ) : sortedPatterns.map(p => {
+              const refs = orderRefs(p);
+              return (
+                <TableRow key={p.id}>
+                  <TableCell className="cell-sticky-start font-mono font-bold text-slate-900">{p.id}</TableCell>
+                  <TableCell className="hidden md:table-cell">
+                    <span className="block max-w-[180px] truncate font-semibold text-slate-900" title={p.productName || undefined}>
+                      {p.productName || '—'}
+                    </span>
+                  </TableCell>
+                  <TableCell className="hidden lg:table-cell">
+                    {refs.length === 0 ? (
+                      <span className="text-slate-500">—</span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1.5" title={refs.join(', ')}>
+                        <span className="font-mono">{refs[0]}</span>
+                        {refs.length > 1 && (
+                          <Badge variant="idle" size="sm">+{refs.length - 1}</Badge>
+                        )}
+                      </span>
                     )}
-                    <RowDetailButton label={p.id} onClick={() => setDetailPatternId(p.id)} />
-                  </TableRowActions>
-                </TableCell>
-              </TableRow>
-            ))}
+                  </TableCell>
+                  <TableCell className="hidden lg:table-cell">{p.baseSize || '—'}</TableCell>
+                  <TableCell className="hidden xl:table-cell">
+                    <span className="block max-w-[180px] truncate" title={p.sizes || undefined}>
+                      {p.sizes || '—'}
+                    </span>
+                  </TableCell>
+                  <TableCell className="text-center">
+                    <StatusBadge status={p.status} size="sm" solid />
+                  </TableCell>
+                  <TableCell className="cell-sticky-end text-right">
+                    <TableRowActions>
+                      {p.status === 'Draft' && (
+                        <RowActionButton
+                          label="Tandai Final"
+                          icon={CheckCircle2}
+                          display="labeled"
+                          tone="primary"
+                          onClick={() => handleFinalize(p)}
+                          ariaLabel={`Tandai Final ${p.id}`}
+                          title="Tandai pola ini final supaya boleh dipakai untuk pemotongan"
+                        />
+                      )}
+                      <RowDetailButton label={p.id} onClick={() => setDetailPatternId(p.id)} />
+                    </TableRowActions>
+                  </TableCell>
+                </TableRow>
+              );
+            })}
           </TableBody>
         </Table>
       </Card>
@@ -853,14 +881,14 @@ export const PatternGradingModule: React.FC = () => {
                 <tbody className="divide-y divide-border/60">
                   {chartForm.rows.length === 0 ? (
                     <tr>
-                      <td colSpan={chartForm.measurements.length + 2} className="px-3 py-4 text-center text-xs text-muted-foreground">
+                      <td colSpan={chartForm.measurements.length + 2} className="px-3 py-4 text-center text-sm text-muted-foreground">
                         Belum ada baris ukuran.
                       </td>
                     </tr>
                   ) : (
                     chartForm.rows.map((r, index) => (
                       <tr key={index}>
-                        <td className="px-2 py-1.5">
+                        <td className="px-3 py-2">
                           <Input
                             aria-label={`Nama ukuran baris ${index + 1}`}
                             value={r.size}
@@ -870,7 +898,7 @@ export const PatternGradingModule: React.FC = () => {
                           />
                         </td>
                         {chartForm.measurements.map(m => (
-                          <td key={m.key} className="px-2 py-1.5">
+                          <td key={m.key} className="px-3 py-2">
                             <Input
                               aria-label={`${m.label} ukuran ${r.size || index + 1}`}
                               value={r.values[m.key] || ''}
@@ -880,7 +908,7 @@ export const PatternGradingModule: React.FC = () => {
                             />
                           </td>
                         ))}
-                        <td className="px-2 py-1.5 text-right">
+                        <td className="px-3 py-2 text-right">
                           <Button
                             type="button"
                             variant="ghost"

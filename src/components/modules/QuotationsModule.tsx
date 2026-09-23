@@ -14,7 +14,8 @@ import {
   Info
 } from 'lucide-react';
 import { Quotation, Customer, Design, Order, Invoice, PaymentTerm, SizeChart } from '../../types';
-import { fetchResource, createResource, updateResource, deleteResource } from '../../services/api';
+import { fetchResource, createResource, updateResource, deleteResource, authFetch, fetchStaffDirectory, StaffDirectoryEntry } from '../../services/api';
+import { getCurrentUser } from '../../lib/session';
 import { cn, formatCurrency, formatDate, formatDateTime, generateId } from '../../lib/utils';
 import { exportElementToPdf } from '../../services/pdfGenerator';
 import {
@@ -36,10 +37,12 @@ import {
   TableEmptyRow,
   TableSkeletonRows,
   TableSortHead,
+  RowActionButton,
   sortRows,
   type SortState
 } from '../ui/Table';
 import { PageHeader } from '../ui/PageHeader';
+import { SizeRowsEditor } from '../ui/SizeRowsEditor';
 import { Card } from '../ui/Card';
 import { Button } from '../ui/Button';
 import { Badge, StatusBadge } from '../ui/Badge';
@@ -68,6 +71,7 @@ import {
 import {
   parseSizeRows,
   serializeSizeRows,
+  sizeRowsTotal,
   effectiveUnitPrice,
   isBelowMoq,
   type SizeRow
@@ -87,6 +91,8 @@ const QUO_STAGE_FILTERS = [
 const QUO_FIELD_ORDER = [
   'customerId',
   'productType',
+  'picUserId',
+  'sizeChartId',
   'quantity',
   'moq',
   'price',
@@ -98,6 +104,8 @@ const QUO_FIELD_ORDER = [
 const QUO_FIELD_IDS: Record<string, string> = {
   customerId: 'quo-customer',
   productType: 'quo-product',
+  picUserId: 'quo-pic',
+  sizeChartId: 'quo-size-chart',
   quantity: 'quo-quantity',
   moq: 'quo-moq',
   price: 'quo-price',
@@ -175,6 +183,7 @@ export const QuotationsModule: React.FC = () => {
   // Modal: Revisi Penawaran yang sudah Deal
   const [reviseQuotation, setReviseQuotation] = useState<Quotation | null>(null);
   const [reviseQty, setReviseQty] = useState<number>(100);
+  const [reviseSizeRows, setReviseSizeRows] = useState<SizeRow[]>([]);
   const [revisePrice, setRevisePrice] = useState<number>(0);
   const [reviseDeadline, setReviseDeadline] = useState<string>('');
   const [reviseNotes, setReviseNotes] = useState<string>('');
@@ -192,6 +201,9 @@ export const QuotationsModule: React.FC = () => {
   const [editingQuotationId, setEditingQuotationId] = useState<string | null>(null);
   const [sizeRows, setSizeRows] = useState<SizeRow[]>([]);
   const [sizeCharts, setSizeCharts] = useState<SizeChart[]>([]);
+  const [chartScope, setChartScope] = useState<'all' | 'standard' | 'customer'>('all');
+  /** Staff who can be named PIC; the signed-in user is the default. */
+  const [staff, setStaff] = useState<StaffDirectoryEntry[]>([]);
   const [pickedChartId, setPickedChartId] = useState('');
   const [savingQuo, setSavingQuo] = useState(false);
   const [quoError, setQuoError] = useState<string | null>(null);
@@ -200,38 +212,40 @@ export const QuotationsModule: React.FC = () => {
     id: '',
     customerId: '',
     customerName: '',
-    productType: 'Kaos Cotton Combed 24s',
+    productType: '',
     designId: '',
-    designName: 'Kaos Event Custom Klien',
+    designName: '',
     designUrl: '/templates/Halaman1.png',
     quantity: 100,
     moq: 100,
-    price: 65000,
-    priceBelowMoq: 75000,
-    totalPrice: 6500000,
+    price: 0,
+    priceBelowMoq: 0,
+    totalPrice: 0,
     deadline: '',
-    material: 'Cotton Combed 24s',
-    color: 'Hitam Reaktif',
-    size: 'S: 20, M: 40, L: 30, XL: 10',
-    accessories: 'Sablon DTF High Density',
-    sablonBordir: 'Sablon DTF High Density Depan & Belakang',
+    material: '',
+    color: '',
+    size: '',
+    accessories: '',
+    sablonBordir: '',
     needsSample: false,
     needsProcurement: 'Perlu Pengadaan',
-    notes: 'Harga mencakup sablon DTF dan polybag satuan.',
+    notes: '',
     status: 'Sent'
   });
 
   const loadData = useCallback(async () => {
     try {
       setLoading(true);
-      const [quoRes, customerRes, designRes, orderRes, invoiceRes, chartRes] = await Promise.all([
+      const [quoRes, customerRes, designRes, orderRes, invoiceRes, chartRes, staffRes] = await Promise.all([
         fetchResource<Quotation>('quotations'),
         fetchResource<Customer>('customers'),
         fetchResource<Design>('designs'),
         fetchResource<Order>('orders'),
         fetchResource<Invoice>('invoices'),
-        fetchResource<SizeChart>('size-charts')
+        fetchResource<SizeChart>('size-charts'),
+        fetchStaffDirectory().catch(() => [] as StaffDirectoryEntry[])
       ]);
+      setStaff(staffRes || []);
       setQuotations(quoRes || []);
       setCustomers(customerRes || []);
       setDesigns(designRes || []);
@@ -275,8 +289,8 @@ export const QuotationsModule: React.FC = () => {
         customerId: design.customerId || matchingCust?.id || prev.customerId,
         customerName: matchingCust?.name || prev.customerName,
         productType: design.name || prev.productType,
-        notes: design.description ? `[Acuan Desain ${design.id}]: ${design.description}` : prev.notes,
-        needsSample: design.status === 'Approved' ? false : prev.needsSample
+        notes: design.description ? `[Acuan Desain ${design.id}]: ${design.description}` : prev.notes
+        // Whether a physical sample is needed is the customer's call, not the design's status.
       }));
     }
   };
@@ -288,7 +302,9 @@ export const QuotationsModule: React.FC = () => {
     const clientCode = (q.customerName || 'HIJ').replace(/[^a-zA-Z0-9]/g, '').slice(0, 3).toUpperCase();
     setDealPo(`PO-${clientCode}-${new Date().getFullYear()}-${Date.now().toString().slice(-3)}`);
     const total = Number(q.totalPrice) || (Number(q.quantity) * Number(q.price));
-    setDealDp(Math.round(total * 0.5)); // 50% default DP
+    // The first instalment agreed on the quotation is the DP; 50% only when none was set.
+    const agreedDp = q.paymentSchedule?.length ? Number(withAmounts(q.paymentSchedule, total)[0]?.amount) : 0;
+    setDealDp(agreedDp || Math.round(total * 0.5));
     setDealDeadline(q.deadline || new Date(Date.now() + 14 * 86400000).toISOString().split('T')[0]);
   };
 
@@ -317,7 +333,7 @@ export const QuotationsModule: React.FC = () => {
     try {
       setSubmittingDeal(true);
       setDealError(null);
-      const res = await fetch(`/api/quotations/${dealQuotation.id}/approve-to-order`, {
+      const res = await authFetch(`/api/quotations/${dealQuotation.id}/approve-to-order`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -379,6 +395,7 @@ export const QuotationsModule: React.FC = () => {
   const handleOpenReviseDealModal = (q: Quotation) => {
     setReviseQuotation(q);
     setReviseQty(Number(q.quantity) || 100);
+    setReviseSizeRows(parseSizeRows(q.size));
     setRevisePrice(Number(q.price) || 0);
     setReviseDeadline(q.deadline || '');
     setReviseNotes('');
@@ -419,13 +436,15 @@ export const QuotationsModule: React.FC = () => {
       const newTotal = reviseTotal;
 
       // 1. Panggil endpoint revisi deal ke backend
-      const res = await fetch(`/api/quotations/${reviseQuotation.id}/revise-deal`, {
+      const res = await authFetch(`/api/quotations/${reviseQuotation.id}/revise-deal`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           quantity: reviseQty,
           price: revisePrice,
           totalPrice: newTotal,
+          // The breakdown travels with the quantity so the SPK cuts the new sizes.
+          size: reviseSizeRows.some(r => r.size.trim()) ? serializeSizeRows(reviseSizeRows) : undefined,
           deadline: reviseDeadline || reviseQuotation.deadline,
           notes: reviseNotes ? `[Revisi Qty: ${reviseQty} pcs] ${reviseNotes}` : reviseQuotation.notes
         })
@@ -450,39 +469,43 @@ export const QuotationsModule: React.FC = () => {
   // Open modal create new quotation
   const handleOpenNewQuoModal = () => {
     setEditingQuotationId(null);
-    setSizeRows(parseSizeRows('S: 20, M: 40, L: 30, XL: 10'));
+    // Free-text fields start empty: staff describe the product themselves.
+    setSizeRows([]);
     setSelectedDesignId('');
     setQuoError(null);
     setQuoFieldErrors({});
-    const defaultCust = customers[0];
-    const initialPrice = 65000;
+    const initialPrice = 0;
     const initialQty = 100;
     const initialTotal = initialPrice * initialQty;
     setQuoFormData({
       id: generateId('QUO'),
-      customerId: defaultCust?.id || '',
-      customerName: defaultCust?.name || '',
-      productType: 'Kaos Cotton Combed 24s',
+      // Nobody is preselected: a quotation silently issued to the first customer is worse than a required field.
+      customerId: '',
+      customerName: '',
+      productType: '',
       designId: '',
-      designName: 'Kaos Custom Klien',
+      designName: '',
       designUrl: '/templates/Halaman1.png',
       quantity: initialQty,
       moq: 100,
       price: initialPrice,
-      priceBelowMoq: 75000,
+      priceBelowMoq: 0,
       totalPrice: initialTotal,
       deadline: new Date(Date.now() + 14 * 86400000).toISOString().split('T')[0],
-      material: 'Cotton Combed 24s',
-      color: 'Hitam Reaktif',
-      size: 'S: 20, M: 40, L: 30, XL: 10',
-      accessories: 'Sablon DTF High Density',
-      sablonBordir: 'Sablon DTF High Density Depan & Belakang',
+      material: '',
+      color: '',
+      size: '',
+      accessories: '',
+      sablonBordir: '',
       needsSample: false,
       needsProcurement: 'Perlu Pengadaan',
-      notes: 'Harga sudah termasuk sablon DTF dan polybag satuan.',
+      notes: '',
       status: 'Sent',
-      paymentSchedule: createDefaultSchedule(initialTotal)
+      paymentSchedule: createDefaultSchedule(initialTotal),
+      ...defaultPic()
     });
+    setPickedChartId('');
+    setChartScope('all');
     setIsQuoModalOpen(true);
   };
 
@@ -517,22 +540,53 @@ export const QuotationsModule: React.FC = () => {
    */
   const handlePickSizeChart = (chartId: string) => {
     setPickedChartId(chartId);
-    if (!chartId) return;
+    setQuoFieldErrors(prev => ({ ...prev, sizeChartId: '' }));
     const chart = sizeCharts.find(c => c.id === chartId);
-    if (!chart) return;
+    if (!chart) {
+      setQuoFormData(prev => ({ ...prev, sizeChartId: '', sizeChartName: '' }));
+      return;
+    }
+    // The template follows the deal into the order, and from there onto the SPK sheet.
+    setQuoFormData(prev => ({ ...prev, sizeChartId: chart.id, sizeChartName: chart.name }));
 
     const existing = new Map(sizeRows.filter(r => r.qty > 0).map(r => [r.size.trim().toUpperCase(), r.qty]));
     applySizeRows(chart.rows.map(r => ({ size: r.size, qty: existing.get(r.size.trim().toUpperCase()) || 0 })));
   };
 
-  /** The factory standards, plus any chart belonging to the chosen customer. */
-  const availableCharts = sizeCharts.filter(
-    c => (c.scope || 'standard') === 'standard' || c.customerId === quoFormData.customerId
-  );
+  /** Standards plus the chosen customer's own charts, narrowed by the scope toggle — as on the order form. */
+  const availableCharts = sizeCharts.filter(c => {
+    const scope = c.scope || 'standard';
+    if (scope === 'customer' && c.customerId !== quoFormData.customerId) return false;
+    return chartScope === 'all' || scope === chartScope;
+  });
+  const pickedChart = sizeCharts.find(c => c.id === pickedChartId);
+
+  /*
+   * PIC is a named account with its role, so a deal can be traced to a person.
+   * The signed-in user is the default; the list comes from the server so it
+   * matches Akun & Hak Akses, with the current user added if it is missing.
+   */
+  const me = getCurrentUser();
+  const picChoices: StaffDirectoryEntry[] =
+    me && !staff.some(s => s.id === me.id) ? [{ id: me.id, name: me.name, role: String(me.role || '') }, ...staff] : staff;
+  function defaultPic() {
+    return me ? { picUserId: me.id, picName: me.name, picRole: String(me.role || '') } : {};
+  }
+  const handlePickPic = (userId: string) => {
+    const person = picChoices.find(s => s.id === userId);
+    setQuoFieldErrors(prev => ({ ...prev, picUserId: '' }));
+    setQuoFormData(prev => ({
+      ...prev,
+      picUserId: person?.id || '',
+      picName: person?.name || '',
+      picRole: person?.role || ''
+    }));
+  };
 
   const handleOpenEditQuoModal = (q: Quotation) => {
     setEditingQuotationId(q.id);
     setSizeRows(parseSizeRows(q.size));
+    setPickedChartId(q.sizeChartId || '');
     setSelectedDesignId(q.designId || '');
     setQuoError(null);
     setQuoFieldErrors({});
@@ -541,8 +595,11 @@ export const QuotationsModule: React.FC = () => {
       ...q,
       paymentSchedule: Array.isArray(q.paymentSchedule) && q.paymentSchedule.length > 0
         ? q.paymentSchedule
-        : createDefaultSchedule(total)
+        : createDefaultSchedule(total),
+      // Quotations from before PICs were named default to whoever edits them.
+      ...(q.picUserId ? {} : defaultPic())
     });
+    setChartScope('all');
     setIsQuoModalOpen(true);
   };
 
@@ -555,12 +612,24 @@ export const QuotationsModule: React.FC = () => {
     if (!quoFormData.customerId) errors.customerId = 'Pelanggan wajib dipilih.';
     if (!quoFormData.productType?.trim()) errors.productType = 'Jenis produk wajib diisi.';
     if (!quoFormData.quantity || Number(quoFormData.quantity) <= 0) errors.quantity = 'Jumlah harus lebih besar dari 0.';
-    if (!quoFormData.price || Number(quoFormData.price) <= 0) errors.price = 'Harga sesuai MOQ harus lebih besar dari 0.';
+    if (!quoFormData.price || Number(quoFormData.price) <= 0) errors.price = 'Harga di atas MOQ harus lebih besar dari 0.';
     if (!quoFormData.priceBelowMoq || Number(quoFormData.priceBelowMoq) <= 0) {
       errors.priceBelowMoq = 'Harga di bawah MOQ harus lebih besar dari 0.';
     }
     if (!quoFormData.moq || Number(quoFormData.moq) <= 0) errors.moq = 'MOQ harus lebih besar dari 0.';
+    // Small runs cost more per piece: the below-MOQ rate can never undercut the MOQ rate.
+    if (
+      Number(quoFormData.price) > 0 &&
+      Number(quoFormData.priceBelowMoq) > 0 &&
+      Number(quoFormData.priceBelowMoq) < Number(quoFormData.price)
+    ) {
+      errors.priceBelowMoq = 'Harga di bawah MOQ harus lebih tinggi (atau sama) dari harga di atas MOQ — pesanan kecil lebih mahal per pcs.';
+    }
     if (!quoFormData.deadline) errors.deadline = 'Target tanggal selesai wajib diisi.';
+    if (!quoFormData.picUserId) errors.picUserId = 'Pilih PIC (penanggung jawab) penawaran ini.';
+    if (!quoFormData.sizeChartId) {
+      errors.sizeChartId = 'Pilih template size chart (standar HIJ atau khusus pelanggan) — detail ukurannya dicetak di SPK.';
+    }
 
     const total = (Number(quoFormData.quantity) || 0) * effectiveUnitPrice(quoFormData);
     const schedule = quoFormData.paymentSchedule;
@@ -600,6 +669,12 @@ export const QuotationsModule: React.FC = () => {
         material: quoFormData.material || '-',
         color: quoFormData.color || 'Custom',
         size: quoFormData.size || 'All Size',
+        sizeChartId: quoFormData.sizeChartId || '',
+        sizeChartName: quoFormData.sizeChartName || '',
+        picUserId: quoFormData.picUserId || '',
+        picName: quoFormData.picName || '',
+        picRole: quoFormData.picRole || '',
+        user: quoFormData.picName || quoFormData.user || me?.name || 'Staf Penjualan',
         accessories: quoFormData.accessories || '-',
         needsProcurement: quoFormData.needsProcurement || 'Perlu Pengadaan',
         notes: quoFormData.notes || '',
@@ -632,6 +707,14 @@ export const QuotationsModule: React.FC = () => {
   };
 
   // Delete quotation
+  /*
+   * A deal already became an order, and a superseded revision is the paper
+   * trail of one; deleting either left the order or the next revision pointing
+   * at nothing. The server refuses both, so the button isn't offered.
+   */
+  const canDeleteQuotation = (q: Quotation) =>
+    !q.supersededBy && !(q.status === 'Approved' && !!q.orderId);
+
   const handleDeleteQuotation = async (id: string) => {
     if (!window.confirm(`Hapus surat penawaran ${id}? Tindakan ini tidak dapat dibatalkan.`)) return;
     try {
@@ -639,8 +722,8 @@ export const QuotationsModule: React.FC = () => {
       showToast(`Surat penawaran ${id} telah dihapus.`);
       await loadData();
       if (detailQuotation?.id === id) setDetailQuotation(null);
-    } catch (err) {
-      showToast('Gagal menghapus penawaran. Periksa koneksi ke server, lalu coba lagi.', 'error');
+    } catch (err: any) {
+      showToast(err?.message || 'Gagal menghapus penawaran. Periksa koneksi ke server, lalu coba lagi.', 'error');
     }
   };
 
@@ -675,7 +758,8 @@ export const QuotationsModule: React.FC = () => {
         (item.customerName || '').toLowerCase().includes(q) ||
         (item.productType || '').toLowerCase().includes(q) ||
         (item.designName || '').toLowerCase().includes(q) ||
-        (item.material || '').toLowerCase().includes(q);
+        (item.material || '').toLowerCase().includes(q) ||
+        (item.picName || '').toLowerCase().includes(q);
 
       const matchStage =
         quoStageFilter === 'ALL' ? true :
@@ -753,7 +837,7 @@ export const QuotationsModule: React.FC = () => {
             <Clock size={20} />
           </div>
           <div>
-            <p className="text-xs text-amber-600 dark:text-amber-400 font-medium">Menunggu Deal</p>
+            <p className="text-xs text-amber-600 font-medium">Menunggu Deal</p>
             <p className="text-2xl font-bold text-foreground">{quoCounts.pending}</p>
           </div>
         </Card>
@@ -763,7 +847,7 @@ export const QuotationsModule: React.FC = () => {
             <CheckCircle2 size={20} />
           </div>
           <div>
-            <p className="text-xs text-emerald-600 dark:text-emerald-400 font-medium">Sudah Deal</p>
+            <p className="text-xs text-emerald-600 font-medium">Sudah Deal</p>
             <p className="text-2xl font-bold text-foreground">{quoCounts.approved}</p>
           </div>
         </Card>
@@ -773,7 +857,7 @@ export const QuotationsModule: React.FC = () => {
             <XCircle size={20} />
           </div>
           <div>
-            <p className="text-xs text-rose-600 dark:text-rose-400 font-medium">Ditolak</p>
+            <p className="text-xs text-rose-600 font-medium">Ditolak</p>
             <p className="text-2xl font-bold text-foreground">{quoCounts.rejected}</p>
           </div>
         </Card>
@@ -841,7 +925,7 @@ export const QuotationsModule: React.FC = () => {
                 >
                   Pelanggan
                 </TableSortHead>
-                <TableHead className="hidden md:table-cell">Produk</TableHead>
+                <TableHead className="hidden min-[1700px]:table-cell">Produk</TableHead>
                 <TableSortHead
                   sortKey="quantity"
                   sort={quotationSort}
@@ -856,6 +940,8 @@ export const QuotationsModule: React.FC = () => {
                   sortKey="totalPrice"
                   sort={quotationSort}
                   onSortChange={setQuotationSort}
+                  align="right"
+                  className="hidden sm:table-cell"
                 >
                   Total Harga
                 </TableSortHead>
@@ -863,6 +949,7 @@ export const QuotationsModule: React.FC = () => {
                   sortKey="deadline"
                   sort={quotationSort}
                   onSortChange={setQuotationSort}
+                  className="hidden 2xl:table-cell"
                 >
                   Target Selesai
                 </TableSortHead>
@@ -870,6 +957,7 @@ export const QuotationsModule: React.FC = () => {
                   sortKey="status"
                   sort={quotationSort}
                   onSortChange={setQuotationSort}
+                  align="center"
                 >
                   Status
                 </TableSortHead>
@@ -942,85 +1030,103 @@ export const QuotationsModule: React.FC = () => {
                         {quo.customerName}
                       </span>
                     </TableCell>
-                    <TableCell className="hidden md:table-cell">
+                    <TableCell className="hidden min-[1700px]:table-cell">
                       <span className="block max-w-[170px] truncate" title={quo.productType}>
                         {quo.productType}
                       </span>
                     </TableCell>
-                    <TableCell className="hidden sm:table-cell text-right whitespace-nowrap font-semibold text-foreground">
+                    <TableCell className="hidden sm:table-cell text-right tabular-nums font-semibold text-foreground">
                       {quo.quantity}
                     </TableCell>
-                    <TableCell className="hidden min-[1800px]:table-cell text-right whitespace-nowrap text-muted-foreground">
-                      {formatCurrency(quo.price)}
+                    <TableCell className="hidden min-[1800px]:table-cell text-right tabular-nums text-muted-foreground">
+                      {/* The rate that actually prices this quantity; below MOQ that is the below-MOQ one. */}
+                      {formatCurrency(effectiveUnitPrice(quo))}
+                      {isBelowMoq(quo) && !!quo.priceBelowMoq && (
+                        <span className="block text-[10px] text-amber-700">di bawah MOQ</span>
+                      )}
                     </TableCell>
-                    <TableCell className="font-bold text-foreground">
+                    <TableCell className="hidden sm:table-cell text-right tabular-nums font-bold text-foreground">
                       {formatCurrency(total)}
                     </TableCell>
-                    <TableCell className="text-xs text-muted-foreground">
+                    <TableCell className="hidden 2xl:table-cell text-muted-foreground">
                       {formatDate(quo.deadline)}
                     </TableCell>
-                    <TableCell>
+                    <TableCell className="text-center">
                       <QuotationStatusTag quotation={quo} solid />
                     </TableCell>
                     <TableCell className="cell-sticky-end text-right">
                       <TableRowActions>
-                        {/* The decision comes first; everything after it is support. */}
-                        {quo.supersededBy ? null : quo.status === 'Approved' ? (
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            title="Revisi kuantitas atau harga"
-                            aria-label={`Revisi kuantitas penawaran ${quo.id}`}
-                            onClick={() => handleOpenReviseDealModal(quo)}
-                            className="size-8 text-primary hover:bg-primary/10"
-                          >
-                            <Pencil size={15} aria-hidden="true" />
-                          </Button>
+                        {/*
+                          * The decision comes first. Tandai Ditolak and Cetak stay in
+                          * Detail, so a row never carries more than three buttons.
+                          */}
+                        {quo.supersededBy ? (
+                          <RowActionButton
+                            icon={Printer}
+                            label="Cetak"
+                            ariaLabel={`Cetak surat penawaran ${quo.id}`}
+                            title="Cetak surat penawaran (riwayat revisi)"
+                            onClick={() => handleOpenPrintQuo(quo)}
+                          />
+                        ) : quo.status === 'Approved' ? (
+                          <>
+                            <RowActionButton
+                              display="labeled"
+                              tone="primary"
+                              icon={Pencil}
+                              label="Revisi"
+                              ariaLabel={`Revisi kuantitas penawaran ${quo.id}`}
+                              title="Revisi kuantitas atau harga deal"
+                              onClick={() => handleOpenReviseDealModal(quo)}
+                            />
+                            <RowActionButton
+                              icon={Printer}
+                              label="Cetak"
+                              ariaLabel={`Cetak surat penawaran ${quo.id}`}
+                              title="Cetak surat penawaran"
+                              onClick={() => handleOpenPrintQuo(quo)}
+                            />
+                          </>
+                        ) : quo.status === 'Rejected' ? (
+                          // A rejected quotation is history: the server refuses to deal it, so neither is offered.
+                          <RowActionButton
+                            icon={Printer}
+                            label="Cetak"
+                            ariaLabel={`Cetak surat penawaran ${quo.id}`}
+                            title="Cetak surat penawaran (ditolak)"
+                            onClick={() => handleOpenPrintQuo(quo)}
+                          />
                         ) : (
                           <>
-                            <Button
-                              variant="ghost"
-                              size="icon"
+                            <RowActionButton
+                              display="labeled"
+                              tone="primary"
+                              icon={CheckCircle2}
+                              label="Deal"
+                              ariaLabel={`Setujui deal penawaran ${quo.id}`}
                               title="Setujui deal dan terbitkan pesanan"
-                              aria-label={`Setujui deal penawaran ${quo.id}`}
                               onClick={() => handleOpenDealModal(quo)}
-                              className="size-8 text-status-done hover:bg-status-done-bg"
-                            >
-                              <CheckCircle2 size={15} aria-hidden="true" />
-                            </Button>
-                            <Button
-                              variant="ghost"
-                              size="icon"
+                            />
+                            <RowActionButton
+                              icon={Pencil}
+                              label="Ubah"
+                              ariaLabel={`Ubah penawaran ${quo.id}`}
                               title="Ubah penawaran"
-                              aria-label={`Ubah penawaran ${quo.id}`}
                               onClick={() => handleOpenEditQuoModal(quo)}
-                              className="size-8"
-                            >
-                              <Pencil size={15} aria-hidden="true" />
-                            </Button>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              title="Tandai ditolak klien"
-                              aria-label={`Tandai penawaran ${quo.id} ditolak klien`}
-                              onClick={() => handleOpenReject(quo)}
-                              className="size-8 text-brand-red hover:bg-rose-50"
-                            >
-                              <XCircle size={15} aria-hidden="true" />
-                            </Button>
+                            />
                           </>
                         )}
 
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          title="Cetak surat penawaran"
-                          aria-label={`Cetak surat penawaran ${quo.id}`}
-                          onClick={() => handleOpenPrintQuo(quo)}
-                          className="size-8"
-                        >
-                          <Printer size={15} aria-hidden="true" />
-                        </Button>
+                        {canDeleteQuotation(quo) && (
+                          <RowActionButton
+                            icon={Trash2}
+                            tone="danger"
+                            label="Hapus"
+                            ariaLabel={`Hapus penawaran ${quo.id}`}
+                            title="Hapus penawaran"
+                            onClick={() => handleDeleteQuotation(quo.id)}
+                          />
+                        )}
 
                         <RowDetailButton label={quo.id} onClick={() => setDetailQuotation(quo)} />
                       </TableRowActions>
@@ -1043,37 +1149,40 @@ export const QuotationsModule: React.FC = () => {
         footer={
           detailQuotation && (
             <div className="flex flex-wrap items-center gap-2">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => {
-                  const target = detailQuotation;
-                  setDetailQuotation(null);
-                  handleDeleteQuotation(target.id);
-                }}
-                className="text-rose-600 hover:bg-rose-50 hover:border-rose-300"
-              >
-                <Trash2 size={14} aria-hidden="true" /> Hapus
-              </Button>
+              {canDeleteQuotation(detailQuotation) && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    const target = detailQuotation;
+                    setDetailQuotation(null);
+                    handleDeleteQuotation(target.id);
+                  }}
+                  className="mr-auto text-brand-red hover:bg-rose-50 hover:border-rose-300"
+                >
+                  <Trash2 size={14} aria-hidden="true" /> Hapus
+                </Button>
+              )}
               <Button variant="outline" size="sm" onClick={() => handleOpenPrintQuo(detailQuotation)}>
                 <Printer size={14} aria-hidden="true" /> Cetak PDF
               </Button>
-              {detailQuotation.status === 'Approved' ? (
+              {detailQuotation.supersededBy || detailQuotation.status === 'Rejected' ? null : detailQuotation.status === 'Approved' ? (
                 <Button size="sm" onClick={() => handleOpenReviseDealModal(detailQuotation)}>
                   <Pencil size={14} aria-hidden="true" /> Revisi Qty Deal
                 </Button>
               ) : (
                 <>
-                  {detailQuotation.status !== 'Rejected' && (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => handleOpenReject(detailQuotation)}
-                      className="text-brand-red hover:border-brand-red/40 hover:bg-rose-50"
-                    >
-                      <XCircle size={14} aria-hidden="true" /> Tandai Ditolak
-                    </Button>
-                  )}
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => handleOpenReject(detailQuotation)}
+                    className="text-brand-red hover:border-brand-red/40 hover:bg-rose-50"
+                  >
+                    <XCircle size={14} aria-hidden="true" /> Tandai Ditolak
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={() => handleOpenEditQuoModal(detailQuotation)}>
+                    <Pencil size={14} aria-hidden="true" /> Ubah
+                  </Button>
                   <Button size="sm" onClick={() => handleOpenDealModal(detailQuotation)}>
                     <CheckCircle2 size={14} aria-hidden="true" /> Setujui Deal & Buat Pesanan
                   </Button>
@@ -1102,6 +1211,11 @@ export const QuotationsModule: React.FC = () => {
                 <QuotationStatusTag quotation={detailQuotation} solid />
               </DetailField>
               <DetailField label="Pelanggan">{detailQuotation.customerName}</DetailField>
+              <DetailField label="PIC">
+                {detailQuotation.picName
+                  ? `${detailQuotation.picName}${detailQuotation.picRole ? ` (${detailQuotation.picRole})` : ''}`
+                  : detailQuotation.user || '-'}
+              </DetailField>
               <DetailField label="No. Penawaran" mono>
                 {detailQuotation.quotationNo || detailQuotation.id}
                 {!!detailQuotation.revision && ` (Revisi ${detailQuotation.revision})`}
@@ -1127,6 +1241,9 @@ export const QuotationsModule: React.FC = () => {
               <DetailField label="Warna">{detailQuotation.color}</DetailField>
               <DetailField label="Sablon / bordir">{detailQuotation.sablonBordir || detailQuotation.accessories}</DetailField>
               <DetailField label="Rincian ukuran">{detailQuotation.size}</DetailField>
+              <DetailField label="Template size chart">
+                {detailQuotation.sizeChartName || detailQuotation.sizeChartId || 'Belum dipilih'}
+              </DetailField>
               <DetailField label="Kebutuhan sampel">
                 {detailQuotation.needsSample ? 'Perlu sampel fisik' : 'Tanpa sampel fisik (langsung produksi)'}
               </DetailField>
@@ -1158,11 +1275,14 @@ export const QuotationsModule: React.FC = () => {
             )}
 
             <DetailSection title="Harga & kuantitas">
-              <DetailField label="Harga satuan">{formatCurrency(detailQuotation.price)}</DetailField>
+              <DetailField label={isBelowMoq(detailQuotation) && !!detailQuotation.priceBelowMoq ? 'Harga satuan berlaku (di bawah MOQ)' : 'Harga satuan berlaku'}>
+                {formatCurrency(effectiveUnitPrice(detailQuotation))}
+              </DetailField>
               <DetailField label="Total harga">
-                {formatCurrency(Number(detailQuotation.totalPrice) || (Number(detailQuotation.quantity) * Number(detailQuotation.price)))}
+                {formatCurrency(Number(detailQuotation.totalPrice) || (Number(detailQuotation.quantity) * effectiveUnitPrice(detailQuotation)))}
               </DetailField>
               <DetailField label="MOQ standar">{detailQuotation.moq || 100} Pcs</DetailField>
+              <DetailField label="Harga di atas MOQ">{formatCurrency(detailQuotation.price)}</DetailField>
               {!!detailQuotation.priceBelowMoq && (
                 <DetailField label="Harga di bawah MOQ">{formatCurrency(detailQuotation.priceBelowMoq)}</DetailField>
               )}
@@ -1176,9 +1296,6 @@ export const QuotationsModule: React.FC = () => {
                       <span className="min-w-0">
                         <span className="font-semibold text-foreground">
                           {term.label} {term.percentage}%
-                        </span>
-                        <span className="block text-xs text-muted-foreground">
-                          {term.dueRule || 'Sesuai kesepakatan'}
                         </span>
                       </span>
                       <span className="shrink-0 font-bold tabular-nums text-foreground">
@@ -1292,6 +1409,20 @@ export const QuotationsModule: React.FC = () => {
 
           <FormError>{reviseError}</FormError>
 
+          <div>
+            <FieldLabel>Rincian ukuran baru</FieldLabel>
+            <SizeRowsEditor
+              rows={reviseSizeRows}
+              onChange={rows => {
+                setReviseSizeRows(rows);
+                if (rows.some(r => r.size.trim())) setReviseQty(sizeRowsTotal(rows));
+              }}
+              caption="Jumlah pcs per ukuran setelah revisi"
+              hint="Kuantitas baru mengikuti total tabel ini; pesanan dan SPK ikut memakai rincian ini."
+              idPrefix="revise-size"
+            />
+          </div>
+
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div>
               <FieldLabel htmlFor="revise-qty" required>Kuantitas baru (Pcs)</FieldLabel>
@@ -1301,8 +1432,9 @@ export const QuotationsModule: React.FC = () => {
                 min={1}
                 inputMode="numeric"
                 value={reviseQty}
+                readOnly={reviseSizeRows.some(r => r.size.trim())}
                 aria-describedby="revise-qty-hint"
-                className="text-right font-semibold tabular-nums"
+                className="text-right font-semibold tabular-nums read-only:border-dashed read-only:bg-muted/60"
                 onChange={e => setReviseQty(Number(e.target.value))}
               />
               <FieldHint id="revise-qty-hint">
@@ -1311,7 +1443,7 @@ export const QuotationsModule: React.FC = () => {
             </div>
 
             <div>
-              <FieldLabel htmlFor="revise-price" required>Harga sesuai MOQ</FieldLabel>
+              <FieldLabel htmlFor="revise-price" required>Harga di atas MOQ</FieldLabel>
               <CurrencyInput
                 id="revise-price"
                 value={revisePrice}
@@ -1333,7 +1465,7 @@ export const QuotationsModule: React.FC = () => {
               <span className="mt-0.5 block text-xs text-muted-foreground">
                 {reviseQty} Pcs &times; {formatCurrency(reviseUnitPrice)}
                 {' — '}
-                {reviseUsesBelowMoq ? 'memakai harga di bawah MOQ' : 'memakai harga sesuai MOQ'}
+                {reviseUsesBelowMoq ? 'memakai harga di bawah MOQ' : 'memakai harga di atas MOQ'}
               </span>
             </div>
             <span className="text-lg font-bold tabular-nums text-foreground">
@@ -1464,6 +1596,27 @@ export const QuotationsModule: React.FC = () => {
                 />
                 <FieldError id="quo-product-error">{quoFieldErrors.productType}</FieldError>
               </div>
+
+              <div>
+                <FieldLabel htmlFor="quo-pic" required>PIC (penanggung jawab)</FieldLabel>
+                <Select
+                  id="quo-pic"
+                  value={quoFormData.picUserId || ''}
+                  aria-invalid={!!quoFieldErrors.picUserId}
+                  aria-describedby={quoFieldErrors.picUserId ? 'quo-pic-error' : 'quo-pic-hint'}
+                  onChange={e => handlePickPic(e.target.value)}
+                >
+                  <option value="">Pilih PIC</option>
+                  {picChoices.map(s => (
+                    <option key={s.id} value={s.id}>
+                      {s.name}{s.role ? ` · ${s.role}` : ''}
+                    </option>
+                  ))}
+                </Select>
+                {quoFieldErrors.picUserId
+                  ? <FieldError id="quo-pic-error">{quoFieldErrors.picUserId}</FieldError>
+                  : <FieldHint id="quo-pic-hint">Akun staf yang menangani penawaran ini; ikut ke pesanan saat deal.</FieldHint>}
+              </div>
             </div>
           </FormSection>
 
@@ -1516,123 +1669,68 @@ export const QuotationsModule: React.FC = () => {
                 Rincian ukuran (size breakdown)
               </legend>
 
+              {/* Mirrors the order form, so what the deal records is what the SPK prints. */}
+              <label htmlFor="quo-size-chart" className="mb-1 block text-xs font-semibold text-foreground">
+                Template size chart <span className="text-brand-red" aria-hidden="true">*</span>
+              </label>
               <div className="mb-2 flex flex-wrap items-center gap-2">
-                <label htmlFor="quo-size-chart" className="text-xs font-medium text-muted-foreground">
-                  Ambil dari size chart
-                </label>
-                <div className="min-w-[240px] flex-1 sm:max-w-xs">
+                <div role="group" aria-label="Sumber size chart" className="inline-flex rounded-lg border border-border p-0.5">
+                  {([
+                    ['all', 'Semua'],
+                    ['standard', 'Standar HIJ'],
+                    ['customer', 'Khusus pelanggan']
+                  ] as const).map(([value, label]) => (
+                    <button
+                      key={value}
+                      type="button"
+                      aria-pressed={chartScope === value}
+                      onClick={() => setChartScope(value)}
+                      className={cn(
+                        'rounded-md px-2.5 py-1 text-xs font-semibold transition-colors',
+                        chartScope === value ? 'bg-brand-teal-dark text-white' : 'text-muted-foreground hover:bg-muted'
+                      )}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+                <div className="min-w-[220px] flex-1 sm:max-w-xs">
                   <Select
                     id="quo-size-chart"
+                    aria-label="Template size chart"
+                    required
                     value={pickedChartId}
+                    aria-invalid={!!quoFieldErrors.sizeChartId}
+                    aria-describedby={quoFieldErrors.sizeChartId ? 'quo-size-chart-error' : undefined}
                     onChange={e => handlePickSizeChart(e.target.value)}
                   >
-                    <option value="">Susun ukuran sendiri</option>
+                    <option value="">-- Pilih template size chart --</option>
                     {availableCharts.map(c => (
                       <option key={c.id} value={c.id}>
                         {c.name}
-                        {c.scope === 'customer' ? ` \u00b7 khusus ${c.customerName || 'pelanggan'}` : ''}
+                        {(c.scope || 'standard') === 'customer' ? ` · khusus ${c.customerName || 'pelanggan'}` : ' · standar HIJ'}
                       </option>
                     ))}
                   </Select>
                 </div>
-                <span className="text-xs text-muted-foreground">
-                  Mengisi daftar ukurannya; jumlah per ukuran tetap diisi manual.
-                </span>
               </div>
-              <div className="overflow-hidden rounded-xl border border-border">
-                <table className="w-full text-sm">
-                  <caption className="sr-only">Jumlah pcs per ukuran untuk penawaran ini</caption>
-                  <thead className="bg-muted/60 text-xs font-semibold text-muted-foreground">
-                    <tr>
-                      <th scope="col" className="px-3 py-2 text-left">Ukuran</th>
-                      <th scope="col" className="px-3 py-2 text-right">Jumlah (Pcs)</th>
-                      <th scope="col" className="w-12 px-3 py-2 text-right">
-                        <span className="sr-only">Hapus</span>
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-border/60">
-                    {sizeRows.length === 0 ? (
-                      <tr>
-                        <td colSpan={3} className="px-3 py-4 text-center text-xs text-muted-foreground">
-                          Belum ada rincian ukuran. Tanpa rincian, kuantitas diisi manual di bawah.
-                        </td>
-                      </tr>
-                    ) : (
-                      sizeRows.map((row, index) => (
-                        <tr key={index}>
-                          <td className="px-2 py-1.5">
-                            <Input
-                              aria-label={`Nama ukuran baris ${index + 1}`}
-                              value={row.size}
-                              onChange={e =>
-                                applySizeRows(
-                                  sizeRows.map((r, i) => (i === index ? { ...r, size: e.target.value } : r))
-                                )
-                              }
-                              placeholder="S / M / L / XL"
-                              className="h-9"
-                            />
-                          </td>
-                          <td className="px-2 py-1.5">
-                            <Input
-                              type="number"
-                              min={0}
-                              inputMode="numeric"
-                              aria-label={`Jumlah ukuran ${row.size || index + 1}`}
-                              value={row.qty || ''}
-                              onChange={e =>
-                                applySizeRows(
-                                  sizeRows.map((r, i) =>
-                                    i === index ? { ...r, qty: Number(e.target.value) || 0 } : r
-                                  )
-                                )
-                              }
-                              className="h-9 text-right tabular-nums"
-                            />
-                          </td>
-                          <td className="px-2 py-1.5 text-right">
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="icon"
-                              aria-label={`Hapus ukuran ${row.size || index + 1}`}
-                              onClick={() => applySizeRows(sizeRows.filter((_, i) => i !== index))}
-                              className="size-8 text-brand-red hover:bg-rose-50"
-                            >
-                              <Trash2 size={14} aria-hidden="true" />
-                            </Button>
-                          </td>
-                        </tr>
-                      ))
-                    )}
-                  </tbody>
-                  {sizeRows.length > 0 && (
-                    <tfoot className="border-t border-border bg-muted/40 text-sm font-semibold">
-                      <tr>
-                        <td className="px-3 py-2">Total</td>
-                        <td className="px-3 py-2 text-right tabular-nums">
-                          {sizeRows.reduce((sum, row) => sum + (Number(row.qty) || 0), 0)} Pcs
-                        </td>
-                        <td />
-                      </tr>
-                    </tfoot>
-                  )}
-                </table>
-              </div>
-              <div className="mt-2 flex flex-wrap items-center gap-2">
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={() => applySizeRows([...sizeRows, { size: '', qty: 0 }])}
-                >
-                  <Plus size={14} aria-hidden="true" /> Tambah Ukuran
-                </Button>
-                <span className="text-xs text-muted-foreground">
-                  Kuantitas pesanan mengikuti total tabel ini.
-                </span>
-              </div>
+              <FieldError id="quo-size-chart-error">{quoFieldErrors.sizeChartId}</FieldError>
+              <p className="mb-2 text-[11px] text-muted-foreground">
+                {chartScope === 'customer' && !quoFormData.customerId
+                  ? 'Pilih pelanggan dulu untuk melihat size chart khususnya.'
+                  : chartScope === 'customer' && availableCharts.length === 0
+                    ? 'Pelanggan ini belum punya size chart khusus. Buat di menu Size Chart, atau pakai standar HIJ.'
+                    : pickedChart
+                      ? `Dicetak di SPK persis seperti di halaman Size Chart — kolom ${pickedChart.measurements.map(m => m.code || m.label).join(', ') || '-'}; ukuran ${pickedChart.rows.map(r => r.size).join(', ') || '-'}. Jumlah pcs per ukuran diisi di tabel bawah.`
+                      : 'Wajib dipilih: detail ukuran template ini dicetak di SPK. Jumlah pcs per ukuran diisi di tabel bawah.'}
+              </p>
+              <SizeRowsEditor
+                rows={sizeRows}
+                onChange={applySizeRows}
+                caption="Jumlah pcs per ukuran untuk penawaran ini"
+                hint="Kuantitas pesanan mengikuti total tabel ini."
+                idPrefix="quo-size"
+              />
             </fieldset>
           </FormSection>
 
@@ -1723,7 +1821,7 @@ export const QuotationsModule: React.FC = () => {
               </div>
 
               <div>
-                <FieldLabel htmlFor="quo-price" required>Harga sesuai MOQ</FieldLabel>
+                <FieldLabel htmlFor="quo-price" required>Harga di atas MOQ</FieldLabel>
                 <CurrencyInput
                   id="quo-price"
                   value={quoFormData.price || ''}
@@ -1745,7 +1843,7 @@ export const QuotationsModule: React.FC = () => {
                 />
                 {quoFieldErrors.price
                   ? <FieldError id="quo-price-error">{quoFieldErrors.price}</FieldError>
-                  : <FieldHint id="quo-price-hint">Dipakai bila jumlah &ge; MOQ.</FieldHint>}
+                  : <FieldHint id="quo-price-hint">Dipakai bila jumlah &ge; MOQ — harga lebih murah per pcs.</FieldHint>}
               </div>
 
               <div>
@@ -1771,7 +1869,7 @@ export const QuotationsModule: React.FC = () => {
                 />
                 {quoFieldErrors.priceBelowMoq
                   ? <FieldError id="quo-price-below-error">{quoFieldErrors.priceBelowMoq}</FieldError>
-                  : <FieldHint id="quo-price-below-hint">Dipakai bila jumlah &lt; MOQ.</FieldHint>}
+                  : <FieldHint id="quo-price-below-hint">Dipakai bila jumlah &lt; MOQ — harga lebih mahal per pcs.</FieldHint>}
               </div>
             </div>
 
@@ -1784,7 +1882,7 @@ export const QuotationsModule: React.FC = () => {
                 <span className="mt-0.5 block text-xs text-muted-foreground">
                   {Number(quoFormData.quantity) || 0} Pcs &times; {formatCurrency(effectiveUnitPrice(quoFormData))}
                   {' — '}
-                  {isBelowMoq(quoFormData) ? 'memakai harga di bawah MOQ' : 'memakai harga sesuai MOQ'}
+                  {isBelowMoq(quoFormData) ? 'memakai harga di bawah MOQ' : 'memakai harga di atas MOQ'}
                 </span>
               </div>
               <span className="text-lg font-bold tabular-nums text-foreground">

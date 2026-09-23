@@ -95,6 +95,13 @@ export interface TokenPayload {
   role?: string;
   /** Expiry, seconds since epoch. */
   exp: number;
+  /** Fingerprint of the password hash at issue: a changed password ends the session. */
+  pv?: string;
+}
+
+/** Short fingerprint of a stored password, carried in the token. */
+export function passwordVersion(stored?: string): string {
+  return crypto.createHash('sha256').update(String(stored || '')).digest('hex').slice(0, 12);
 }
 
 const TOKEN_TTL_SECONDS = 12 * 60 * 60;
@@ -149,11 +156,27 @@ function readToken(req: Request): string | undefined {
   return undefined;
 }
 
-/** Attaches req.actor when a valid token is present. Never rejects. */
-export function attachActor(req: Request, _res: Response, next: NextFunction) {
-  const payload = verifyToken(readToken(req));
-  if (payload) req.actor = payload;
-  next();
+/**
+ * Attaches req.actor when a valid token is present. Never rejects.
+ *
+ * The token is stateless, so the account behind it is looked up on every
+ * request: a deleted or deactivated account, or one whose password changed,
+ * stops working at once instead of at the token's twelve-hour expiry.
+ */
+export function attachActor(lookup: (type: ActorType, id: string) => any | null) {
+  return (req: Request, _res: Response, next: NextFunction) => {
+    const payload = verifyToken(readToken(req));
+    if (payload) {
+      const record = lookup(payload.type, payload.sub);
+      const alive =
+        record &&
+        record.status !== 'Inactive' &&
+        (payload.type !== 'customer' || record.portalAccessActive !== false) &&
+        (payload.pv === undefined || payload.pv === passwordVersion(record.password));
+      if (alive) req.actor = payload;
+    }
+    next();
+  };
 }
 
 export function requireAuth(req: Request, res: Response, next: NextFunction) {

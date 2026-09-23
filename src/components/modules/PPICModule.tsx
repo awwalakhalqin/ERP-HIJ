@@ -12,9 +12,10 @@ import {
   Loader2,
   Users,
   Trash2,
-  Plus
+  Plus,
+  FilePlus2
 } from 'lucide-react';
-import { SPK, Order, InventoryItem, Operator, WorkAssignment, ProductionTask, PRODUCTION_TASKS } from '../../types';
+import { SPK, Order, InventoryItem, Operator, WorkAssignment, ProductionTask, PRODUCTION_TASKS, SizeChart } from '../../types';
 import { fetchResource, createResource, updateResource, deleteResource, fetchReadinessData, issueSpkApi } from '../../services/api';
 import { formatDate, formatCurrency, exportTableToExcel, statusLabel, todayLocal } from '../../lib/utils';
 import {
@@ -53,6 +54,7 @@ import {
   TableHead,
   TableCell,
   TableRowActions,
+  RowActionButton,
   TableEmptyRow,
   TableSkeletonRows,
   TableSortHead,
@@ -69,6 +71,8 @@ import {
 export const PPICModule: React.FC = () => {
   const [spks, setSpks] = useState<SPK[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
+  /** Live charts from the Size Chart page; the printed SPK shows the one its order names. */
+  const [sizeCharts, setSizeCharts] = useState<SizeChart[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('ALL');
@@ -76,10 +80,15 @@ export const PPICModule: React.FC = () => {
   const [detailAwaiting, setDetailAwaiting] = useState<Order | null>(null);
   const [spkSort, setSpkSort] = useState<SortState>({ key: 'newest', direction: 'desc' });
 
-  // Edit Progress Modal
+  /*
+   * Edit Progress Modal. Only the four stage counters are typed here; the
+   * server owns `progress` and `status` and recomputes both on every save, so
+   * the client never sends them.
+   */
+  type ProgressForm = Partial<Pick<SPK, 'cutting' | 'sewing' | 'finishing' | 'qc' | 'targetQty'>>;
   const [selectedSpk, setSelectedSpk] = useState<SPK | null>(null);
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
-  const [editFormData, setEditFormData] = useState<Partial<SPK>>({});
+  const [editFormData, setEditFormData] = useState<ProgressForm>({});
 
   /*
    * Who worked on this SPK. Recorded here because this is where production
@@ -119,7 +128,8 @@ export const PPICModule: React.FC = () => {
     payments: [],
     samples: [],
     procurements: [],
-    patterns: []
+    patterns: [],
+    designs: []
   });
   const [inventory, setInventory] = useState<InventoryItem[]>([]);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -151,6 +161,10 @@ export const PPICModule: React.FC = () => {
    * advance. Each SPK stage reads the matching task on the worker records, so
    * the progress figure and the payroll figure can never drift apart.
    *
+   * Display only: the server derives the same figures from the records after
+   * every write and stores them on the SPK. This mirror lets the modal show the
+   * numbers before the reload lands.
+   *
    * Returns null while an SPK has no worker records yet — those SPKs keep the
    * numbers that were typed before this existed instead of being reset to zero.
    */
@@ -167,26 +181,17 @@ export const PPICModule: React.FC = () => {
     };
   };
 
-  // Same arithmetic the manual form uses, so an SPK reads the same either way.
-  const progressFromStages = (
-    stages: { cutting: number; sewing: number; finishing: number; qc: number },
-    targetQty: number
-  ) => {
+  /*
+   * Preview of the percentage the server will store, so the modal footer moves
+   * while someone types. Same formula as the server; never sent to it.
+   */
+  const previewProgress = (form: ProgressForm) => {
+    const target = Number(form.targetQty) || 1;
     const pct = Math.round(
-      ((stages.cutting + stages.sewing + stages.finishing + stages.qc) / ((targetQty || 1) * 4)) * 100
+      (((Number(form.cutting) || 0) + (Number(form.sewing) || 0) + (Number(form.finishing) || 0) + (Number(form.qc) || 0)) /
+        (target * 4)) * 100
     );
-    const progress = Math.min(100, Math.max(0, Number.isFinite(pct) ? pct : 0));
-    return {
-      progress,
-      status: (progress >= 100 ? 'Completed' : progress >= 75 ? 'QC Passed' : 'In Progress') as SPK['status']
-    };
-  };
-
-  /** Push the stage figures a worker record implies back onto the SPK. */
-  const syncSpkProgress = async (spk: SPK, rows: WorkAssignment[]) => {
-    const stages = stagesFromWork(rows, spk.targetQty);
-    if (!stages) return;
-    await updateResource('spk_produksi', spk.id, { ...stages, ...progressFromStages(stages, spk.targetQty) });
+    return Math.min(100, Math.max(0, Number.isFinite(pct) ? pct : 0));
   };
 
   const handleOpenWorkers = (spk: SPK) => {
@@ -240,8 +245,8 @@ export const PPICModule: React.FC = () => {
       } as WorkAssignment;
 
       await createResource<WorkAssignment>('work-assignments', record);
-      // Progress follows the record immediately; nobody has to retype it.
-      await syncSpkProgress(workerSpk, [...assignmentsFor(workerSpk.id), record]);
+      // The server recomputes the SPK's stage counters from the records on
+      // this write; reloading picks the new figures up.
       setWorkerForm(prev => ({ ...prev, operatorId: '', qty: 0, rate: 0 }));
       await loadData();
     } catch (err: any) {
@@ -255,9 +260,6 @@ export const PPICModule: React.FC = () => {
     if (!window.confirm(`Hapus catatan ${assignment.operatorName} (${assignment.task}, ${assignment.qty} pcs)?`)) return;
     try {
       await deleteResource('work-assignments', assignment.id);
-      if (workerSpk) {
-        await syncSpkProgress(workerSpk, assignmentsFor(workerSpk.id).filter(a => a.id !== assignment.id));
-      }
       await loadData();
     } catch {
       setWorkerError('Gagal menghapus catatan. Coba lagi.');
@@ -270,14 +272,16 @@ export const PPICModule: React.FC = () => {
   const loadData = async () => {
     try {
       setLoading(true);
-      const [spkRes, orderRes, readinessRes, inventoryRes, operatorRes, assignmentRes] = await Promise.all([
+      const [spkRes, orderRes, readinessRes, inventoryRes, operatorRes, assignmentRes, chartRes] = await Promise.all([
         fetchResource<SPK>('spk_produksi'),
         fetchResource<Order>('orders'),
         fetchReadinessData(),
         fetchResource<InventoryItem>('raw-materials'),
         fetchResource<Operator>('operators'),
-        fetchResource<WorkAssignment>('work-assignments')
+        fetchResource<WorkAssignment>('work-assignments'),
+        fetchResource<SizeChart>('size-charts').catch(() => [] as SizeChart[])
       ]);
+      setSizeCharts(chartRes || []);
       setSpks(spkRes);
       setOrders(orderRes);
       setReadinessData(readinessRes);
@@ -412,8 +416,10 @@ export const PPICModule: React.FC = () => {
 
   const isSpkOpt = issueOrder ? isSpkOptionalForOrder(issueOrder) : false;
 
+  // Same rule as checkSample in lib/readiness: a physical sample is only
+  // required when the quotation explicitly asked for one.
   const issueBlocked = !isSpkOpt && (!!issueOrder
-    && issueOrder.needsSample !== false
+    && issueOrder.needsSample === true
     && issueOrder.sampleStatus !== 'Approved'
     && !readinessData.samples.some(sample => sample.orderId === issueOrder.id && sample.status === 'Approved')
     && !issueOrder.sampleWaivedBy);
@@ -425,7 +431,7 @@ export const PPICModule: React.FC = () => {
     // Gerbang Anti-Skip: jika order butuh sampel dan belum approved / waived, blokir penerbitan SPK
     // Kecuali jika pesanan merupakan Repeat Order atau Qty < 50 (SPK Opsional)
     const isSpkOptOrder = isSpkOptionalForOrder(issueOrder);
-    const isSampleBlocked = !isSpkOptOrder && (issueOrder.needsSample !== false &&
+    const isSampleBlocked = !isSpkOptOrder && (issueOrder.needsSample === true &&
       issueOrder.sampleStatus !== 'Approved' &&
       !readinessData.samples.some(s => s.orderId === issueOrder.id && s.status === 'Approved') &&
       !issueOrder.sampleWaivedBy);
@@ -468,17 +474,13 @@ export const PPICModule: React.FC = () => {
   const handleOpenEdit = (spk: SPK) => {
     const fromWork = stagesFromWork(assignmentsFor(spk.id), spk.targetQty);
     setSelectedSpk(spk);
+    // Only what the form edits. The rest of the SPK stays untouched on save.
     setEditFormData({
-      ...spk,
+      targetQty: spk.targetQty,
       cutting: fromWork ? fromWork.cutting : spk.cutting || 0,
       sewing: fromWork ? fromWork.sewing : spk.sewing || 0,
       finishing: fromWork ? fromWork.finishing : spk.finishing || 0,
-      qc: fromWork ? fromWork.qc : spk.qc || 0,
-      ...(fromWork ? progressFromStages(fromWork, spk.targetQty) : {}),
-      progress: fromWork ? progressFromStages(fromWork, spk.targetQty).progress : spk.progress || 0,
-      pjKepalaProduksi: spk.pjKepalaProduksi || 'Goro / Mas Dan',
-      pjCutting: spk.pjCutting || 'Budi Santoso',
-      pjFinishing: spk.pjFinishing || 'Siti Aminah'
+      qc: fromWork ? fromWork.qc : spk.qc || 0
     });
     setProgressError(null);
     setProgressFieldErrors({});
@@ -487,17 +489,7 @@ export const PPICModule: React.FC = () => {
 
   const handleProgressUpdate = (stage: 'cutting' | 'sewing' | 'finishing' | 'qc', val: number) => {
     setProgressFieldErrors(prev => ({ ...prev, [stage]: '' }));
-    const updated = { ...editFormData, [stage]: val };
-    const target = updated.targetQty || 1;
-    // Calculate overall average progress across stages
-    const avgPct = Math.round(
-      (((updated.cutting || 0) + (updated.sewing || 0) + (updated.finishing || 0) + (updated.qc || 0)) / (target * 4)) * 100
-    );
-    setEditFormData({
-      ...updated,
-      progress: Math.min(100, Math.max(0, Number.isFinite(avgPct) ? avgPct : 0)),
-      status: avgPct >= 100 ? 'Completed' : avgPct >= 75 ? 'QC Passed' : 'In Progress'
-    });
+    setEditFormData(prev => ({ ...prev, [stage]: val }));
   };
 
   const handleSaveProgress = async (e: React.FormEvent) => {
@@ -545,7 +537,9 @@ export const PPICModule: React.FC = () => {
     setProgressError(null);
     setSavingProgress(true);
     try {
-      await updateResource('spk_produksi', selectedSpk.id, editFormData);
+      // Partial update: the four counters only. The server keeps the higher of
+      // this and what the records say, then recomputes progress and status.
+      await updateResource('spk_produksi', selectedSpk.id, { cutting, sewing, finishing, qc });
       setIsEditModalOpen(false);
       loadData();
     } catch (err) {
@@ -553,6 +547,35 @@ export const PPICModule: React.FC = () => {
     } finally {
       setSavingProgress(false);
     }
+  };
+
+  /*
+   * The picture the factory actually needs on the SPK sheet. An SPK stores no
+   * artwork of its own, so it is resolved from the order's approved design at
+   * print time — which also fixes every SPK issued before this existed.
+   */
+  const mockupForSpk = (spk: SPK | null): string | undefined => {
+    if (!spk) return undefined;
+    const order = orders.find(o => o.id === spk.orderId);
+    const designs = readinessData.designs || [];
+    const design =
+      designs.find(d => d.id && order?.designId && d.id === order.designId) ||
+      designs.find(d => d.orderId === spk.orderId && d.status === 'Approved') ||
+      designs.find(d => d.orderId === spk.orderId);
+
+    const candidates = [
+      design?.mockupFront,
+      design?.mockupBack,
+      order?.designUrl
+    ];
+    return candidates.find(url => !!url && !url.startsWith('/templates/')) || undefined;
+  };
+
+  /** SPKs issued before the chart was copied over print the order's breakdown instead. */
+  const sizeChartForSpk = (spk: SPK | null): string | undefined => {
+    if (!spk) return undefined;
+    const order = orders.find(o => o.id === spk.orderId);
+    return order?.sizeChart || order?.size || undefined;
   };
 
   const handleOpenPrintModal = (spk: SPK) => {
@@ -762,8 +785,8 @@ export const PPICModule: React.FC = () => {
                 <TableHead className="cell-sticky-start">Pesanan</TableHead>
                 <TableHead className="hidden md:table-cell">Pelanggan</TableHead>
                 <TableHead className="hidden xl:table-cell">Produk</TableHead>
-                <TableHead className="hidden sm:table-cell text-right">Qty</TableHead>
-                <TableHead className="hidden md:table-cell">Deadline</TableHead>
+                <TableHead className="hidden sm:table-cell text-right tabular-nums">Qty</TableHead>
+                <TableHead className="hidden lg:table-cell">Deadline</TableHead>
                 <TableHead className="text-center">Syarat</TableHead>
                 <TableHead className="cell-sticky-end text-right">Aksi</TableHead>
               </TableRow>
@@ -783,6 +806,14 @@ export const PPICModule: React.FC = () => {
                   const readiness = getOrderReadiness(order, readinessData);
                   const isSaving = savingOrderId === order.id;
                   const orderRef = order.po || order.id;
+                  const notReady = !readiness.ready && !readiness.isSpkOptional;
+                  const issueTitle = isSaving
+                    ? 'Menyimpan perubahan pesanan…'
+                    : notReady
+                      ? `Syarat belum lengkap (${readiness.blockingMetCount}/${readiness.blockingTotal}). Buka Detail untuk melengkapinya.`
+                      : readiness.isSpkOptional
+                        ? 'Terbitkan SPK (opsional untuk pesanan ini)'
+                        : 'Terbitkan SPK';
 
                   return (
                     <TableRow key={order.id}>
@@ -802,11 +833,11 @@ export const PPICModule: React.FC = () => {
                         </span>
                       </TableCell>
 
-                      <TableCell className="hidden sm:table-cell text-right whitespace-nowrap font-semibold text-slate-900">
+                      <TableCell className="hidden sm:table-cell text-right tabular-nums font-semibold text-slate-900">
                         {order.quantity}
                       </TableCell>
 
-                      <TableCell className="hidden md:table-cell whitespace-nowrap">
+                      <TableCell className="hidden lg:table-cell">
                         <DeadlineBadge deadline={order.deadline} />
                       </TableCell>
 
@@ -826,15 +857,16 @@ export const PPICModule: React.FC = () => {
 
                       <TableCell className="cell-sticky-end text-right">
                         <TableRowActions>
-                          <Button
-                            size="sm"
+                          <RowActionButton
+                            label="Terbitkan SPK"
+                            icon={FilePlus2}
+                            display="labeled"
+                            tone="primary"
                             onClick={() => handleOpenIssue(order)}
-                            disabled={(!readiness.ready && !readiness.isSpkOptional) || isSaving}
-                            aria-label={`Terbitkan SPK untuk ${orderRef}`}
-                            className="hidden h-8 px-2.5 text-xs sm:inline-flex"
-                          >
-                            Terbitkan SPK
-                          </Button>
+                            disabled={notReady || isSaving}
+                            ariaLabel={`Terbitkan SPK untuk ${orderRef}`}
+                            title={issueTitle}
+                          />
                           <RowDetailButton label={orderRef} onClick={() => setDetailAwaiting(order)} />
                         </TableRowActions>
                       </TableCell>
@@ -893,7 +925,7 @@ export const PPICModule: React.FC = () => {
                   sortKey="orderId"
                   sort={spkSort}
                   onSortChange={setSpkSort}
-                  className="hidden lg:table-cell"
+                  className="hidden 2xl:table-cell"
                 >
                   Pesanan
                 </TableSortHead>
@@ -905,13 +937,13 @@ export const PPICModule: React.FC = () => {
                 >
                   Pelanggan
                 </TableSortHead>
-                <TableHead className="hidden 2xl:table-cell">Produk</TableHead>
+                <TableHead className="hidden min-[1700px]:table-cell">Produk</TableHead>
                 <TableSortHead
                   sortKey="targetQty"
                   sort={spkSort}
                   onSortChange={setSpkSort}
                   align="right"
-                  className="hidden sm:table-cell"
+                  className="hidden sm:table-cell tabular-nums"
                 >
                   Target
                 </TableSortHead>
@@ -919,7 +951,8 @@ export const PPICModule: React.FC = () => {
                   sortKey="progress"
                   sort={spkSort}
                   onSortChange={setSpkSort}
-                  className="hidden sm:table-cell"
+                  align="right"
+                  className="hidden sm:table-cell tabular-nums"
                 >
                   Progres
                 </TableSortHead>
@@ -927,7 +960,7 @@ export const PPICModule: React.FC = () => {
                   sortKey="tanggalSelesai"
                   sort={spkSort}
                   onSortChange={setSpkSort}
-                  className="hidden md:table-cell"
+                  className="hidden lg:table-cell"
                 >
                   Deadline
                 </TableSortHead>
@@ -958,8 +991,8 @@ export const PPICModule: React.FC = () => {
                         {spk.id}
                       </TableCell>
 
-                      <TableCell className="hidden lg:table-cell whitespace-nowrap font-mono text-slate-600">
-                        {spk.po || spk.orderId || '\u2014'}
+                      <TableCell className="hidden 2xl:table-cell whitespace-nowrap font-mono text-slate-600">
+                        {spk.po || spk.orderId || '—'}
                       </TableCell>
 
                       <TableCell className="hidden md:table-cell">
@@ -968,18 +1001,18 @@ export const PPICModule: React.FC = () => {
                         </span>
                       </TableCell>
 
-                      <TableCell className="hidden 2xl:table-cell">
+                      <TableCell className="hidden min-[1700px]:table-cell">
                         <span className="block max-w-[160px] truncate" title={spk.productName}>
                           {spk.productName}
                         </span>
                       </TableCell>
 
-                      <TableCell className="hidden sm:table-cell text-right whitespace-nowrap font-semibold text-slate-900">
+                      <TableCell className="hidden sm:table-cell text-right tabular-nums font-semibold text-slate-900">
                         {spk.targetQty}
                       </TableCell>
 
-                      <TableCell className="hidden sm:table-cell">
-                        <div className="flex items-center gap-2">
+                      <TableCell className="hidden sm:table-cell text-right tabular-nums">
+                        <div className="flex items-center justify-end gap-2">
                           <div
                             className="h-1.5 w-14 shrink-0 overflow-hidden rounded-full bg-slate-100"
                             role="progressbar"
@@ -993,11 +1026,11 @@ export const PPICModule: React.FC = () => {
                               style={{ width: `${pct}%` }}
                             />
                           </div>
-                          <span className="tabular-nums text-xs font-semibold text-slate-700">{pct}%</span>
+                          <span className="w-9 tabular-nums text-xs font-semibold text-slate-700">{pct}%</span>
                         </div>
                       </TableCell>
 
-                      <TableCell className="hidden md:table-cell whitespace-nowrap">
+                      <TableCell className="hidden lg:table-cell">
                         <DeadlineBadge
                           deadline={spk.tanggalSelesai}
                           completed={spk.status === 'Completed'}
@@ -1010,36 +1043,19 @@ export const PPICModule: React.FC = () => {
 
                       <TableCell className="cell-sticky-end text-right">
                         <TableRowActions>
-                          <Button
-                            variant="ghost"
-                            size="icon"
+                          {/* Petugas lives in the Detail drawer footer: two quick actions + Detail max. */}
+                          <RowActionButton
+                            label="Cetak SPK"
+                            icon={Printer}
                             onClick={() => handleOpenPrintModal(spk)}
-                            title="Cetak SPK"
-                            aria-label={`Cetak SPK ${spk.id}`}
-                            className="size-8"
-                          >
-                            <Printer size={15} aria-hidden="true" />
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            onClick={() => handleOpenWorkers(spk)}
-                            title="Petugas yang mengerjakan"
-                            aria-label={`Catat petugas ${spk.id}`}
-                            className="size-8"
-                          >
-                            <Users size={15} aria-hidden="true" />
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="icon"
+                            ariaLabel={`Cetak SPK ${spk.id}`}
+                          />
+                          <RowActionButton
+                            label="Perbarui progres"
+                            icon={Edit}
                             onClick={() => handleOpenEdit(spk)}
-                            title="Perbarui progres"
-                            aria-label={`Perbarui progres ${spk.id}`}
-                            className="size-8"
-                          >
-                            <Edit size={15} aria-hidden="true" />
-                          </Button>
+                            ariaLabel={`Perbarui progres ${spk.id}`}
+                          />
                           <RowDetailButton label={spk.id} onClick={() => setDetailSpk(spk)} />
                         </TableRowActions>
                       </TableCell>
@@ -1119,6 +1135,15 @@ export const PPICModule: React.FC = () => {
             <Button type="button" variant="outline" size="sm" onClick={() => handleOpenPrintModal(detailSpk)}>
               <Printer size={15} aria-hidden="true" /> Cetak SPK
             </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => handleOpenWorkers(detailSpk)}
+              aria-label={`Catat petugas ${detailSpk.id}`}
+            >
+              <Users size={15} aria-hidden="true" /> Petugas
+            </Button>
             <Button type="button" size="sm" onClick={() => handleOpenEdit(detailSpk)}>
               <Edit size={15} aria-hidden="true" /> Perbarui Progres
             </Button>
@@ -1129,11 +1154,11 @@ export const PPICModule: React.FC = () => {
           <>
             <DetailSection title="Identitas">
               <DetailField label="No. SPK" mono>{detailSpk.id}</DetailField>
-              <DetailField label="Pesanan" mono>{detailSpk.po || detailSpk.orderId || '\u2014'}</DetailField>
+              <DetailField label="Pesanan" mono>{detailSpk.po || detailSpk.orderId || '—'}</DetailField>
               <DetailField label="Pelanggan">{detailSpk.customerName}</DetailField>
               <DetailField label="Produk">{detailSpk.productName}</DetailField>
-              <DetailField label="Bahan">{detailSpk.material || '\u2014'}</DetailField>
-              <DetailField label="Sablon / Bordir">{detailSpk.sablonBordir || '\u2014'}</DetailField>
+              <DetailField label="Bahan">{detailSpk.material || '—'}</DetailField>
+              <DetailField label="Sablon / Bordir">{detailSpk.sablonBordir || '—'}</DetailField>
             </DetailSection>
 
             <DetailSection title="Jadwal">
@@ -1151,14 +1176,17 @@ export const PPICModule: React.FC = () => {
             </DetailSection>
 
             <DetailSection title="Penanggung jawab">
-              <DetailField label="Kepala produksi">{detailSpk.pjKepalaProduksi || '\u2014'}</DetailField>
-              <DetailField label="Pemotongan">{detailSpk.pjCutting || '\u2014'}</DetailField>
-              <DetailField label="Finishing">{detailSpk.pjFinishing || '\u2014'}</DetailField>
+              <DetailField label="Kepala produksi">{detailSpk.pjKepalaProduksi || '—'}</DetailField>
+              <DetailField label="Pemotongan">{detailSpk.pjCutting || '—'}</DetailField>
+              <DetailField label="Finishing">{detailSpk.pjFinishing || '—'}</DetailField>
             </DetailSection>
 
-            {detailSpk.sizeChart && (
+            {(detailSpk.sizeChart || detailSpk.sizeChartId) && (
               <DetailSection title="Rincian ukuran">
-                <DetailField label="Size chart" full>{detailSpk.sizeChart}</DetailField>
+                <DetailField label="Template size chart" full>
+                  {detailSpk.sizeChartName || detailSpk.sizeChartId || 'Belum dipilih di pesanan'}
+                </DetailField>
+                {detailSpk.sizeChart && <DetailField label="Pcs per ukuran" full>{detailSpk.sizeChart}</DetailField>}
               </DetailSection>
             )}
 
@@ -1177,7 +1205,7 @@ export const PPICModule: React.FC = () => {
         isOpen={!!workerSpk}
         onClose={() => setWorkerSpk(null)}
         title={`Petugas Produksi ${workerSpk?.id ?? ''}`}
-        subtitle={workerSpk ? `${workerSpk.productName} \u00b7 target ${workerSpk.targetQty} pcs` : undefined}
+        subtitle={workerSpk ? `${workerSpk.productName} · target ${workerSpk.targetQty} pcs` : undefined}
         maxWidth="3xl"
         footer={
           <div className="flex justify-end">
@@ -1288,7 +1316,7 @@ export const PPICModule: React.FC = () => {
 
                   <div className="flex justify-end">
                     <Button type="submit" size="sm" disabled={savingWorker}>
-                      <Plus size={14} aria-hidden="true" /> {savingWorker ? 'Menyimpan\u2026' : 'Tambah Catatan'}
+                      <Plus size={14} aria-hidden="true" /> {savingWorker ? 'Menyimpan…' : 'Tambah Catatan'}
                     </Button>
                   </div>
                 </form>
@@ -1319,20 +1347,21 @@ export const PPICModule: React.FC = () => {
                   </div>
                 )}
 
+                {/* Shared Table scrolls sideways, so all seven columns stay reachable on phones. */}
                 <div className="overflow-hidden rounded-xl border border-border">
-                  <table className="w-full text-sm">
-                    <thead className="bg-muted/60 text-xs font-semibold text-muted-foreground">
-                      <tr>
-                        <th scope="col" className="px-3 py-2 text-left">Tahap</th>
-                        <th scope="col" className="px-3 py-2 text-left">Petugas</th>
-                        <th scope="col" className="px-3 py-2 text-right">Pcs</th>
-                        <th scope="col" className="px-3 py-2 text-right">Tarif</th>
-                        <th scope="col" className="px-3 py-2 text-right">Upah</th>
-                        <th scope="col" className="px-3 py-2 text-left">Tanggal</th>
-                        <th scope="col" className="w-12 px-3 py-2"><span className="sr-only">Hapus</span></th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-border/60">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Tahap</TableHead>
+                        <TableHead>Petugas</TableHead>
+                        <TableHead className="text-right tabular-nums">Pcs</TableHead>
+                        <TableHead className="text-right tabular-nums">Tarif</TableHead>
+                        <TableHead className="text-right tabular-nums">Upah</TableHead>
+                        <TableHead>Tanggal</TableHead>
+                        <TableHead className="w-12 text-right"><span className="sr-only">Hapus</span></TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
                       {rows.length === 0 ? (
                         <tr>
                           <td colSpan={7} className="px-3 py-5 text-center text-xs text-muted-foreground">
@@ -1341,30 +1370,31 @@ export const PPICModule: React.FC = () => {
                         </tr>
                       ) : (
                         rows.map(a => (
-                          <tr key={a.id}>
-                            <td className="px-3 py-2 font-semibold text-foreground">{a.task}</td>
-                            <td className="px-3 py-2">{a.operatorName}</td>
-                            <td className="px-3 py-2 text-right tabular-nums">{a.qty}</td>
-                            <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">{formatCurrency(a.ratePerPiece)}</td>
-                            <td className="px-3 py-2 text-right font-semibold tabular-nums">{formatCurrency(a.qty * a.ratePerPiece)}</td>
-                            <td className="px-3 py-2 text-xs text-muted-foreground">{a.date ? formatDate(a.date) : '\u2014'}</td>
-                            <td className="px-3 py-2 text-right">
-                              <Button
-                                type="button"
-                                variant="ghost"
-                                size="icon"
-                                aria-label={`Hapus catatan ${a.operatorName}`}
+                          <TableRow key={a.id}>
+                            <TableCell className="py-2 font-semibold">{a.task}</TableCell>
+                            <TableCell className="py-2">
+                              <span className="block max-w-[180px] truncate" title={a.operatorName}>
+                                {a.operatorName}
+                              </span>
+                            </TableCell>
+                            <TableCell className="py-2 text-right tabular-nums">{a.qty}</TableCell>
+                            <TableCell className="py-2 text-right tabular-nums text-muted-foreground">{formatCurrency(a.ratePerPiece)}</TableCell>
+                            <TableCell className="py-2 text-right tabular-nums font-semibold">{formatCurrency(a.qty * a.ratePerPiece)}</TableCell>
+                            <TableCell className="py-2 text-muted-foreground">{a.date ? formatDate(a.date) : '—'}</TableCell>
+                            <TableCell className="py-2 text-right">
+                              <RowActionButton
+                                label="Hapus catatan"
+                                icon={Trash2}
+                                tone="danger"
                                 onClick={() => handleRemoveAssignment(a)}
-                                className="size-8 text-brand-red hover:bg-rose-50"
-                              >
-                                <Trash2 size={14} aria-hidden="true" />
-                              </Button>
-                            </td>
-                          </tr>
+                                ariaLabel={`Hapus catatan ${a.operatorName}`}
+                              />
+                            </TableCell>
+                          </TableRow>
                         ))
                       )}
-                    </tbody>
-                  </table>
+                    </TableBody>
+                  </Table>
                 </div>
               </div>
             </div>
@@ -1383,7 +1413,7 @@ export const PPICModule: React.FC = () => {
             <div>
               <span className="block text-xs font-medium text-muted-foreground">Progres total</span>
               <span className="block text-lg font-bold tabular-nums text-foreground" aria-live="polite">
-                {editFormData.progress || 0}%
+                {previewProgress(editFormData)}%
               </span>
             </div>
             <div className="flex items-center gap-2">
@@ -1572,7 +1602,14 @@ export const PPICModule: React.FC = () => {
           <div className="max-h-[62vh] overflow-auto rounded-xl bg-slate-200 p-3">
             <div className="mx-auto flex w-fit flex-col gap-4">
               {printSpk && (
-                <SpkDocument spk={printSpk} page1Id="spk-pdf-page1" page2Id="spk-pdf-page2" />
+                <SpkDocument
+                  spk={printSpk}
+                  page1Id="spk-pdf-page1"
+                  page2Id="spk-pdf-page2"
+                  mockupUrl={mockupForSpk(printSpk)}
+                  sizeChart={sizeChartForSpk(printSpk)}
+                  template={sizeCharts.find(c => c.id === printSpk.sizeChartId)}
+                />
               )}
             </div>
           </div>
@@ -1716,7 +1753,7 @@ export const PPICModule: React.FC = () => {
       >
         {issueOrder && (() => {
           const isSpkOptOrder = isSpkOptionalForOrder(issueOrder);
-          const isSampleBlocked = !isSpkOptOrder && (issueOrder.needsSample !== false &&
+          const isSampleBlocked = !isSpkOptOrder && (issueOrder.needsSample === true &&
             issueOrder.sampleStatus !== 'Approved' &&
             !readinessData.samples.some(s => s.orderId === issueOrder.id && s.status === 'Approved') &&
             !issueOrder.sampleWaivedBy);
@@ -1727,7 +1764,7 @@ export const PPICModule: React.FC = () => {
 
               <OrderFlowStepper
                 currentStep={4}
-                needsSample={issueOrder.needsSample !== false}
+                needsSample={issueOrder.needsSample === true}
                 sampleStatus={issueOrder.sampleStatus}
                 isSampleApproved={!isSampleBlocked}
                 compact
@@ -1743,7 +1780,7 @@ export const PPICModule: React.FC = () => {
                   {isSpkOptOrder && (
                     <Badge variant="done">Jalur Cepat: SPK Opsional ({issueOrder.isRepeatOrder ? 'Repeat Order' : 'Qty < 50'})</Badge>
                   )}
-                  {issueOrder.needsSample === false ? (
+                  {issueOrder.needsSample !== true ? (
                     <Badge variant="idle">Tanpa sampel fisik · jalur cepat</Badge>
                   ) : issueOrder.sampleStatus === 'Approved' ? (
                     <Badge variant="done">Sampel fisik disetujui</Badge>

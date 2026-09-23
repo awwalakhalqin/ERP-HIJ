@@ -108,7 +108,7 @@ export const BundleTrackingModule: React.FC = () => {
   const [selectedSpkId, setSelectedSpkId] = useState('');
   const [bundleSize, setBundleSize] = useState('M');
   const [bundleQty, setBundleQty] = useState(20);
-  const [bundleColor, setBundleColor] = useState('Hitam');
+  const [bundleColor, setBundleColor] = useState('');
   const [bundleComponent, setBundleComponent] = useState<any>('Full Set');
   const [numberOfBundles, setNumberOfBundles] = useState(3);
 
@@ -119,7 +119,7 @@ export const BundleTrackingModule: React.FC = () => {
 
   // Stage update after a scan
   const [stageBundle, setStageBundle] = useState<WIPBundle | null>(null);
-  const [stageOperator, setStageOperator] = useState('Operator Scan');
+  const [stageOperator, setStageOperator] = useState('');
   const [savingStage, setSavingStage] = useState(false);
   const [stageError, setStageError] = useState<string | null>(null);
   const [stageFieldErrors, setStageFieldErrors] = useState<Record<string, string>>({});
@@ -197,13 +197,26 @@ export const BundleTrackingModule: React.FC = () => {
     setSavingBundles(true);
 
     try {
+      /*
+       * Ids run per SPK: `<SPK>-B001`, `<SPK>-B002`, … starting after the
+       * bundles that SPK already has. A clock-based suffix collided when two
+       * batches were made within the same second, so the number is checked
+       * against every id in use (including the ones this loop just made).
+       */
+      const usedIds = new Set(bundles.map(b => String(b.id).toLowerCase()));
+      let n = bundles.filter(b => b.spkId === spk.id).length + 1;
       for (let i = 1; i <= numberOfBundles; i++) {
-        const bundleId = `BND-${spk.id.replace('SPK-', '')}-${bundleSize}-${String(Date.now()).slice(-3)}-${i}`;
+        let bundleId = `${spk.id}-B${String(n).padStart(3, '0')}`;
+        while (usedIds.has(bundleId.toLowerCase())) {
+          n += 1;
+          bundleId = `${spk.id}-B${String(n).padStart(3, '0')}`;
+        }
+        usedIds.add(bundleId.toLowerCase());
         const item: WIPBundle = {
           id: bundleId,
           spkId: spk.id,
           orderId: spk.orderId,
-          bundleNumber: i,
+          bundleNumber: n,
           size: bundleSize,
           quantity: bundleQty,
           color: bundleColor,
@@ -219,6 +232,7 @@ export const BundleTrackingModule: React.FC = () => {
           ]
         };
         await createResource('wip-bundles', item);
+        n += 1;
       }
       setIsCreateModalOpen(false);
       showToast(`${numberOfBundles} bundel ukuran ${bundleSize} berhasil dibuat.`);
@@ -239,7 +253,7 @@ export const BundleTrackingModule: React.FC = () => {
     }
     setScanError(null);
     setStageBundle(bundle);
-    setStageOperator('Operator Scan');
+    setStageOperator('');
     setStageError(null);
     setStageFieldErrors({});
   };
@@ -386,19 +400,23 @@ export const BundleTrackingModule: React.FC = () => {
               <TableSortHead className="cell-sticky-start" sortKey="id" sort={bundleSort} onSortChange={setBundleSort}>
                 Kode Bundel
               </TableSortHead>
-              {/* The QR stays on the page so Cetak keeps printing scannable bundle tickets. */}
-              <TableHead className="hidden sm:table-cell text-center">QR</TableHead>
+              {/*
+               * The QR stays on the page so Cetak keeps printing scannable bundle
+               * tickets: it shows from `xl` on screen (a 40px code makes rows tall)
+               * and always on paper, as does the size printed beside it.
+               */}
+              <TableHead className="hidden xl:table-cell print:table-cell text-center">QR</TableHead>
               <TableSortHead className="hidden md:table-cell" sortKey="spkId" sort={bundleSort} onSortChange={setBundleSort}>
                 SPK
               </TableSortHead>
-              <TableHead className="hidden sm:table-cell">Ukuran</TableHead>
-              <TableSortHead className="hidden sm:table-cell" align="right" sortKey="quantity" sort={bundleSort} onSortChange={setBundleSort}>
+              <TableHead className="hidden md:table-cell print:table-cell">Ukuran</TableHead>
+              <TableSortHead className="hidden sm:table-cell tabular-nums" align="right" sortKey="quantity" sort={bundleSort} onSortChange={setBundleSort}>
                 Isi
               </TableSortHead>
-              <TableHead className="hidden md:table-cell">Tahap</TableHead>
               <TableSortHead className="hidden lg:table-cell" sortKey="lastScan" sort={bundleSort} onSortChange={setBundleSort}>
                 Scan Terakhir
               </TableSortHead>
+              <TableHead className="hidden md:table-cell">Tahap</TableHead>
               <TableHead className="text-center">Status</TableHead>
               <TableHead className="cell-sticky-end text-right">Aksi</TableHead>
             </TableRow>
@@ -428,24 +446,25 @@ export const BundleTrackingModule: React.FC = () => {
               const scannedAt = lastScanAt(bundle);
               return (
                 <TableRow key={bundle.id}>
-                  <TableCell className="cell-sticky-start whitespace-nowrap font-mono font-bold text-slate-900">{bundle.id}</TableCell>
-                  <TableCell className="hidden sm:table-cell text-center">
-                    <span className="inline-flex rounded-md border border-slate-200 bg-white p-1">
+                  <TableCell className="cell-sticky-start font-mono font-bold text-slate-900">{bundle.id}</TableCell>
+                  <TableCell className="hidden xl:table-cell print:table-cell text-center">
+                    {/* Kept small so the row matches every other table; tickets print the large one. */}
+                    <span className="inline-flex rounded border border-slate-200 bg-white p-0.5">
                       <QRCodeSVG
                         value={bundle.id}
-                        size={40}
+                        size={28}
                         level="M"
                         role="img"
                         aria-label={`Kode QR bundel ${bundle.id}`}
                       />
                     </span>
                   </TableCell>
-                  <TableCell className="hidden md:table-cell whitespace-nowrap font-mono text-teal-700">{bundle.spkId}</TableCell>
-                  <TableCell className="hidden sm:table-cell whitespace-nowrap font-semibold text-slate-800">{bundle.size}</TableCell>
-                  <TableCell className="hidden sm:table-cell text-right font-bold text-slate-900 whitespace-nowrap">{bundle.quantity}</TableCell>
-                  <TableCell className="hidden md:table-cell whitespace-nowrap font-semibold text-teal-700">{stageLabel(bundle.currentStage)}</TableCell>
-                  <TableCell className="hidden lg:table-cell whitespace-nowrap">{scannedAt ? formatDate(scannedAt) : '—'}</TableCell>
-                  <TableCell className="text-center whitespace-nowrap">
+                  <TableCell className="hidden md:table-cell font-mono text-teal-700">{bundle.spkId}</TableCell>
+                  <TableCell className="hidden md:table-cell print:table-cell font-semibold text-slate-800">{bundle.size}</TableCell>
+                  <TableCell className="hidden sm:table-cell text-right tabular-nums font-bold text-slate-900">{bundle.quantity}</TableCell>
+                  <TableCell className="hidden lg:table-cell">{scannedAt ? formatDate(scannedAt) : '—'}</TableCell>
+                  <TableCell className="hidden md:table-cell font-semibold text-teal-700">{stageLabel(bundle.currentStage)}</TableCell>
+                  <TableCell className="text-center">
                     <StatusBadge status={bundle.status} size="sm" solid />
                   </TableCell>
                   <TableCell className="cell-sticky-end text-right">

@@ -1,15 +1,9 @@
 import React from 'react';
-import { Invoice, Order, Customer } from '../../types';
+import { Invoice, Order, Customer, PaymentTerm } from '../../types';
 import { terbilangRupiah } from '../../lib/utils';
-import { effectiveUnitPrice } from '../../lib/pricing';
+import { effectiveUnitPrice, parseSizeRows } from '../../lib/pricing';
+import { INVOICE_BANK } from '../../config/contact';
 import { DocumentPage } from './DocumentPage';
-
-/** Bank account printed on the invoice, as on the official template. */
-export const INVOICE_BANK = {
-  bank: 'MANDIRI',
-  accountNumber: '1150011767581',
-  accountName: 'PT HASIL INTI JUALAN'
-};
 
 interface InvoiceDocumentProps {
   id: string;
@@ -46,13 +40,41 @@ const formatIndonesianDate = (dateString?: string | null): string => {
   }
 };
 
+interface SummaryRow {
+  key: string;
+  label: string;
+  amount: number;
+  /** Paid instalments are marked so the customer can see what is still open. */
+  paid?: boolean;
+}
+
+/*
+ * The instalment rows come from the schedule agreed on the quotation. Which of
+ * them count as paid is derived from the money actually received: it is
+ * matched against the instalments in order, so a DP that has been transferred
+ * shows as paid while later terms stay open.
+ */
+function scheduleRows(schedule: PaymentTerm[], subTotal: number, received: number): SummaryRow[] {
+  let remaining = received;
+  return schedule.map((term, index) => {
+    const percentage = Number(term.percentage) || 0;
+    const amount = Number(term.amount) || Math.round(subTotal * percentage / 100);
+    const paidAmount = Number(term.paidAmount) || 0;
+    const paid = paidAmount > 0 ? paidAmount >= amount : amount > 0 && remaining >= amount;
+    if (paidAmount <= 0 && paid) remaining -= amount;
+    const label = `${(term.label || `Termin ${index + 1}`).toUpperCase()}${percentage > 0 ? ` ${percentage}%` : ''}`;
+    return { key: term.id || `term-${index}`, label, amount, paid };
+  });
+}
+
 /**
  * Invoice Document Component
  * Strictly replicates the structure, layout, typography, borders, and colors
  * of the official template: reference/generate-form/Invoice_ORD-001.pdf
  */
 export const InvoiceDocument: React.FC<InvoiceDocumentProps> = ({ id, invoice, order, customer }) => {
-  const documentNo = invoice.orderId || order?.po || order?.id || invoice.id;
+  const documentNo = invoice.invoiceNo || invoice.id;
+  const poNumber = order?.po || invoice.orderId || order?.id;
   const recipient = customer?.company || customer?.name || invoice.customerName || '-';
 
   // Normalize recipient city / address line
@@ -62,20 +84,16 @@ export const InvoiceDocument: React.FC<InvoiceDocumentProps> = ({ id, invoice, o
   }
 
   // Product specifications
-  const productName = order?.productType || invoice.notes || 'Jaket Arkato (Vendor Pak Daeng)';
-  
-  // Format size list
-  let sizesText = order?.size || '-';
-  if ((!sizesText || sizesText === '-') && order?.sizeChart) {
-    try {
-      const parsed = JSON.parse(order.sizeChart);
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        sizesText = parsed.map((item: any) => item.size).filter(Boolean).join(', ');
-      }
-    } catch {
-      // ignore
-    }
-  }
+  const productName = order?.productType || '-';
+
+  /*
+   * Sizes are stored as "S: 40, M: 50" on the order. Each size goes on its own
+   * line in the SIZE column; a plain description ("All Size") prints as is.
+   */
+  const sizeRows = parseSizeRows(order?.size);
+  const sizesText = sizeRows.length > 0
+    ? sizeRows.map(row => `${row.size}: ${row.qty}`).join('\n')
+    : order?.size || '-';
 
   const quantity = Number(order?.quantity) || 0;
   /*
@@ -86,22 +104,72 @@ export const InvoiceDocument: React.FC<InvoiceDocumentProps> = ({ id, invoice, o
   const unitPrice = agreedUnitPrice || (quantity > 0 ? Math.round(Number(invoice.amount) / quantity) : 0);
   const subTotal = Number(invoice.amount) || Number(order?.totalPrice) || quantity * unitPrice;
   const sampleDiscount = Number(order?.discount) || 0;
-  const downPayment = Number(invoice.downPaymentReceived) || Number(order?.downPayment) || 0;
-  const endPayment = Number(invoice.balanceRemaining) || Math.max(0, subTotal - sampleDiscount - downPayment);
-  const moq = Number(order?.moq) || 100;
-  const isUnderMoq = quantity > 0 && quantity < moq;
+  const discountPercent = Number(order?.discountPercent) || 0;
+  const received = Number(invoice.downPaymentReceived) || Number(order?.downPayment) || 0;
+  const endPayment = Number(invoice.balanceRemaining) || Math.max(0, subTotal - sampleDiscount - received);
+  const moq = Number(order?.moq) || 0;
+  const isUnderMoq = moq > 0 && quantity > 0 && quantity < moq;
+
+  const schedule = Array.isArray(invoice.paymentSchedule) && invoice.paymentSchedule.length > 0
+    ? invoice.paymentSchedule
+    : Array.isArray(order?.paymentSchedule) && order.paymentSchedule.length > 0
+      ? order.paymentSchedule
+      : [];
+  const instalmentRows: SummaryRow[] = schedule.length > 0
+    ? scheduleRows(schedule, subTotal, received)
+    : [{ key: 'received', label: 'UANG MUKA DITERIMA', amount: received, paid: received > 0 }];
+
+  const summaryRows: SummaryRow[] = [
+    ...(sampleDiscount > 0
+      ? [{ key: 'discount', label: `DISKON${discountPercent > 0 ? ` (${discountPercent}%)` : ''}`, amount: sampleDiscount }]
+      : []),
+    ...instalmentRows
+  ];
+
+  const revisionLabel = invoice.revision ? `Revisi ${invoice.revision}` : '';
+  const superseded = !!invoice.supersededBy;
 
   // Invoice signature date
   const invoiceDate = formatIndonesianDate(invoice.timestamp || order?.timestamp);
 
   return (
     <DocumentPage id={id} template="/templates/Invoice.png">
+      {/* A replaced invoice is still readable, but never mistaken for the live one. */}
+      {superseded && (
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-0 flex items-center justify-center"
+        >
+          <span
+            className="select-none border-[6px] border-[#ea2027] px-10 py-3 text-[72px] font-black tracking-[0.2em] text-[#ea2027] opacity-25"
+            style={{ transform: 'rotate(-28deg)' }}
+          >
+            DIGANTI
+          </span>
+        </div>
+      )}
+
       {/* Top Document Number (Right Aligned under banner) */}
-      <div className="flex justify-end mb-3.5">
-        <p className="text-[13px] font-bold text-black tracking-wide">
-          No : {documentNo}
-        </p>
+      <div className="mb-3.5 flex items-start justify-end">
+        <div className="text-right">
+          <p className="text-[13px] font-bold tracking-wide text-black">
+            No : {documentNo}
+            {revisionLabel && <span className="ml-2 rounded-sm bg-[#ea2027] px-1.5 py-px text-[10px] text-white">{revisionLabel}</span>}
+          </p>
+          {poNumber && poNumber !== documentNo && (
+            <p className="text-[11px] text-black">Ref. PO : {poNumber}</p>
+          )}
+          {invoice.revisionOf && (
+            <p className="text-[10px] text-black">Menggantikan {invoice.revisionOf}</p>
+          )}
+        </div>
       </div>
+
+      {superseded && (
+        <p className="mb-3 border border-[#ea2027] bg-[#fdecec] px-2 py-1 text-[11px] font-bold text-[#ea2027]">
+          DIGANTI oleh {invoice.supersededBy} — invoice ini tidak berlaku lagi.
+        </p>
+      )}
 
       {/* Hal : Invoice */}
       <p className="text-[12px] text-black mb-3">
@@ -117,8 +185,8 @@ export const InvoiceDocument: React.FC<InvoiceDocumentProps> = ({ id, invoice, o
 
       {/* Introductory Sentence */}
       <p className="text-[12px] text-black leading-[1.6] mb-4">
-        Berikut adalah invoice produksi {productName.toLowerCase()} dengan total produksi sebanyak {quantity} pcs
-        {isUnderMoq ? ' (dibawah MOQ)' : ''}.
+        Berikut adalah invoice produksi {productName === '-' ? 'pesanan' : productName.toLowerCase()} dengan total produksi sebanyak {quantity} pcs
+        {isUnderMoq ? ` (di bawah MOQ ${moq} pcs)` : ''}.
       </p>
 
       {/* Main Table */}
@@ -138,7 +206,7 @@ export const InvoiceDocument: React.FC<InvoiceDocumentProps> = ({ id, invoice, o
           <tr>
             <td className="border border-[#c0c0c0] px-1 py-2 text-center align-middle">1</td>
             <td className="border border-[#c0c0c0] px-2.5 py-2 text-left align-middle">{productName}</td>
-            <td className="border border-[#c0c0c0] px-1 py-2 text-center align-middle whitespace-pre-line">{sizesText}</td>
+            <td className="border border-[#c0c0c0] px-1 py-2 text-center align-middle whitespace-pre-line text-[10px] leading-tight">{sizesText}</td>
             <td className="border border-[#c0c0c0] px-1 py-2 text-center align-middle tabular-nums w-[46px]">{quantity}</td>
             <td className="border border-[#c0c0c0] px-1 py-2 text-center align-middle w-[46px]">PCS</td>
             <td className="border border-[#c0c0c0] px-1 py-2 text-center align-middle w-[34px]">Rp</td>
@@ -178,34 +246,28 @@ export const InvoiceDocument: React.FC<InvoiceDocumentProps> = ({ id, invoice, o
             </td>
           </tr>
 
-          {/* Summary Row 3: DISCOUNT SAMPLE (50%) */}
-          <tr className="bg-[#e0e0e0]">
-            <td colSpan={7} className="px-2.5 py-1.5 text-[11px] font-bold text-left">
-              DISCOUNT SAMPLE (50%)
-            </td>
-            <td className="px-1 py-1.5 text-center text-[11px] font-bold">
-              {sampleDiscount > 0 ? 'Rp' : ''}
-            </td>
-            <td className="px-2 py-1.5 text-right text-[11px] font-bold tabular-nums">
-              {sampleDiscount > 0 ? formatNumberId(sampleDiscount) : ''}
-            </td>
-          </tr>
+          {/* Discount (only when agreed) and the instalments from the payment schedule */}
+          {summaryRows.map((row, index) => (
+            <tr key={row.key} className={index % 2 === 0 ? 'bg-[#e0e0e0]' : 'bg-white'}>
+              <td colSpan={7} className="px-2.5 py-1.5 text-[11px] font-bold text-left">
+                {row.label}
+                {row.paid && (
+                  <span className="ml-2 rounded-sm border border-[#1b7f3b] px-1 py-px text-[9px] font-bold text-[#1b7f3b]">
+                    LUNAS
+                  </span>
+                )}
+              </td>
+              <td className="px-1 py-1.5 text-center text-[11px] font-bold">
+                {row.amount > 0 ? 'Rp' : ''}
+              </td>
+              <td className="px-2 py-1.5 text-right text-[11px] font-bold tabular-nums">
+                {row.amount > 0 ? formatNumberId(row.amount) : ''}
+              </td>
+            </tr>
+          ))}
 
-          {/* Summary Row 4: DOWN PAYMENT 50% */}
-          <tr className="bg-white">
-            <td colSpan={7} className="px-2.5 py-1.5 text-[11px] font-bold text-left">
-              DOWN PAYMENT 50%
-            </td>
-            <td className="px-1 py-1.5 text-center text-[11px] font-bold">
-              {downPayment > 0 ? 'Rp' : ''}
-            </td>
-            <td className="px-2 py-1.5 text-right text-[11px] font-bold tabular-nums">
-              {downPayment > 0 ? formatNumberId(downPayment) : ''}
-            </td>
-          </tr>
-
-          {/* Summary Row 5: END PAYMENT */}
-          <tr className="bg-[#e0e0e0]">
+          {/* Final Row: END PAYMENT */}
+          <tr className={summaryRows.length % 2 === 0 ? 'bg-[#e0e0e0]' : 'bg-white'}>
             <td colSpan={7} className="px-2.5 py-1.5 text-[11px] font-bold text-[#ea2027] text-left">
               END PAYMENT
             </td>
@@ -246,7 +308,7 @@ export const InvoiceDocument: React.FC<InvoiceDocumentProps> = ({ id, invoice, o
 
       {/* Closing Statement */}
       <p className="mt-4 text-[12px] leading-[1.6] text-black">
-        Demikian surat ini kami buat, atas perhatiam dan kerjasamanya kami ucapkan terima kasih.
+        Demikian surat ini kami buat, atas perhatian dan kerjasamanya kami ucapkan terima kasih.
       </p>
 
       {/* Signature Section */}

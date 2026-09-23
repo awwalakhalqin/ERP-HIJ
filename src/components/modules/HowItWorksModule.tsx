@@ -80,7 +80,7 @@ const PHASES: FlowPhase[] = [
         moduleLabel: 'Desain & Sampel',
         who: 'Admin Desain, Desainer, Tim Sampel',
         body: 'Buat mockup dan tabel ukuran, lalu kirim ke pelanggan. Untuk pesanan yang mewajibkan sampel fisik, buat sampel, lakukan fitting, dan klik Setujui Sampel saat pelanggan ACC.',
-        note: 'Gerbang Anti-Skip: SPK produksi terkunci hingga sampel fisik disetujui (Approved) atau di-waive untuk repeat order.'
+        note: 'Gerbang Anti-Skip: SPK terkunci sampai desain pesanan disetujui. Sampel fisik ikut menahan hanya bila penawaran memintanya; repeat order melewatinya.'
       },
       {
         title: 'Pola & Grading Ukuran',
@@ -92,12 +92,12 @@ const PHASES: FlowPhase[] = [
         note: 'Hanya pola berstatus Final yang diizinkan untuk proses pemotongan kain.'
       },
       {
-        title: 'Pembelian & Penerimaan Bahan',
+        title: 'Pengadaan Bahan',
         sop: 'SOP 04–05',
         module: 'Procurement',
-        moduleLabel: 'Pembelian Bahan',
+        moduleLabel: 'Pengadaan Bahan',
         who: 'PPIC, Purchasing, Admin Gudang, QC Bahan',
-        body: 'Cek stok di Gudang Bahan Baku. Jika kurang, buat PO pembelian dan isi Untuk Pesanan. Bahan yang datang diinspeksi kualitasnya, diberi label lot, lalu disimpan.',
+        body: 'Cek stok di Gudang Aksesoris & Kain. Jika kurang, catat pembelian bahan di Pengadaan Bahan dan pilih pesanannya. Tiap catatan adalah pembelian yang sudah terjadi, lengkap dengan pemasok dan biayanya.',
         note: 'Bahan di bawah stok minimum otomatis ditandai peringatan Stok Menipis.'
       },
       {
@@ -106,7 +106,7 @@ const PHASES: FlowPhase[] = [
         module: 'PPIC',
         moduleLabel: 'Surat Perintah Kerja',
         who: 'PPIC, Kepala Produksi',
-        body: 'Pesanan muncul di Pesanan Menunggu SPK beserta checklist 4 syaratnya. Setelah semua syarat lulus (DP, Sampel, Bahan, Pola), PPIC menerbitkan SPK 2 halaman sesuai acuan resmi.',
+        body: 'Pesanan muncul di Pesanan Menunggu SPK beserta checklist syaratnya. Yang menahan hanya DP dan desain/sampel yang disetujui; bahan dan pola tampil sebagai informasi. Setelah keduanya lulus, PPIC menerbitkan SPK 2 halaman sesuai acuan resmi.',
         note: 'Dokumen SPK memuat PO, jadwal, target qty, instruksi teknis, dan PJ Cutting, Finishing, serta Kepala Produksi.'
       }
     ]
@@ -182,7 +182,7 @@ const PHASES: FlowPhase[] = [
         moduleLabel: 'Keuangan',
         who: 'Admin Keuangan',
         body: 'Terbitkan Invoice resmi dengan rincian Termin 1 (DP 50%) dan Termin 2 (Pelunasan). Dilengkapi terbilang Rupiah dan rekening resmi PT Mandiri / BCA.',
-        note: 'Pengiriman barang memicu pembuatan draf faktur pelunasan otomatis.'
+        note: 'Pengiriman barang memicu draf faktur pelunasan otomatis, dengan DP yang sudah dibayar langsung terpotong. Pesanan berstatus Selesai setelah barang diterima dan faktur lunas.'
       },
       {
         title: 'Retur & Garansi Kepuasan (RMA)',
@@ -209,8 +209,41 @@ const SUPPORT: FlowStep[] = [
 
 const REQUIREMENT_ITEMS = [
   { icon: Banknote, label: REQUIREMENT_LABELS.dp, hint: 'DP 50% terverifikasi di Keuangan atau termin khusus Owner' },
+  { icon: Ruler, label: REQUIREMENT_LABELS.sizeChart, hint: 'Pesanan memilih template dari halaman Size Chart (standar HIJ / khusus pelanggan) — detailnya dicetak di SPK' },
   { icon: FileCheck, label: REQUIREMENT_LABELS.sample, hint: 'Desain/sampel disetujui — status pola final ikut tampil di baris ini, tapi tidak menahan' },
-  { icon: Layers, label: REQUIREMENT_LABELS.material, hint: 'PO bahan diterima lengkap atau stok dikonfirmasi PPIC' }
+  { icon: Layers, label: REQUIREMENT_LABELS.material, hint: 'Pembelian bahan tercatat untuk pesanan, atau stok dikonfirmasi PPIC — informasi, tidak menahan' }
+];
+
+/*
+ * The two ways a customer buys. Written to match what the app enforces: the
+ * repeat path skips the quotation, the DP gate and the sample, never the
+ * approved design.
+ */
+const PURCHASE_PATTERNS = [
+  {
+    title: 'Pola 1 — Pesanan baru lewat Surat Penawaran',
+    when: 'Model, bahan, atau desain baru.',
+    steps: [
+      'Surat Penawaran dibuat dan dikirim ke pelanggan.',
+      'Deal: pesanan terbentuk otomatis, DP wajib = termin pertama.',
+      'Pelanggan kirim bukti transfer lewat WhatsApp; PIC pesanan mencatat DP di Keuangan dan memverifikasinya.',
+      'Desain disetujui; sampel fisik bila diminta penawaran.',
+      'SPK terbit, produksi, QC.',
+      'Surat jalan: draf faktur pelunasan otomatis, DP sudah terpotong.',
+      'Pelunasan diterima + barang sampai → pesanan Selesai.'
+    ]
+  },
+  {
+    title: 'Pola 2 — Repeat Order',
+    when: 'Pelanggan lama memesan ulang produk yang sama.',
+    steps: [
+      'Tambah Pesanan (Repeat Order) dari pesanan lamanya; ukuran & harga disalin.',
+      'Draf faktur dibuat otomatis — Keuangan memeriksa lalu mengirimnya.',
+      'SPK jalur cepat: DP dan sampel tidak menahan, desain tetap harus disetujui.',
+      'Produksi, QC, surat jalan.',
+      'DP/pelunasan dicatat di Keuangan → pesanan Selesai saat lunas dan barang sampai.'
+    ]
+  }
 ];
 
 // Step numbers run on across phases; each phase's <ol> starts where the previous one ended.
@@ -317,7 +350,7 @@ export const HowItWorksModule: React.FC<HowItWorksProps> = ({ onNavigate, canOpe
             </div>
             <p className="text-sm font-bold text-white">Quotation &amp; Pilihan Sampel</p>
             <p className="text-xs text-slate-300 leading-relaxed">
-              Penetapan MOQ 100 pcs, DP 50%, serta pemilihan eksplisit: <em>Perlu Sampel Fisik</em> atau <em>Tanpa Sampel Fisik</em>.
+              Penetapan MOQ 100 pcs, termin pembayaran (DP = termin pertama), serta pemilihan eksplisit: <em>Perlu Sampel Fisik</em> atau <em>Tanpa Sampel Fisik</em>.
             </p>
           </div>
 
@@ -331,7 +364,7 @@ export const HowItWorksModule: React.FC<HowItWorksProps> = ({ onNavigate, canOpe
             </div>
             <p className="text-sm font-bold text-amber-100">Sample Approval Gate</p>
             <p className="text-xs text-slate-300 leading-relaxed">
-              SPK <strong>terkunci total</strong> hingga sampel fisik berstatus <em>Approved</em>, kecuali pesanan diset <em>Tanpa Sampel Fisik</em>.
+              SPK <strong>terkunci</strong> sampai desain pesanan <em>disetujui</em>. Sampel fisik ikut menahan hanya bila penawaran memintanya.
             </p>
           </div>
 
@@ -342,7 +375,7 @@ export const HowItWorksModule: React.FC<HowItWorksProps> = ({ onNavigate, canOpe
             </div>
             <p className="text-sm font-bold text-white">Penerbitan SPK 2 Hal</p>
             <p className="text-xs text-slate-300 leading-relaxed">
-              PPIC menerbitkan SPK resmi (Hal 1: PO &amp; Jadwal, Hal 2: Target Qty, Instruksi &amp; PIC) setelah 4 syarat terpenuhi.
+              PPIC menerbitkan SPK resmi (Hal 1: PO &amp; Jadwal, Hal 2: Target Qty, Instruksi &amp; PIC) setelah DP masuk dan desain disetujui.
             </p>
           </div>
 
@@ -373,10 +406,40 @@ export const HowItWorksModule: React.FC<HowItWorksProps> = ({ onNavigate, canOpe
         </div>
       </Card>
 
+      <Card className="p-5 sm:p-6">
+        <h2 className={sectionHeadingClass}>Dua Pola Pembelian</h2>
+        <p className="mt-1 max-w-prose text-sm text-slate-500">
+          Keduanya bertemu di tabel pesanan yang sama, jadi setelah pesanan terbentuk langkahnya sama sampai Keuangan.
+        </p>
+        <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2">
+          {PURCHASE_PATTERNS.map(pattern => (
+            <div key={pattern.title} className="rounded-xl border border-slate-200 p-4">
+              <p className="text-sm font-bold text-slate-900">{pattern.title}</p>
+              <p className="mt-0.5 text-xs text-slate-500">{pattern.when}</p>
+              <ol role="list" className="mt-3 space-y-1.5">
+                {pattern.steps.map((step, i) => (
+                  <li key={step} className="flex gap-2 text-sm text-slate-700">
+                    <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-teal-50 text-[11px] font-bold text-brand-teal-dark tabular-nums" aria-hidden="true">
+                      {i + 1}
+                    </span>
+                    <span>{step}</span>
+                  </li>
+                ))}
+              </ol>
+            </div>
+          ))}
+        </div>
+        <p className="mt-4 max-w-prose text-sm text-slate-600">
+          Status pesanan maju sendiri: <b>Diproduksi</b> saat SPK terbit, <b>Tahap QC</b> saat QC Accept,
+          <b> Dikirim</b> saat surat jalan diserahkan ke kurir, dan <b>Selesai</b> saat barang diterima dan
+          faktur lunas.
+        </p>
+      </Card>
+
       <Card className="border-teal-200 bg-teal-50/60 p-5">
         <h2 className="text-lg font-bold text-teal-950 text-balance">Syarat Sebelum SPK Diterbitkan</h2>
         <p className="mt-1 max-w-prose text-sm text-teal-900/80">
-          Produksi massal tidak dimulai sebelum keempat syarat ini terpenuhi.
+          Produksi massal tidak dimulai sebelum DP dan desain/sampel terpenuhi. Bahan baku ditampilkan sebagai informasi.
         </p>
         <ul role="list" className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
           {REQUIREMENT_ITEMS.map(item => {

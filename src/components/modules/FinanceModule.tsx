@@ -13,7 +13,7 @@ import {
   Send
 } from 'lucide-react';
 import { Invoice, Payment, Order, Customer, PaymentTerm } from '../../types';
-import { fetchResource, updateResource } from '../../services/api';
+import { fetchResource, updateResource, authFetch } from '../../services/api';
 import { cn, formatCurrency, formatDate, formatDateTime, statusLabel, exportTableToExcel, terbilangRupiah } from '../../lib/utils';
 import { getCurrentUser } from '../../lib/session';
 import { Badge, StatusBadge } from '../ui/Badge';
@@ -27,7 +27,7 @@ import { Button } from '../ui/Button';
 import { Input } from '../ui/Input';
 import { FormError } from '../ui/Field';
 import { PageHeader } from '../ui/PageHeader';
-import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell, TableRowActions, TableEmptyRow, TableSkeletonRows } from '../ui/Table';
+import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell, TableRowActions, TableEmptyRow, TableSkeletonRows, RowActionButton } from '../ui/Table';
 import { Tabs, TabsList, TabsTrigger } from '../ui/Tabs';
 import { DetailDrawer, DetailSection, DetailField, DetailStats, DetailBlock, RowDetailButton } from '../ui/DetailDrawer';
 import { newestFirst } from '../../lib/ordering';
@@ -45,7 +45,7 @@ export const FinanceModule: React.FC = () => {
   // Navigation & Filtering
   const [activeTab, setActiveTab] = useState<'invoices' | 'payments'>('invoices');
   const [searchQuery, setSearchQuery] = useState('');
-  const [invoiceStatusFilter, setInvoiceStatusFilter] = useState<'Semua' | 'Belum Bayar' | 'DP Dibayar' | 'Lunas' | 'Jatuh Tempo'>('Semua');
+  const [invoiceStatusFilter, setInvoiceStatusFilter] = useState<'Semua' | 'Belum Bayar' | 'DP Dibayar' | 'Lunas'>('Semua');
   const [paymentMethodFilter, setPaymentMethodFilter] = useState<string>('Semua');
 
   // Modals
@@ -69,7 +69,7 @@ export const FinanceModule: React.FC = () => {
     customerName: '',
     amount: 0,
     type: 'DP' as 'DP' | 'Pelunasan' | 'Cicilan',
-    paymentMethod: 'Transfer Bank BCA',
+    paymentMethod: '',
     date: new Date().toISOString().split('T')[0],
     proofImageUrl: '',
     notes: '',
@@ -88,7 +88,6 @@ export const FinanceModule: React.FC = () => {
     total: 0,
     downPaymentReceived: 0,
     balanceRemaining: 0,
-    dueDate: new Date(Date.now() + 14 * 86400000).toISOString().split('T')[0],
     status: 'Belum Bayar',
     notes: ''
   });
@@ -141,7 +140,7 @@ export const FinanceModule: React.FC = () => {
       customerName: '',
       amount: 0,
       type: 'DP',
-      paymentMethod: 'Transfer Bank BCA',
+      paymentMethod: '',
       date: new Date().toISOString().split('T')[0],
       proofImageUrl: '',
       notes: '',
@@ -163,7 +162,6 @@ export const FinanceModule: React.FC = () => {
       total: 0,
       downPaymentReceived: 0,
       balanceRemaining: 0,
-      dueDate: new Date(Date.now() + 14 * 86400000).toISOString().split('T')[0],
       status: 'Belum Bayar',
       notes: ''
     });
@@ -179,10 +177,10 @@ export const FinanceModule: React.FC = () => {
       customerName: inv.customerName,
       amount: inv.balanceRemaining > 0 ? inv.balanceRemaining : inv.total,
       type: (inv.status === 'DP Dibayar' || inv.downPaymentReceived > 0) ? 'Pelunasan' : 'DP',
-      paymentMethod: 'Transfer Bank BCA',
+      paymentMethod: '',
       date: new Date().toISOString().split('T')[0],
       proofImageUrl: '',
-      notes: `Pembayaran untuk Faktur ${inv.id}`,
+      notes: '',
       selectedInvoiceTotal: inv.total,
       selectedInvoicePaid: inv.downPaymentReceived,
       selectedInvoiceBalance: inv.balanceRemaining
@@ -205,7 +203,7 @@ export const FinanceModule: React.FC = () => {
       return;
     }
 
-    const inv = invoices.find(i => i.orderId === ord.id);
+    const inv = invoices.find(i => i.orderId === ord.id && !i.supersededBy);
     let next = {
       ...paymentForm,
       orderId: ord.id,
@@ -260,10 +258,14 @@ export const FinanceModule: React.FC = () => {
       alert('Masukkan jumlah pembayaran yang valid.');
       return;
     }
+    if (!paymentForm.paymentMethod) {
+      alert('Pilih metode pembayaran.');
+      return;
+    }
 
     try {
       setSubmitting(true);
-      const res = await fetch('/api/payments/record', {
+      const res = await authFetch('/api/payments/record', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -284,7 +286,8 @@ export const FinanceModule: React.FC = () => {
       });
 
       if (!res.ok) {
-        throw new Error('Gagal mencatat pembayaran. Coba lagi.');
+        const data = await res.json().catch(() => ({} as any));
+        throw new Error(data.error || 'Gagal mencatat pembayaran. Coba lagi.');
       }
 
       setIsRecordPaymentOpen(false);
@@ -299,11 +302,12 @@ export const FinanceModule: React.FC = () => {
   // 1-Click Verify Payment
   const handleVerifyPayment = async (paymentId: string) => {
     try {
-      const res = await fetch(`/api/payments/${paymentId}/verify`, { method: 'POST' });
+      const res = await authFetch(`/api/payments/${paymentId}/verify`, { method: 'POST' });
       if (res.ok) {
         await loadData();
       } else {
-        alert('Gagal memverifikasi pembayaran. Coba lagi.');
+        const data = await res.json().catch(() => ({} as any));
+        alert(data.error || 'Gagal memverifikasi pembayaran. Coba lagi.');
       }
     } catch (err) {
       alert('Koneksi bermasalah. Coba lagi.');
@@ -336,20 +340,23 @@ export const FinanceModule: React.FC = () => {
         total: Number(newInvoice.total) || 0,
         downPaymentReceived: Number(newInvoice.downPaymentReceived) || 0,
         balanceRemaining: Math.max(0, (Number(newInvoice.total) || 0) - (Number(newInvoice.downPaymentReceived) || 0)),
-        dueDate: newInvoice.dueDate || new Date(Date.now() + 14 * 86400000).toISOString().split('T')[0],
         status: newInvoice.status || 'Belum Bayar',
         notes: newInvoice.notes || 'Faktur pesanan konveksi',
         // Installments agreed on the quotation, restated against this invoice total
         paymentSchedule: invoiceSchedule(newInvoice.orderId, Number(newInvoice.total) || 0)
       };
 
-      const res = await fetch('/api/invoices', {
+      const res = await authFetch('/api/invoices', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(invPayload)
       });
 
-      if (!res.ok) throw new Error('Gagal membuat faktur. Coba lagi.');
+      if (!res.ok) {
+        // e.g. the order already has a live invoice — say which one.
+        const data = await res.json().catch(() => ({} as any));
+        throw new Error(data.error || 'Gagal membuat faktur. Coba lagi.');
+      }
 
       setIsInvoiceModalOpen(false);
       await loadData();
@@ -360,10 +367,16 @@ export const FinanceModule: React.FC = () => {
     }
   };
 
+  /*
+   * A superseded revision is history kept for the paper trail. Counting it
+   * beside its replacement doubled omzet and piutang after every Revisi Qty.
+   */
+  const liveInvoices = useMemo(() => invoices.filter(i => !i.supersededBy), [invoices]);
+
   // Summary Metrics calculations
   const totalOmzet = useMemo(() => {
-    return invoices.reduce((acc, i) => acc + (Number(i.total) || 0), 0);
-  }, [invoices]);
+    return liveInvoices.reduce((acc, i) => acc + (Number(i.total) || 0), 0);
+  }, [liveInvoices]);
 
   const totalKasMasuk = useMemo(() => {
     return payments
@@ -372,21 +385,15 @@ export const FinanceModule: React.FC = () => {
   }, [payments]);
 
   const totalPiutang = useMemo(() => {
-    return invoices.reduce((acc, i) => acc + (Number(i.balanceRemaining) || 0), 0);
-  }, [invoices]);
+    return liveInvoices.reduce((acc, i) => acc + (Number(i.balanceRemaining) || 0), 0);
+  }, [liveInvoices]);
 
-  const overdueCount = useMemo(() => {
-    const today = new Date().toISOString().split('T')[0];
-    return invoices.filter(i => (Number(i.balanceRemaining) > 0 || i.status !== 'Lunas') && i.dueDate < today).length;
-  }, [invoices]);
-
-  const draftInvoiceCount = useMemo(() => invoices.filter(i => i.reviewStatus === 'Draft').length, [invoices]);
+  const draftInvoiceCount = useMemo(() => liveInvoices.filter(i => i.reviewStatus === 'Draft').length, [liveInvoices]);
 
   const selectedPaymentOrder = orders.find(o => o.id === paymentForm.orderId);
 
   // Filtered Invoices
   const filteredInvoices = useMemo(() => {
-    const today = new Date().toISOString().split('T')[0];
     return newestFirst(invoices.filter(inv => {
       const q = searchQuery.toLowerCase();
       const matchQuery =
@@ -400,7 +407,6 @@ export const FinanceModule: React.FC = () => {
       if (invoiceStatusFilter === 'Belum Bayar') return inv.status === 'Belum Bayar' || (inv.downPaymentReceived === 0 && inv.status !== 'Lunas');
       if (invoiceStatusFilter === 'DP Dibayar') return inv.status === 'DP Dibayar' || (inv.downPaymentReceived > 0 && inv.balanceRemaining > 0);
       if (invoiceStatusFilter === 'Lunas') return inv.status === 'Lunas' || inv.balanceRemaining === 0;
-      if (invoiceStatusFilter === 'Jatuh Tempo') return (inv.balanceRemaining > 0 || inv.status !== 'Lunas') && inv.dueDate < today;
 
       return true;
     }));
@@ -423,28 +429,12 @@ export const FinanceModule: React.FC = () => {
     }));
   }, [payments, searchQuery, paymentMethodFilter]);
 
-  const today = new Date().toISOString().split('T')[0];
-  const isInvoiceOverdue = (inv: Invoice) =>
-    (Number(inv.balanceRemaining) > 0 || inv.status !== 'Lunas') && inv.dueDate < today;
-
-  /** Same urgency rule as DeadlineBadge: within 3 days of the due date reads warning. */
-  const isDueSoon = (dueDate?: string) => {
-    if (!dueDate) return false;
-    const due = new Date(dueDate);
-    if (isNaN(due.getTime())) return false;
-    const startOfToday = new Date();
-    startOfToday.setHours(0, 0, 0, 0);
-    const days = Math.round((due.setHours(0, 0, 0, 0) - startOfToday.getTime()) / 86400000);
-    return days >= 0 && days <= 3;
-  };
-
   // Row detail records
   const detailInvoice = detailInvoiceId ? invoices.find(i => i.id === detailInvoiceId) ?? null : null;
-  const detailInvoiceOverdue = detailInvoice ? isInvoiceOverdue(detailInvoice) : false;
   const detailInvoicePayments = detailInvoice
     ? payments.filter(p =>
         p.invoiceId === detailInvoice.id ||
-        (!p.invoiceId && !!detailInvoice.orderId && p.orderId === detailInvoice.orderId)
+        (!!detailInvoice.orderId && p.orderId === detailInvoice.orderId)
       )
     : [];
   const detailPayment = detailPaymentId ? payments.find(p => p.id === detailPaymentId) ?? null : null;
@@ -452,7 +442,7 @@ export const FinanceModule: React.FC = () => {
     ? invoices.find(i => i.id === detailPayment.invoiceId)
     : undefined;
 
-  const unpaidInvoiceCount = invoices.filter(i => (Number(i.balanceRemaining) > 0 || i.status !== 'Lunas')).length;
+  const unpaidInvoiceCount = liveInvoices.filter(i => (Number(i.balanceRemaining) > 0 || i.status !== 'Lunas')).length;
   const verifiedPaymentCount = payments.filter(p => p.status === 'Verified').length;
 
   return (
@@ -511,11 +501,6 @@ export const FinanceModule: React.FC = () => {
           </p>
           <div className="flex flex-wrap items-center gap-1.5 sm:mt-1">
             <span className="text-xs text-slate-500">{unpaidInvoiceCount} faktur belum lunas</span>
-            {overdueCount > 0 && (
-              <Badge variant="critical" size="sm">
-                {overdueCount} jatuh tempo
-              </Badge>
-            )}
           </div>
         </div>
 
@@ -565,7 +550,7 @@ export const FinanceModule: React.FC = () => {
           </Tabs>
 
           {/* Search Bar */}
-          <div className="relative w-full md:w-80">
+          <div className="relative w-full md:w-96">
             <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" aria-hidden="true" />
             <Input
               type="search"
@@ -586,7 +571,7 @@ export const FinanceModule: React.FC = () => {
               aria-label="Filter status faktur"
               className="px-4 py-3 bg-slate-50/50 border-b border-slate-100 flex flex-wrap items-center gap-2"
             >
-              {(['Semua', 'Belum Bayar', 'DP Dibayar', 'Lunas', 'Jatuh Tempo'] as const).map(tab => (
+              {(['Semua', 'Belum Bayar', 'DP Dibayar', 'Lunas'] as const).map(tab => (
                 <Button
                   key={tab}
                   size="sm"
@@ -605,20 +590,19 @@ export const FinanceModule: React.FC = () => {
                   <TableHead className="cell-sticky-start">No. Faktur</TableHead>
                   <TableHead className="hidden md:table-cell">Pesanan</TableHead>
                   <TableHead className="hidden md:table-cell">Pelanggan</TableHead>
-                  <TableHead className="hidden sm:table-cell text-right">Total</TableHead>
-                  <TableHead className="hidden sm:table-cell text-right">Sisa Tagihan</TableHead>
-                  <TableHead className="hidden lg:table-cell">Jatuh Tempo</TableHead>
-                  <TableHead className="hidden xl:table-cell">Pemeriksaan</TableHead>
+                  <TableHead className="hidden sm:table-cell text-right tabular-nums">Total</TableHead>
+                  <TableHead className="hidden sm:table-cell text-right tabular-nums">Sisa Tagihan</TableHead>
+                  <TableHead className="hidden 2xl:table-cell">Pemeriksaan</TableHead>
                   <TableHead className="text-center">Status</TableHead>
                   <TableHead className="cell-sticky-end text-right">Aksi</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {loading && invoices.length === 0 ? (
-                  <TableSkeletonRows columns={9} />
+                  <TableSkeletonRows columns={8} />
                 ) : filteredInvoices.length === 0 ? (
                   <TableEmptyRow
-                    colSpan={9}
+                    colSpan={8}
                     icon={<FileText size={20} />}
                     title={invoices.length === 0 ? 'Belum ada faktur' : 'Tidak ada faktur yang cocok'}
                     description={
@@ -626,11 +610,18 @@ export const FinanceModule: React.FC = () => {
                         ? 'Buat faktur dari pesanan lewat tombol Buat Faktur.'
                         : 'Coba kata kunci lain atau pilih Semua Status.'
                     }
+                    action={
+                      invoices.length === 0 ? (
+                        <Button size="sm" onClick={handleOpenNewInvoice}>
+                          <Plus size={16} aria-hidden="true" /> Buat Faktur
+                        </Button>
+                      ) : undefined
+                    }
                   />
                 ) : (
                   filteredInvoices.map(inv => {
-                    const isOverdue = isInvoiceOverdue(inv);
-                    const hasBalance = Number(inv.balanceRemaining) > 0;
+                    // A replaced revision is never paid; its successor carries the balance.
+                    const hasBalance = Number(inv.balanceRemaining) > 0 && !inv.supersededBy;
                     return (
                       <TableRow key={inv.id}>
                         {/* No. Faktur */}
@@ -664,55 +655,35 @@ export const FinanceModule: React.FC = () => {
 
                         {/* Pelanggan */}
                         <TableCell className="hidden md:table-cell font-semibold text-slate-900">
-                          {inv.customerName}
+                          <span className="block max-w-[180px] truncate" title={inv.customerName}>
+                            {inv.customerName}
+                          </span>
                         </TableCell>
 
                         {/* Total Tagihan */}
-                        <TableCell className="hidden sm:table-cell text-right font-semibold text-slate-900 whitespace-nowrap">
+                        <TableCell className="hidden sm:table-cell text-right tabular-nums font-semibold text-slate-900 whitespace-nowrap">
                           {formatCurrency(inv.total)}
                         </TableCell>
 
                         {/* Sisa Tagihan */}
-                        <TableCell className="hidden sm:table-cell text-right whitespace-nowrap">
+                        <TableCell className="hidden sm:table-cell text-right tabular-nums whitespace-nowrap">
                           <span
                             className={
                               !hasBalance
                                 ? 'font-semibold text-slate-400'
-                                : isOverdue
-                                  ? 'font-bold text-status-critical'
-                                  : 'font-bold text-status-warning'
+                                : 'font-bold text-status-warning'
                             }
                           >
                             {formatCurrency(inv.balanceRemaining || 0)}
                           </span>
                         </TableCell>
 
-                        {/* Jatuh Tempo */}
-                        <TableCell className="hidden lg:table-cell whitespace-nowrap">
-                          {inv.dueDate ? (
-                            <span
-                              className={
-                                isOverdue
-                                  ? 'font-semibold text-status-critical'
-                                  : isDueSoon(inv.dueDate)
-                                    ? 'font-semibold text-status-warning'
-                                    : 'text-slate-600'
-                              }
-                            >
-                              {formatDate(inv.dueDate)}
-                              {isOverdue && <span className="block text-xs font-semibold">Lewat tempo</span>}
-                            </span>
-                          ) : (
-                            <span className="text-slate-400">—</span>
-                          )}
-                        </TableCell>
-
                         {/* Pemeriksaan */}
-                        <TableCell className="hidden xl:table-cell whitespace-nowrap">
+                        <TableCell className="hidden 2xl:table-cell whitespace-nowrap">
                           {inv.reviewStatus === 'Draft' ? (
                             <Badge variant="warning" size="sm">Draf</Badge>
                           ) : inv.reviewStatus ? (
-                            <span className="text-xs text-slate-500">{statusLabel(inv.reviewStatus)}</span>
+                            <span className="text-slate-500">{statusLabel(inv.reviewStatus)}</span>
                           ) : (
                             <span className="text-slate-400">—</span>
                           )}
@@ -720,22 +691,22 @@ export const FinanceModule: React.FC = () => {
 
                         {/* Status */}
                         <TableCell className="text-center whitespace-nowrap">
-                          <StatusBadge status={inv.status} />
+                          <StatusBadge status={inv.status} size="sm" solid />
                         </TableCell>
 
                         {/* Aksi */}
                         <TableCell className="cell-sticky-end text-right">
                           <TableRowActions>
                             {hasBalance && (
-                              <Button
-                                size="sm"
-                                variant="outline"
+                              <RowActionButton
+                                display="labeled"
+                                tone="primary"
+                                icon={ArrowDownLeft}
+                                label="Bayar"
+                                ariaLabel={`Catat pembayaran faktur ${inv.id}`}
+                                title="Catat pembayaran untuk faktur ini"
                                 onClick={() => handleOpenPayForInvoice(inv)}
-                                aria-label={`Bayar ${inv.id}`}
-                                className="h-8 gap-1.5 px-2.5 text-xs"
-                              >
-                                <ArrowDownLeft size={14} aria-hidden="true" /> Bayar
-                              </Button>
+                              />
                             )}
                             <RowDetailButton label={inv.id} onClick={() => setDetailInvoiceId(inv.id)} />
                           </TableRowActions>
@@ -775,7 +746,7 @@ export const FinanceModule: React.FC = () => {
                 <TableRow>
                   <TableHead className="cell-sticky-start">No. Transaksi</TableHead>
                   <TableHead className="hidden md:table-cell">Pelanggan</TableHead>
-                  <TableHead className="hidden sm:table-cell text-right">Jumlah</TableHead>
+                  <TableHead className="hidden sm:table-cell text-right tabular-nums">Jumlah</TableHead>
                   <TableHead className="hidden lg:table-cell">Tanggal</TableHead>
                   <TableHead className="text-center">Status</TableHead>
                   <TableHead className="cell-sticky-end text-right">Aksi</TableHead>
@@ -805,11 +776,13 @@ export const FinanceModule: React.FC = () => {
 
                       {/* Pelanggan */}
                       <TableCell className="hidden md:table-cell font-semibold text-slate-900">
-                        {pay.customerName}
+                        <span className="block max-w-[180px] truncate" title={pay.customerName}>
+                          {pay.customerName}
+                        </span>
                       </TableCell>
 
                       {/* Jumlah */}
-                      <TableCell className="hidden sm:table-cell text-right font-bold text-status-done whitespace-nowrap">
+                      <TableCell className="hidden sm:table-cell text-right tabular-nums font-bold text-status-done whitespace-nowrap">
                         {formatCurrency(pay.amount)}
                       </TableCell>
 
@@ -820,23 +793,22 @@ export const FinanceModule: React.FC = () => {
 
                       {/* Status */}
                       <TableCell className="text-center whitespace-nowrap">
-                        <StatusBadge status={pay.status} />
+                        <StatusBadge status={pay.status} size="sm" solid />
                       </TableCell>
 
                       {/* Aksi */}
                       <TableCell className="cell-sticky-end text-right">
                         <TableRowActions>
-                          {pay.status !== 'Verified' && (
-                            <Button
-                              variant="outline"
-                              size="sm"
+                          {pay.status !== 'Verified' && pay.status !== 'Rejected' && (
+                            <RowActionButton
+                              display="labeled"
+                              tone="primary"
+                              icon={Check}
+                              label="Verifikasi"
+                              ariaLabel={`Verifikasi pembayaran ${pay.id}`}
+                              title="Uang sudah masuk rekening — hitung ke faktur"
                               onClick={() => handleVerifyPayment(pay.id)}
-                              aria-label={`Verifikasi ${pay.id}`}
-                              className="h-8 w-8 gap-1.5 px-0 text-xs sm:w-auto sm:px-2.5"
-                            >
-                              <Check size={14} aria-hidden="true" />
-                              <span className="hidden sm:inline">Verifikasi</span>
-                            </Button>
+                            />
                           )}
                           <RowDetailButton label={pay.id} onClick={() => setDetailPaymentId(pay.id)} />
                         </TableRowActions>
@@ -911,22 +883,6 @@ export const FinanceModule: React.FC = () => {
               <DetailField label="No. faktur" mono>{detailInvoice.id}</DetailField>
               <DetailField label="Pesanan" mono>{detailInvoice.orderId}</DetailField>
               <DetailField label="Tanggal faktur">{detailInvoice.timestamp && formatDate(detailInvoice.timestamp)}</DetailField>
-              <DetailField label="Jatuh tempo">
-                {detailInvoice.dueDate && (
-                  <span
-                    className={
-                      detailInvoiceOverdue
-                        ? 'font-semibold text-status-critical'
-                        : isDueSoon(detailInvoice.dueDate)
-                          ? 'font-semibold text-status-warning'
-                          : undefined
-                    }
-                  >
-                    {formatDate(detailInvoice.dueDate)}
-                    {detailInvoiceOverdue && <span className="block text-xs font-semibold">Lewat tempo</span>}
-                  </span>
-                )}
-              </DetailField>
               <DetailField label="Status"><StatusBadge status={detailInvoice.status} /></DetailField>
               <DetailField label="Metode pembayaran">{detailInvoice.paymentMethod}</DetailField>
             </DetailSection>
@@ -1158,7 +1114,8 @@ export const FinanceModule: React.FC = () => {
               className={selectClass}
             >
               <option value="">Pilih faktur (opsional)</option>
-              {invoices.map(inv => (
+              {/* A replaced revision is not payable; its successor is listed instead. */}
+              {liveInvoices.map(inv => (
                 <option key={inv.id} value={inv.id}>
                   {inv.id} - {inv.customerName} (Sisa: {formatCurrency(inv.balanceRemaining)})
                 </option>
@@ -1254,7 +1211,9 @@ export const FinanceModule: React.FC = () => {
                 value={paymentForm.paymentMethod}
                 onChange={(e) => setPaymentForm({ ...paymentForm, paymentMethod: e.target.value })}
                 className={selectClass}
+                required
               >
+                <option value="">Pilih metode</option>
                 <option value="Transfer Bank BCA">Transfer BCA (829-082-1199)</option>
                 <option value="Transfer Bank Mandiri">Transfer Mandiri (131-00-1928374-1)</option>
                 <option value="Kas Tunai / Cash">Tunai</option>
@@ -1336,11 +1295,14 @@ export const FinanceModule: React.FC = () => {
               className={selectClass}
             >
               <option value="">Pilih pesanan (atau isi manual)</option>
-              {orders.map(o => (
-                <option key={o.id} value={o.id}>
-                  {o.po || o.id} - {o.customerName} ({formatCurrency(o.totalPrice)})
-                </option>
-              ))}
+              {/* One live invoice per order: orders already billed are not offered twice. */}
+              {orders
+                .filter(o => !liveInvoices.some(i => i.orderId === o.id))
+                .map(o => (
+                  <option key={o.id} value={o.id}>
+                    {o.po || o.id} - {o.customerName} ({formatCurrency(o.totalPrice)})
+                  </option>
+                ))}
             </select>
           </div>
 
@@ -1353,16 +1315,6 @@ export const FinanceModule: React.FC = () => {
                 required
                 value={newInvoice.customerName}
                 onChange={(e) => setNewInvoice({ ...newInvoice, customerName: e.target.value })}
-              />
-            </div>
-            <div>
-              <label htmlFor="fin-inv-due" className={labelClass}>Jatuh Tempo</label>
-              <Input
-                id="fin-inv-due"
-                type="date"
-                required
-                value={newInvoice.dueDate}
-                onChange={(e) => setNewInvoice({ ...newInvoice, dueDate: e.target.value })}
               />
             </div>
           </div>

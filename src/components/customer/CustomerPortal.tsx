@@ -17,7 +17,8 @@ import {
 } from '../../services/api';
 import {
   formatCurrency,
-  formatDate
+  formatDate,
+  statusLabel
 } from '../../lib/utils';
 import { StatusBadge } from '../ui/Badge';
 import {
@@ -25,7 +26,6 @@ import {
   Clock,
   CheckCircle2,
   FileText,
-  Upload,
   Truck,
   Palette,
   ShieldAlert,
@@ -83,6 +83,7 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({ customer, onLogo
 
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [selectedOrderId, setSelectedOrderId] = useState<string>('');
   const [activeTab, setActiveTab] = useState<PortalTab>('timeline');
   const tabRefs = useRef<Partial<Record<PortalTab, HTMLButtonElement | null>>>({});
@@ -90,29 +91,32 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({ customer, onLogo
   const [historyFilter, setHistoryFilter] = useState<'ALL' | 'ACTIVE' | 'COMPLETED'>('ALL');
 
   // Complaint form state
-  const [complaintCategory, setComplaintCategory] = useState<any>('Jahitan Lepas/Cacat');
+  const [complaintOrderId, setComplaintOrderId] = useState<string>('');
+  const [complaintCategory, setComplaintCategory] = useState<CustomerReturnComplaint['defectCategory']>('Jahitan Lepas/Cacat');
   const [complaintQty, setComplaintQty] = useState(1);
   const [complaintDesc, setComplaintDesc] = useState('');
   const [complaintUploading, setComplaintUploading] = useState(false);
   const [evidenceUrl, setEvidenceUrl] = useState('');
   const [complaintSubmitted, setComplaintSubmitted] = useState(false);
+  const [complaintSending, setComplaintSending] = useState(false);
+  const [complaintError, setComplaintError] = useState<string | null>(null);
 
-  // Payment upload state
-  const [paymentAmount, setPaymentAmount] = useState<number>(0);
-  const [paymentProofUrl, setPaymentProofUrl] = useState<string>('');
-  const [paymentUploading, setPaymentUploading] = useState(false);
-  const [paymentSubmitted, setPaymentSubmitted] = useState(false);
+  // Design approval state
+  const [designApproving, setDesignApproving] = useState(false);
+  const [designError, setDesignError] = useState<string | null>(null);
 
   const loadData = async () => {
     try {
       setRefreshing(true);
       const res = await fetchCustomerPortalDataApi(customer.id);
       setData(res);
+      setLoadError(null);
       if (res.orders.length > 0 && !selectedOrderId) {
         setSelectedOrderId(customer.selectedOrderId || res.orders[0].id);
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error('Failed to load customer data:', err);
+      setLoadError(err?.message || 'Gagal memuat data pesanan. Coba muat ulang.');
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -125,10 +129,18 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({ customer, onLogo
 
   const activeOrder = data.orders.find(o => o.id === selectedOrderId) || data.orders[0];
   const activeSpk = data.spks.find(s => s.orderId === activeOrder?.id);
-  const activeInvoice = data.invoices.find(i => i.orderId === activeOrder?.id);
+  const activeInvoice = data.invoices.find(i => i.orderId === activeOrder?.id && !i.supersededBy);
   const activeShipment = data.shipments.find(s => s.orderId === activeOrder?.id);
-  const activeDesign = data.designs.find(d => d.orderId === activeOrder?.id || d.customerId === customer.id);
+  // The design this order points at first; any other design of the customer's
+  // is not this order's artwork.
+  const activeDesign =
+    data.designs.find(d => !!activeOrder?.designId && d.id === activeOrder.designId) ||
+    data.designs.find(d => d.orderId === activeOrder?.id);
   const activeSample = data.samples.find(s => s.orderId === activeOrder?.id);
+
+  // A complaint is always about one of this customer's own orders; the one on screen unless they pick another.
+  const complaintOrder =
+    data.orders.find(o => o.id === complaintOrderId) || activeOrder;
 
   // Next steps for an approved order that is still waiting for its SPK (customer-relevant items only)
   const awaitingProduction = !!activeOrder && !activeSpk && activeOrder.status === 'Order';
@@ -138,7 +150,11 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({ customer, onLogo
   const showDpStep = dpRequired > 0 || hasSpecialTerms;
   const dpDone = hasSpecialTerms || dpRequired <= 0 || dpPaid >= dpRequired;
   const orderSamples = data.samples.filter(s => s.orderId === activeOrder?.id);
-  const sampleDone = orderSamples.some(s => s.status === 'Approved') || !!activeOrder?.sampleWaivedBy;
+  // Repeat orders and orders quoted without a physical sample have nothing to wait for here.
+  const sampleDone =
+    activeOrder?.needsSample !== true ||
+    orderSamples.some(s => s.status === 'Approved') ||
+    !!activeOrder?.sampleWaivedBy;
   const sampleSent = orderSamples.some(s => s.status === 'Sent to Customer');
   // Overall customer history metrics
   const totalOrdersCount = data.orders.length;
@@ -190,11 +206,15 @@ Mohon informasi ketersediaan slot antrean produksi dan penawaran invoice terbaru
       if (activeOrder?.status === 'Completed') return 100;
       return 15;
     }
-    return activeSpk.progress || 20;
+    // Once it has left the factory the job is done, whatever the SPK counter says.
+    if (activeOrder?.status === 'Shipping' || activeOrder?.status === 'Completed') return 100;
+    return Math.max(20, Number(activeSpk.progress) || 0);
   };
 
   const handleApproveDesign = async () => {
-    if (!activeDesign) return;
+    if (!activeDesign || designApproving) return;
+    setDesignApproving(true);
+    setDesignError(null);
     try {
       await updateResource('designs', activeDesign.id, {
         status: 'Approved',
@@ -203,87 +223,69 @@ Mohon informasi ketersediaan slot antrean produksi dan penawaran invoice terbaru
       });
       confetti({ particleCount: 60, spread: 70, origin: { y: 0.6 } });
       loadData();
-    } catch (err) {
-      alert('Gagal menyetujui desain. Coba lagi.');
+    } catch (err: any) {
+      setDesignError(err?.message || 'Gagal menyetujui desain. Coba lagi.');
+    } finally {
+      setDesignApproving(false);
     }
   };
 
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>, type: 'complaint' | 'payment') => {
+  /** Complaint evidence is the only upload left: payment proof goes over WhatsApp. */
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    if (type === 'complaint') setComplaintUploading(true);
-    if (type === 'payment') setPaymentUploading(true);
-
+    setComplaintUploading(true);
+    setComplaintError(null);
     try {
-      const url = await uploadMedia(file);
-      if (type === 'complaint') setEvidenceUrl(url);
-      if (type === 'payment') setPaymentProofUrl(url);
-    } catch (err) {
-      alert('Gagal mengunggah foto. Gunakan file JPG, PNG, atau WebP.');
+      setEvidenceUrl(await uploadMedia(file));
+    } catch (err: any) {
+      // The server names the reason (type, size); fall back to the general rule.
+      setComplaintError(err?.message || 'Gagal mengunggah foto. Gunakan file JPG, PNG, atau WebP.');
     } finally {
-      if (type === 'complaint') setComplaintUploading(false);
-      if (type === 'payment') setPaymentUploading(false);
+      setComplaintUploading(false);
     }
   };
 
   const handleSubmitComplaint = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (complaintSending) return;
+    if (!complaintOrder) {
+      setComplaintError('Pilih pesanan yang bermasalah terlebih dahulu.');
+      return;
+    }
     if (!complaintDesc.trim()) {
-      alert('Tuliskan rincian masalahnya terlebih dahulu.');
+      setComplaintError('Tuliskan rincian masalahnya terlebih dahulu.');
+      return;
+    }
+    if (!Number.isFinite(complaintQty) || complaintQty < 1) {
+      setComplaintError('Jumlah bermasalah minimal 1 pcs.');
       return;
     }
 
+    setComplaintSending(true);
+    setComplaintError(null);
     try {
+      /*
+       * Only what the customer can vouch for. The server fills the RMA number,
+       * the customer identity from the session, and the initial status.
+       */
       await createResource('returns_complaints', {
-        id: `RMA-${Date.now().toString().slice(-5)}`,
-        orderId: activeOrder?.id || 'ORD-GEN',
-        customerId: customer.id,
-        customerName: customer.name,
-        contactPhone: customer.contact || customer.phone || '-',
-        complaintDate: new Date().toISOString().split('T')[0],
+        orderId: complaintOrder.id,
         defectCategory: complaintCategory,
         defectQty: complaintQty,
-        description: complaintDesc,
+        description: complaintDesc.trim(),
         customerEvidenceUrls: evidenceUrl,
-        actionTaken: 'Perbaikan Gratis',
-        status: 'Submitted'
+        complaintDate: new Date().toISOString().split('T')[0]
       });
       setComplaintSubmitted(true);
       setComplaintDesc('');
       setEvidenceUrl('');
       loadData();
-    } catch (err) {
-      alert('Gagal mengirim keluhan. Coba lagi.');
-    }
-  };
-
-  const handleSubmitPaymentProof = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!paymentProofUrl) {
-      alert('Unggah foto bukti transfer terlebih dahulu.');
-      return;
-    }
-
-    try {
-      await createResource('payments', {
-        id: `PAY-${Date.now().toString().slice(-5)}`,
-        orderId: activeOrder?.id || 'ORD-GEN',
-        invoiceId: activeInvoice?.id,
-        customerId: customer.id,
-        customerName: customer.name,
-        amount: paymentAmount || activeInvoice?.balanceRemaining || 1000000,
-        type: activeInvoice?.status === 'DP Dibayar' ? 'Pelunasan' : 'Down Payment',
-        date: new Date().toISOString().split('T')[0],
-        bankAccount: 'BCA / Mandiri HIJ',
-        proofImageUrl: paymentProofUrl,
-        status: 'Pending Verification'
-      });
-      setPaymentSubmitted(true);
-      setPaymentProofUrl('');
-      loadData();
-    } catch (err) {
-      alert('Gagal mengirim bukti pembayaran. Coba lagi.');
+    } catch (err: any) {
+      setComplaintError(err?.message || 'Gagal mengirim keluhan. Coba lagi.');
+    } finally {
+      setComplaintSending(false);
     }
   };
 
@@ -427,7 +429,21 @@ Mohon informasi ketersediaan slot antrean produksi dan penawaran invoice terbaru
           </div>
         )}
 
-        {!loading && !hasOrders && (
+        {!loading && loadError && (
+          <div role="alert" className="bg-rose-50 rounded-3xl p-5 border border-rose-200 text-sm text-brand-red-cta flex flex-wrap items-center justify-between gap-3">
+            <span className="min-w-0">{loadError}</span>
+            <button
+              type="button"
+              onClick={loadData}
+              disabled={refreshing}
+              className="h-10 px-4 bg-white border border-rose-200 rounded-xl font-semibold text-brand-red-cta hover:bg-rose-100 transition-colors cursor-pointer disabled:cursor-wait"
+            >
+              Muat Ulang
+            </button>
+          </div>
+        )}
+
+        {!loading && !loadError && !hasOrders && (
           <div className="bg-white rounded-3xl p-10 border border-slate-100 shadow-xs text-center space-y-2">
             <div className="w-12 h-12 rounded-full bg-slate-100 text-slate-500 flex items-center justify-center mx-auto">
               <Package size={20} aria-hidden="true" />
@@ -457,7 +473,23 @@ Mohon informasi ketersediaan slot antrean produksi dan penawaran invoice terbaru
                   </div>
                   <span className="text-xs text-slate-400 hidden sm:inline">Klik untuk melihat detail atau progres pesanan lain</span>
                 </div>
-                <div className="flex items-center gap-2 overflow-x-auto pb-1 no-scrollbar">
+                {/*
+                  * A strip of pills scrolls off a phone screen and hides the other
+                  * orders; a native select shows them all and is one tap to change.
+                  */}
+                <select
+                  aria-label="Pilih pesanan"
+                  value={activeOrder?.id || ''}
+                  onChange={e => setSelectedOrderId(e.target.value)}
+                  className="sm:hidden w-full h-11 rounded-xl border border-slate-200 bg-slate-50 px-3 text-sm font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-teal-500"
+                >
+                  {data.orders.map(order => (
+                    <option key={order.id} value={order.id}>
+                      {order.po || order.id} · {order.productType} · {statusLabel(order.status)}
+                    </option>
+                  ))}
+                </select>
+                <div className="hidden sm:flex items-center gap-2 overflow-x-auto pb-1 no-scrollbar">
                   {data.orders.map(order => {
                     const isCompleted = order.status === 'Completed';
                     const isSelected = order.id === activeOrder?.id;
@@ -515,14 +547,15 @@ Mohon informasi ketersediaan slot antrean produksi dan penawaran invoice terbaru
                         </p>
                         {!dpDone && (
                           <p className="text-sm text-slate-600 mt-0.5">
-                            Transfer lalu kirim buktinya di tab{' '}
+                            Transfer ke rekening di tab{' '}
                             <button
                               type="button"
                               onClick={() => setActiveTab('invoice')}
                               className="font-semibold text-teal-700 underline underline-offset-2 hover:text-teal-800"
                             >
                               Pembayaran
-                            </button>.
+                            </button>
+                            , lalu kirim bukti transfer ke WhatsApp CS. PIC pesanan Anda mencatatnya di sistem.
                           </p>
                         )}
                       </div>
@@ -650,7 +683,7 @@ Mohon informasi ketersediaan slot antrean produksi dan penawaran invoice terbaru
             <div
               role="tablist"
               aria-label="Informasi pesanan"
-              className="flex items-center gap-1 border-b border-border overflow-x-auto no-scrollbar"
+              className="grid grid-cols-3 gap-1 rounded-2xl border border-border bg-white p-1 sm:flex sm:items-center sm:rounded-none sm:border-0 sm:border-b sm:bg-transparent sm:p-0"
             >
               {portalTabs.map((tab, index) => {
                 const Icon = tab.icon;
@@ -667,14 +700,14 @@ Mohon informasi ketersediaan slot antrean produksi dan penawaran invoice terbaru
                     tabIndex={active ? 0 : -1}
                     onClick={() => setActiveTab(tab.id)}
                     onKeyDown={(e) => handleTabKeyDown(e, index)}
-                    className={`h-11 px-3.5 text-sm font-semibold border-b-2 transition-all flex items-center gap-2 flex-shrink-0 whitespace-nowrap cursor-pointer focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-brand-teal ${
+                    className={`flex min-h-14 flex-col items-center justify-center gap-1 rounded-xl px-1 py-2 text-[11px] font-semibold leading-tight text-center transition-all cursor-pointer focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-brand-teal sm:h-11 sm:min-h-0 sm:flex-row sm:gap-2 sm:rounded-none sm:border-b-2 sm:px-3.5 sm:py-0 sm:text-sm sm:whitespace-nowrap ${
                       active
-                        ? 'border-brand-teal-dark text-brand-teal-dark'
-                        : 'border-transparent text-muted-foreground hover:text-foreground'
+                        ? 'bg-brand-teal-dark text-white sm:bg-transparent sm:border-brand-teal-dark sm:text-brand-teal-dark'
+                        : 'text-muted-foreground hover:bg-muted sm:border-transparent sm:hover:bg-transparent sm:hover:text-foreground'
                     }`}
                   >
-                    <Icon size={16} aria-hidden="true" />
-                    {tab.label}
+                    <Icon size={18} aria-hidden="true" className="sm:size-4" />
+                    <span>{tab.label}</span>
                   </button>
                 );
               })}
@@ -748,13 +781,21 @@ Mohon informasi ketersediaan slot antrean produksi dan penawaran invoice terbaru
                     <button
                       type="button"
                       onClick={handleApproveDesign}
-                      className="h-11 px-5 bg-teal-600 hover:bg-teal-800 text-white font-semibold rounded-xl text-sm shadow-md transition-colors flex items-center justify-center gap-2 cursor-pointer"
+                      disabled={!activeDesign || designApproving}
+                      aria-describedby={designError ? 'design-error' : undefined}
+                      className="h-11 px-5 bg-teal-600 hover:bg-teal-800 text-white font-semibold rounded-xl text-sm shadow-md transition-colors flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       <Check size={18} aria-hidden="true" />
-                      Setujui Desain
+                      {designApproving ? 'Menyimpan…' : 'Setujui Desain'}
                     </button>
                   )}
                 </div>
+
+                {designError && (
+                  <p id="design-error" role="alert" className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-sm text-brand-red-cta">
+                    {designError}
+                  </p>
+                )}
 
                 {/* MOCKUP VIEWER */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
@@ -823,16 +864,15 @@ Mohon informasi ketersediaan slot antrean produksi dan penawaran invoice terbaru
                   <div className="p-4 bg-teal-50/50 border border-teal-100 rounded-2xl text-sm space-y-3">
                     <p className="font-semibold text-teal-900">Transfer ke rekening berikut:</p>
                     <div className="bg-white p-4 rounded-xl border border-teal-200/60 space-y-2">
-                      <div className="flex flex-wrap justify-between gap-x-4 gap-y-0.5">
-                        <span className="text-slate-600">BCA</span>
-                        <span className="font-mono font-semibold text-slate-900 whitespace-nowrap">829-082-1199</span>
-                      </div>
-                      <div className="flex flex-wrap justify-between gap-x-4 gap-y-0.5">
-                        <span className="text-slate-600">Mandiri</span>
-                        <span className="font-mono font-semibold text-slate-900 whitespace-nowrap">137-00-1928371-2</span>
-                      </div>
+                      {/* One source with the printed invoice, so the customer never sees two different accounts. */}
+                      {COMPANY_CONTACT.bankAccounts.map(acc => (
+                        <div key={acc.accountNumber} className="flex flex-wrap justify-between gap-x-4 gap-y-0.5">
+                          <span className="text-slate-600">{acc.bank}</span>
+                          <span className="font-mono font-semibold text-slate-900 whitespace-nowrap">{acc.accountNumber}</span>
+                        </div>
+                      ))}
                       <p className="pt-2 border-t border-slate-100 text-slate-600">
-                        Atas nama <span className="font-semibold text-slate-900">PT Hasil Inti Jualan</span>
+                        Atas nama <span className="font-semibold text-slate-900">{COMPANY_CONTACT.bankAccounts[0]?.accountName || COMPANY_CONTACT.name}</span>
                       </p>
                       <div className="pt-2.5 border-t border-teal-100 flex flex-wrap items-center justify-between gap-x-2 text-xs">
                         <span className="text-teal-800">Butuh konfirmasi instan atau invoice manual?</span>
@@ -850,62 +890,29 @@ Mohon informasi ketersediaan slot antrean produksi dan penawaran invoice terbaru
                   </div>
                 </div>
 
-                {/* UPLOAD PAYMENT RECEIPT */}
+                {/* PAYMENT CONFIRMATION: over WhatsApp, recorded by the order's PIC in the ERP */}
                 <div className="md:col-span-5 bg-white rounded-3xl p-5 sm:p-8 shadow-xs border border-slate-100 space-y-5">
                   <h3 className="text-base font-bold text-slate-900 flex items-center gap-2">
-                    <Upload size={18} className="text-teal-600" aria-hidden="true" />
-                    Kirim Bukti Pembayaran
+                    <MessageCircle size={18} className="text-teal-600" aria-hidden="true" />
+                    Konfirmasi Pembayaran via WhatsApp
                   </h3>
-
-                  {paymentSubmitted ? (
-                    <div role="status" className="p-4 bg-emerald-50 border border-emerald-200 rounded-xl text-sm text-emerald-800 flex items-start gap-2">
-                      <CheckCircle2 size={18} className="shrink-0 mt-0.5" aria-hidden="true" />
-                      <span>Bukti transfer terkirim. Tim keuangan kami akan memeriksanya.</span>
-                    </div>
-                  ) : (
-                    <form onSubmit={handleSubmitPaymentProof} className="space-y-5">
-                      <div>
-                        <label htmlFor="payment-amount" className={labelClass}>Jumlah Transfer (Rp)</label>
-                        <input
-                          id="payment-amount"
-                          type="number"
-                          inputMode="numeric"
-                          value={paymentAmount || ''}
-                          onChange={(e) => setPaymentAmount(Number(e.target.value))}
-                          placeholder="Contoh: 4000000"
-                          className={`${fieldClass} font-mono`}
-                        />
-                      </div>
-
-                      <div>
-                        <label htmlFor="payment-proof" className={labelClass}>Foto Bukti Transfer</label>
-                        <input
-                          id="payment-proof"
-                          type="file"
-                          accept="image/*"
-                          onChange={(e) => handleFileUpload(e, 'payment')}
-                          aria-describedby="payment-proof-status"
-                          className={fileClass}
-                        />
-                        <div id="payment-proof-status" aria-live="polite">
-                          {paymentUploading && <p className="text-sm text-teal-700 mt-1.5">Mengunggah…</p>}
-                          {paymentProofUrl && (
-                            <p className="text-sm text-emerald-700 mt-1.5 flex items-center gap-1.5">
-                              <CheckCircle2 size={16} aria-hidden="true" /> Foto siap dikirim
-                            </p>
-                          )}
-                        </div>
-                      </div>
-
-                      <button
-                        type="submit"
-                        disabled={!paymentProofUrl || paymentUploading}
-                        className="w-full h-11 bg-teal-600 text-white font-semibold rounded-xl hover:bg-teal-700 transition-colors shadow-sm disabled:opacity-50 disabled:cursor-not-allowed text-sm cursor-pointer"
-                      >
-                        Kirim Bukti
-                      </button>
-                    </form>
-                  )}
+                  <ol className="list-decimal space-y-2.5 pl-5 text-sm text-slate-700">
+                    <li>Transfer nominal DP atau pelunasan ke rekening pada kartu Faktur.</li>
+                    <li>Kirim foto bukti transfer ke WhatsApp CS HIJ dengan nomor PO Anda.</li>
+                    <li>PIC pesanan mencatat dan memverifikasinya; status di halaman ini diperbarui otomatis.</li>
+                  </ol>
+                  <a
+                    href={getWhatsAppUrl(`Halo CS HIJ, saya sudah transfer untuk PO ${activeOrder?.po || activeOrder?.id || '-'} (${activeOrder?.productType || 'Pesanan'}). Berikut bukti transfernya.`)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="w-full h-11 inline-flex items-center justify-center gap-2 bg-teal-600 text-white font-semibold rounded-xl hover:bg-teal-700 transition-colors shadow-sm text-sm"
+                  >
+                    <MessageCircle size={16} aria-hidden="true" />
+                    Kirim Bukti via WhatsApp
+                  </a>
+                  <p className="text-xs text-slate-500">
+                    Portal ini tidak menerima unggahan bukti bayar; semua pembayaran dikonfirmasi lewat WhatsApp.
+                  </p>
                 </div>
               </div>
             )}
@@ -995,13 +1002,30 @@ Mohon informasi ketersediaan slot antrean produksi dan penawaran invoice terbaru
                   </div>
                 ) : (
                   <form onSubmit={handleSubmitComplaint} className="space-y-5 max-w-2xl">
+                    <div>
+                      <label htmlFor="complaint-order" className={labelClass}>Pesanan yang Bermasalah</label>
+                      <select
+                        id="complaint-order"
+                        value={complaintOrder?.id || ''}
+                        onChange={(e) => setComplaintOrderId(e.target.value)}
+                        className={fieldClass}
+                        required
+                      >
+                        {data.orders.map(order => (
+                          <option key={order.id} value={order.id}>
+                            {order.po || order.id} · {order.productType} ({order.quantity || 0} pcs)
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                       <div>
                         <label htmlFor="complaint-category" className={labelClass}>Jenis Masalah</label>
                         <select
                           id="complaint-category"
                           value={complaintCategory}
-                          onChange={(e) => setComplaintCategory(e.target.value)}
+                          onChange={(e) => setComplaintCategory(e.target.value as CustomerReturnComplaint['defectCategory'])}
                           className={fieldClass}
                         >
                           <option value="Jahitan Lepas/Cacat">Jahitan Lepas atau Cacat</option>
@@ -1044,7 +1068,7 @@ Mohon informasi ketersediaan slot antrean produksi dan penawaran invoice terbaru
                         id="complaint-evidence"
                         type="file"
                         accept="image/*"
-                        onChange={(e) => handleFileUpload(e, 'complaint')}
+                        onChange={(e) => handleFileUpload(e)}
                         aria-describedby="complaint-evidence-status"
                         className={fileClass}
                       />
@@ -1058,11 +1082,19 @@ Mohon informasi ketersediaan slot antrean produksi dan penawaran invoice terbaru
                       </div>
                     </div>
 
+                    {complaintError && (
+                      <p id="complaint-error" role="alert" className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-sm text-brand-red-cta">
+                        {complaintError}
+                      </p>
+                    )}
+
                     <button
                       type="submit"
-                      className="h-11 px-6 bg-rose-700 text-white font-semibold rounded-xl hover:bg-rose-700/90 transition-colors shadow-sm text-sm cursor-pointer"
+                      disabled={complaintUploading || complaintSending}
+                      aria-describedby={complaintError ? 'complaint-error' : undefined}
+                      className="h-11 px-6 bg-rose-700 text-white font-semibold rounded-xl hover:bg-rose-700/90 transition-colors shadow-sm text-sm cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                     >
-                      Kirim Keluhan
+                      {complaintSending ? 'Mengirim…' : 'Kirim Keluhan'}
                     </button>
                   </form>
                 )}
@@ -1120,16 +1152,16 @@ Mohon informasi ketersediaan slot antrean produksi dan penawaran invoice terbaru
                 </div>
 
                 {/* QUICK REPEAT ORDER CONSULTATION BANNER */}
-                <div className="relative overflow-hidden bg-black rounded-3xl p-6 sm:p-8 text-white shadow-lg border border-teal-800/40 flex flex-col md:flex-row md:items-center justify-between gap-6">
+                <div className="relative overflow-hidden rounded-3xl bg-gradient-to-br from-brand-teal-dark via-teal-700 to-teal-800 p-6 sm:p-8 text-white shadow-lg flex flex-col md:flex-row md:items-center justify-between gap-6">
                   <div className="space-y-2 max-w-xl">
-                    <div className="inline-flex items-center gap-2 px-3 py-1 bg-teal-500/20 text-teal-300 rounded-full text-xs font-semibold border border-teal-500/30">
-                      <Sparkles size={14} className="text-teal-300" />
+                    <div className="inline-flex items-center gap-2 px-3 py-1 bg-white/15 text-white rounded-full text-xs font-semibold border border-white/25">
+                      <Sparkles size={14} className="text-brand-teal" />
                       <span>Layanan Repeat Order Cepat & Prioritas</span>
                     </div>
                     <h3 className="text-xl sm:text-2xl font-bold text-white tracking-tight">
                       Ingin Pesan Ulang atau Tambah Batch Artikel Sebelumnya?
                     </h3>
-                    <p className="text-xs sm:text-sm text-slate-300 leading-relaxed">
+                    <p className="text-xs sm:text-sm text-teal-50/90 leading-relaxed">
                       Pola jahitan, data sablon/bordir, dan spesifikasi kain dari pesanan Anda sebelumnya tersimpan aman di database arsip HIJ Konveksi. Anda bisa langsung memesan ulang tanpa perlu membuat pola dari nol.
                     </p>
                   </div>
@@ -1140,7 +1172,7 @@ Mohon informasi ketersediaan slot antrean produksi dan penawaran invoice terbaru
                     )}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="inline-flex items-center justify-center gap-2.5 px-6 py-3.5 bg-brand-teal hover:bg-teal-400 text-black rounded-2xl font-bold text-sm transition-colors shadow-md shadow-emerald-950/40 shrink-0"
+                    className="inline-flex items-center justify-center gap-2.5 px-6 py-3.5 bg-white hover:bg-teal-50 text-brand-teal-dark rounded-2xl font-bold text-sm transition-colors shadow-md shadow-teal-950/30 shrink-0"
                   >
                     <MessageCircle size={18} className="shrink-0" aria-hidden="true" />
                     <span>Konsultasi via WA <span className="whitespace-nowrap">({COMPANY_CONTACT.whatsappFormatted})</span></span>
@@ -1162,7 +1194,7 @@ Mohon informasi ketersediaan slot antrean produksi dan penawaran invoice terbaru
                       />
                     </div>
 
-                    <div role="group" aria-label="Filter status pesanan" className="flex items-center gap-1.5 overflow-x-auto pb-1 no-scrollbar">
+                    <div role="group" aria-label="Filter status pesanan" className="flex flex-wrap items-center gap-1.5">
                       {[
                         { id: 'ALL', label: `Semua (${totalOrdersCount})` },
                         { id: 'ACTIVE', label: `Sedang Berjalan (${inProgressOrdersCount})` },

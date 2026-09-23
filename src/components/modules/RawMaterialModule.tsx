@@ -27,7 +27,7 @@ import { Card } from '../ui/Card';
 import { Button } from '../ui/Button';
 import { Input } from '../ui/Input';
 import { PageHeader } from '../ui/PageHeader';
-import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell, TableRowActions, TableEmptyRow, TableSkeletonRows } from '../ui/Table';
+import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell, TableRowActions, RowActionButton, TableEmptyRow, TableSkeletonRows } from '../ui/Table';
 import { DetailDrawer, DetailSection, DetailField, DetailStats, RowDetailButton } from '../ui/DetailDrawer';
 import { newestFirst } from '../../lib/ordering';
 
@@ -40,96 +40,7 @@ const ACCESSORY_CATEGORIES = [
   'Kemasan & Penunjang'
 ] as const;
 
-const DEFAULT_ACCESSORIES: InventoryItem[] = [
-  {
-    id: 'ACC-KNC-001',
-    name: 'Kancing Kemeja 4 Lubang Putih 18L',
-    category: 'Kancing & Resleting',
-    stock: 12,
-    unit: 'Gross',
-    minStock: 5,
-    price: 18000,
-    location: 'RAK-AKS-A1',
-    supplier: 'CV Kancing Jaya'
-  },
-  {
-    id: 'ACC-RES-002',
-    name: 'Resleting YKK Metal No. 5 Gigi Kuningan (65 cm)',
-    category: 'Kancing & Resleting',
-    stock: 8,
-    unit: 'Pcs',
-    minStock: 25, // LOW STOCK
-    price: 12500,
-    location: 'RAK-AKS-A2',
-    supplier: 'PT Zipper Pratama'
-  },
-  {
-    id: 'ACC-BNG-003',
-    name: 'Benang Jahit Poliester Astra 40/2 Hitam',
-    category: 'Benang',
-    stock: 3,
-    unit: 'Cones',
-    minStock: 8, // LOW STOCK
-    price: 24000,
-    location: 'RAK-BNG-01',
-    supplier: 'Toko Benang Sentosa'
-  },
-  {
-    id: 'ACC-BNG-004',
-    name: 'Benang Jahit Poliester Astra 40/2 Putih',
-    category: 'Benang',
-    stock: 16,
-    unit: 'Cones',
-    minStock: 6,
-    price: 24000,
-    location: 'RAK-BNG-02',
-    supplier: 'Toko Benang Sentosa'
-  },
-  {
-    id: 'ACC-LBL-005',
-    name: 'Label Woven HIJ Apparel & Size Tag M',
-    category: 'Label & Hangtag',
-    stock: 150,
-    unit: 'Pcs',
-    minStock: 300, // LOW STOCK
-    price: 650,
-    location: 'LACI-LBL-01',
-    supplier: 'Percetakan Label Prima'
-  },
-  {
-    id: 'ACC-KRT-006',
-    name: 'Karet Kolor Elastis 3 cm Putih Super',
-    category: 'Karet & Tali',
-    stock: 2,
-    unit: 'Roll',
-    minStock: 4, // LOW STOCK
-    price: 95000,
-    location: 'RAK-KRT-01',
-    supplier: 'CV Elastik Makmur'
-  },
-  {
-    id: 'ACC-HNG-007',
-    name: 'Hangtag Tebal 310gsm + Tali Lock Pin',
-    category: 'Label & Hangtag',
-    stock: 850,
-    unit: 'Pcs',
-    minStock: 300,
-    price: 500,
-    location: 'LACI-HNG-02',
-    supplier: 'Percetakan Label Prima'
-  },
-  {
-    id: 'ACC-KMS-008',
-    name: 'Plastik Opp Seal Bening 30 x 40 cm Sablon Logo',
-    category: 'Kemasan & Penunjang',
-    stock: 350,
-    unit: 'Pcs',
-    minStock: 500, // LOW STOCK
-    price: 450,
-    location: 'RAK-KMS-01',
-    supplier: 'PT Anugerah Plastik'
-  }
-];
+const ROLL_STATUSES: FabricRoll['status'][] = ['Available', 'Reserved', 'In Cutting', 'Depleted'];
 
 const isStockItem = (r: any): r is InventoryItem =>
   typeof r?.name === 'string' && r?.stock !== undefined && r?.stock !== null && !isNaN(Number(r.stock));
@@ -141,6 +52,14 @@ const isLowStock = (item: InventoryItem) =>
 const isOutOfStock = (item: InventoryItem) => Number(item.stock) <= 0;
 
 const formatQty = (value: number | string | undefined | null) => Number(value).toLocaleString('id-ID');
+
+/* One wording for the stock condition across the table, the drawer and the export. */
+const stockCondition = (item: InventoryItem): { label: string; variant: 'critical' | 'warning' | 'done' } =>
+  isOutOfStock(item)
+    ? { label: 'Stok Habis', variant: 'critical' }
+    : isLowStock(item)
+      ? { label: 'Stok Menipis', variant: 'warning' }
+      : { label: 'Stok Aman', variant: 'done' };
 
 export const RawMaterialModule: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'inventory' | 'opname' | 'fabric'>('inventory');
@@ -171,7 +90,7 @@ export const RawMaterialModule: React.FC = () => {
     unit: 'Pcs',
     minStock: 20,
     price: 15000,
-    location: 'RAK-AKS-A1',
+    location: '',
     supplier: ''
   });
 
@@ -192,22 +111,23 @@ export const RawMaterialModule: React.FC = () => {
     physicalStock: 0,
     unit: 'Pcs',
     reason: '',
-    auditor: 'Staff Gudang Aksesoris',
+    auditor: '',
     opnameDate: new Date().toISOString().split('T')[0]
   });
 
-  // Form State: Fabric Roll
+  // Form State: Fabric Roll. `editingRollId` is set while the modal edits an existing lot.
+  const [editingRollId, setEditingRollId] = useState<string | null>(null);
   const [rollForm, setRollForm] = useState<Partial<FabricRoll>>({
-    fabricName: 'Cotton Combed 24s',
-    color: 'Hitam Reaktif',
-    rollNumber: 'ROLL-01',
+    fabricName: '',
+    color: '',
+    rollNumber: '',
     lengthMeters: 100,
     remainingMeters: 100,
     grammage: 180,
     widthCm: 180,
     defectCountPerRoll: 0,
-    rackLocation: 'RAK-KAIN-A1',
-    supplier: 'PT Toko Kain Mulia',
+    rackLocation: '',
+    supplier: '',
     status: 'Available'
   });
 
@@ -219,17 +139,8 @@ export const RawMaterialModule: React.FC = () => {
         fetchResource<StockOpnameRecord>('stock-opname')
       ]);
 
-      // If database is completely fresh, seed with default accessories
-      if (!matRes || matRes.length === 0) {
-        setRecords(DEFAULT_ACCESSORIES);
-        // Silently push seeds to server
-        for (const item of DEFAULT_ACCESSORIES) {
-          createResource('raw-materials', item).catch(() => {});
-        }
-      } else {
-        setRecords(matRes);
-      }
-
+      // An empty warehouse is shown as empty; demo rows are never written to the server.
+      setRecords(matRes || []);
       setOpnameRecords(opRes || []);
     } catch (err) {
       console.error('Error loading raw material & opname data:', err);
@@ -302,7 +213,7 @@ export const RawMaterialModule: React.FC = () => {
       unit: 'Pcs',
       minStock: 25,
       price: 1500,
-      location: 'RAK-AKS-A1',
+      location: '',
       supplier: ''
     });
     setIsAddModalOpen(true);
@@ -367,7 +278,7 @@ export const RawMaterialModule: React.FC = () => {
       physicalStock: Number(targetItem.stock) || 0,
       unit: targetItem.unit || 'Pcs',
       reason: '',
-      auditor: 'Staff Gudang Aksesoris',
+      auditor: '',
       opnameDate: new Date().toISOString().split('T')[0]
     });
     setIsOpnameModalOpen(true);
@@ -438,8 +349,59 @@ export const RawMaterialModule: React.FC = () => {
   };
 
   // --- Handlers: Fabric Rolls ---
-  const handleCreateRoll = async (e: React.FormEvent) => {
+  const handleOpenAddRoll = () => {
+    setEditingRollId(null);
+    setRollForm({
+      fabricName: '',
+      color: '',
+      rollNumber: '',
+      lengthMeters: 100,
+      remainingMeters: 100,
+      grammage: 180,
+      widthCm: 180,
+      defectCountPerRoll: 0,
+      rackLocation: '',
+      supplier: '',
+      status: 'Available'
+    });
+    setIsFabricModalOpen(true);
+  };
+
+  /*
+   * A roll is not write-once: cutting takes metres off it and its status
+   * moves on. The add modal doubles as the editor for those fields.
+   */
+  const handleOpenEditRoll = (roll: FabricRoll) => {
+    setEditingRollId(roll.id);
+    setRollForm({ ...roll });
+    setIsFabricModalOpen(true);
+  };
+
+  const handleSaveRoll = async (e: React.FormEvent) => {
     e.preventDefault();
+
+    if (editingRollId) {
+      const lengthMeters = Number(rollForm.lengthMeters) || 0;
+      const remainingMeters = Math.max(0, Math.min(lengthMeters, Number(rollForm.remainingMeters) || 0));
+      try {
+        await updateResource('raw-materials', editingRollId, {
+          fabricName: rollForm.fabricName || 'Kain',
+          color: rollForm.color || '-',
+          lengthMeters,
+          remainingMeters,
+          rackLocation: rollForm.rackLocation || 'RAK-A1',
+          status: remainingMeters <= 0 ? 'Depleted' : rollForm.status || 'Available',
+          timestamp: new Date().toISOString()
+        });
+        setIsFabricModalOpen(false);
+        setEditingRollId(null);
+        loadData();
+      } catch (err: any) {
+        alert(err?.message || 'Gagal menyimpan perubahan roll kain.');
+      }
+      return;
+    }
+
     const newRoll: FabricRoll = {
       id: generateId('LOT'),
       fabricName: rollForm.fabricName || 'Kain',
@@ -460,8 +422,8 @@ export const RawMaterialModule: React.FC = () => {
       await createResource('raw-materials', newRoll);
       setIsFabricModalOpen(false);
       loadData();
-    } catch (err) {
-      alert('Gagal menyimpan roll kain.');
+    } catch (err: any) {
+      alert(err?.message || 'Gagal menyimpan roll kain.');
     }
   };
 
@@ -474,7 +436,7 @@ export const RawMaterialModule: React.FC = () => {
       'Stok Sekarang': i.stock,
       'Satuan': i.unit,
       'Stok Minimum': i.minStock,
-      'Status Stok': isOutOfStock(i) ? 'Stok Habis' : (isLowStock(i) ? 'Stok Menipis' : 'Aman'),
+      'Status Stok': stockCondition(i).label,
       'Lokasi Rak': i.location || '-',
       'Harga Satuan': i.price || 0,
       'Pemasok': i.supplier || '-',
@@ -756,12 +718,12 @@ export const RawMaterialModule: React.FC = () => {
                 <TableRow>
                   <TableHead className="cell-sticky-start">ID</TableHead>
                   <TableHead>Aksesoris</TableHead>
-                  <TableHead className="hidden md:table-cell">Kategori</TableHead>
-                  <TableHead className="hidden lg:table-cell">Lokasi Rak</TableHead>
-                  <TableHead className="text-right">Stok Fisik</TableHead>
-                  <TableHead className="hidden sm:table-cell text-right">Min. Stok</TableHead>
+                  <TableHead className="hidden xl:table-cell">Kategori</TableHead>
+                  <TableHead className="hidden 2xl:table-cell">Lokasi Rak</TableHead>
+                  <TableHead className="hidden sm:table-cell text-right tabular-nums">Stok Fisik</TableHead>
+                  <TableHead className="hidden sm:table-cell text-right tabular-nums">Min. Stok</TableHead>
+                  <TableHead className="hidden lg:table-cell">Opname Terakhir</TableHead>
                   <TableHead className="text-center">Status Stok</TableHead>
-                  <TableHead className="hidden xl:table-cell">Opname Terakhir</TableHead>
                   <TableHead className="cell-sticky-end text-right">Aksi</TableHead>
                 </TableRow>
               </TableHeader>
@@ -779,72 +741,70 @@ export const RawMaterialModule: React.FC = () => {
                   filteredStockItems.map(item => {
                     const low = isLowStock(item);
                     const empty = isOutOfStock(item);
+                    const condition = stockCondition(item);
                     return (
-                      <TableRow key={item.id} className={empty ? 'bg-rose-50/60' : (low ? 'bg-amber-50/40' : undefined)}>
-                        <TableCell className="cell-sticky-start whitespace-nowrap font-mono font-bold text-slate-900">
+                      // Opaque tints: the sticky ID and Aksi cells inherit the row background.
+                      <TableRow key={item.id} className={empty ? 'bg-rose-50' : (low ? 'bg-amber-50' : undefined)}>
+                        <TableCell className="cell-sticky-start font-mono font-bold text-slate-900">
                           {item.id}
                         </TableCell>
 
                         <TableCell>
-                          <div className="font-semibold text-slate-900 break-words">{item.name}</div>
-                          <div className="mt-1.5 sm:hidden">
-                            {empty ? (
-                              <Badge variant="rose">Stok Habis</Badge>
-                            ) : low ? (
-                              <Badge variant="amber">Stok Menipis</Badge>
-                            ) : (
-                              <Badge variant="emerald">Stok Aman</Badge>
-                            )}
-                          </div>
-                        </TableCell>
-
-                        <TableCell className="hidden md:table-cell text-xs font-medium text-slate-700">
-                          <span className="px-2 py-0.5 bg-slate-100 rounded-md">
-                            {item.category || '-'}
+                          <span className="block max-w-[160px] truncate font-semibold text-slate-900" title={item.name}>
+                            {item.name}
                           </span>
                         </TableCell>
 
-                        <TableCell className="hidden lg:table-cell text-xs font-mono text-slate-600">
-                          {item.location || '-'}
+                        <TableCell className="hidden xl:table-cell">
+                          {item.category ? <Badge variant="idle" size="sm">{item.category}</Badge> : '—'}
                         </TableCell>
 
-                        <TableCell className="text-right whitespace-nowrap">
-                          <span className={`font-bold text-sm ${empty ? 'text-brand-red' : (low ? 'text-amber-700' : 'text-slate-900')}`}>
-                            {formatQty(item.stock)} {item.unit}
-                          </span>
+                        <TableCell className="hidden 2xl:table-cell font-mono text-slate-600">
+                          {item.location || '—'}
                         </TableCell>
 
-                        <TableCell className="hidden sm:table-cell text-right whitespace-nowrap text-xs text-slate-600">
+                        <TableCell className={`hidden sm:table-cell text-right tabular-nums font-bold ${empty ? 'text-brand-red' : (low ? 'text-amber-700' : 'text-slate-900')}`}>
+                          {formatQty(item.stock)} {item.unit}
+                        </TableCell>
+
+                        <TableCell className="hidden sm:table-cell text-right tabular-nums text-slate-600">
                           {formatQty(item.minStock)} {item.unit}
                         </TableCell>
 
-                        <TableCell className="text-center whitespace-nowrap">
-                          {empty ? (
-                            <Badge variant="rose">Stok Habis (0)</Badge>
-                          ) : low ? (
-                            <Badge variant="amber">Stok Menipis</Badge>
-                          ) : (
-                            <Badge variant="emerald">Aman</Badge>
-                          )}
+                        <TableCell className="hidden lg:table-cell text-slate-500">
+                          {item.lastOpnameDate ? formatDate(item.lastOpnameDate) : 'Belum pernah'}
                         </TableCell>
 
-                        <TableCell className="hidden xl:table-cell whitespace-nowrap text-xs text-slate-500">
-                          {item.lastOpnameDate ? formatDate(item.lastOpnameDate) : 'Belum pernah'}
+                        <TableCell className="text-center">
+                          <Badge variant={condition.variant} size="sm" solid>{condition.label}</Badge>
                         </TableCell>
 
                         <TableCell className="cell-sticky-end text-right">
                           <TableRowActions>
-                            <Button
-                              variant="outline"
-                              size="sm"
+                            <RowActionButton
+                              label="Opname"
+                              icon={ClipboardCheck}
+                              display="labeled"
+                              tone="primary"
                               onClick={() => handleOpenOpname(item)}
-                              aria-label={`Stock Opname ${item.name}`}
+                              ariaLabel={`Stock Opname ${item.name}`}
                               title="Lakukan Stock Opname Fisik"
-                              className="h-8 min-w-8 px-2.5 text-xs text-teal-700 hover:bg-teal-50 border-teal-300"
-                            >
-                              <ClipboardCheck size={14} aria-hidden="true" />
-                              <span className="hidden sm:inline">Opname</span>
-                            </Button>
+                            />
+                            <RowActionButton
+                              label="Ubah"
+                              icon={Pencil}
+                              onClick={() => handleOpenEdit(item)}
+                              ariaLabel={`Ubah data ${item.name}`}
+                              title="Ubah data bahan"
+                            />
+                            <RowActionButton
+                              label="Hapus"
+                              icon={Trash2}
+                              tone="danger"
+                              onClick={() => handleDeleteItem(item.id, item.name)}
+                              ariaLabel={`Hapus ${item.name}`}
+                              title="Hapus bahan"
+                            />
                             <RowDetailButton label={item.name} onClick={() => setDetailStockId(item.id)} />
                           </TableRowActions>
                         </TableCell>
@@ -888,13 +848,13 @@ export const RawMaterialModule: React.FC = () => {
               <TableHeader>
                 <TableRow>
                   <TableHead className="cell-sticky-start">No. Opname</TableHead>
-                  <TableHead>Tanggal</TableHead>
                   <TableHead>Nama Aksesoris</TableHead>
-                  <TableHead className="text-right">Stok Sistem</TableHead>
-                  <TableHead className="text-right">Stok Fisik</TableHead>
-                  <TableHead className="text-center">Selisih</TableHead>
-                  <TableHead className="hidden md:table-cell">Alasan / Keterangan</TableHead>
-                  <TableHead className="hidden lg:table-cell">Auditor</TableHead>
+                  <TableHead className="hidden md:table-cell">Auditor</TableHead>
+                  <TableHead className="hidden xl:table-cell">Alasan / Keterangan</TableHead>
+                  <TableHead className="hidden sm:table-cell text-right tabular-nums">Stok Sistem</TableHead>
+                  <TableHead className="hidden sm:table-cell text-right tabular-nums">Stok Fisik</TableHead>
+                  <TableHead className="hidden sm:table-cell text-right tabular-nums">Selisih</TableHead>
+                  <TableHead className="hidden lg:table-cell">Tanggal</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -909,40 +869,44 @@ export const RawMaterialModule: React.FC = () => {
                   />
                 ) : (
                   filteredOpnames.map(op => {
-                    const isMinus = op.difference < 0;
-                    const isPlus = op.difference > 0;
-                    const isZero = op.difference === 0;
+                    const diff = Number(op.difference) || 0;
+                    const diffLabel = diff > 0 ? 'Lebih' : diff < 0 ? 'Kurang' : 'Sesuai';
                     return (
                       <TableRow key={op.id}>
-                        <TableCell className="cell-sticky-start whitespace-nowrap font-mono font-bold text-slate-900">
+                        <TableCell className="cell-sticky-start font-mono font-bold text-slate-900">
                           {op.id}
                         </TableCell>
-                        <TableCell className="whitespace-nowrap text-xs text-slate-600">
-                          {formatDate(op.opnameDate)}
+                        <TableCell>
+                          <span className="block max-w-[180px] truncate font-semibold text-slate-900" title={op.itemName}>
+                            {op.itemName}
+                          </span>
                         </TableCell>
-                        <TableCell className="font-semibold text-slate-900">
-                          {op.itemName}
+                        <TableCell className="hidden md:table-cell font-medium text-slate-600">
+                          <span className="block max-w-[180px] truncate" title={op.auditor || undefined}>
+                            {op.auditor || '—'}
+                          </span>
                         </TableCell>
-                        <TableCell className="text-right whitespace-nowrap text-slate-600 font-mono">
+                        <TableCell className="hidden xl:table-cell text-slate-700">
+                          <span className="block max-w-[180px] truncate" title={op.reason || undefined}>
+                            {op.reason || '—'}
+                          </span>
+                        </TableCell>
+                        <TableCell className="hidden sm:table-cell text-right tabular-nums text-slate-600">
                           {formatQty(op.systemStock)} {op.unit}
                         </TableCell>
-                        <TableCell className="text-right whitespace-nowrap font-bold text-slate-900 font-mono">
+                        <TableCell className="hidden sm:table-cell text-right tabular-nums font-bold text-slate-900">
                           {formatQty(op.physicalStock)} {op.unit}
                         </TableCell>
-                        <TableCell className="text-center whitespace-nowrap">
-                          {isZero ? (
-                            <Badge variant="emerald">Sesuai (0)</Badge>
-                          ) : isMinus ? (
-                            <Badge variant="rose">Kurang ({op.difference} {op.unit})</Badge>
-                          ) : (
-                            <Badge variant="blue">Lebih (+{op.difference} {op.unit})</Badge>
-                          )}
+                        <TableCell
+                          className={`hidden sm:table-cell text-right tabular-nums font-bold ${
+                            diff < 0 ? 'text-status-critical' : diff > 0 ? 'text-status-done' : 'text-slate-500'
+                          }`}
+                          title={diffLabel}
+                        >
+                          {diff > 0 ? '+' : diff < 0 ? '−' : ''}{formatQty(Math.abs(diff))} {op.unit}
                         </TableCell>
-                        <TableCell className="hidden md:table-cell text-xs text-slate-700">
-                          {op.reason || '-'}
-                        </TableCell>
-                        <TableCell className="hidden lg:table-cell text-xs text-slate-600 font-medium">
-                          {op.auditor}
+                        <TableCell className="hidden lg:table-cell text-slate-600">
+                          {formatDate(op.opnameDate)}
                         </TableCell>
                       </TableRow>
                     );
@@ -970,7 +934,7 @@ export const RawMaterialModule: React.FC = () => {
               />
             </div>
 
-            <Button size="sm" onClick={() => setIsFabricModalOpen(true)}>
+            <Button size="sm" onClick={handleOpenAddRoll}>
               <Plus size={16} aria-hidden="true" /> Tambah Lot Kain
             </Button>
           </Card>
@@ -980,11 +944,11 @@ export const RawMaterialModule: React.FC = () => {
               <TableHeader>
                 <TableRow>
                   <TableHead className="cell-sticky-start">ID Lot</TableHead>
-                  <TableHead>No. Roll</TableHead>
+                  <TableHead className="hidden xl:table-cell">No. Roll</TableHead>
                   <TableHead className="hidden md:table-cell">Jenis Kain</TableHead>
                   <TableHead className="hidden md:table-cell">Warna</TableHead>
-                  <TableHead className="text-right">Sisa (m)</TableHead>
-                  <TableHead className="hidden md:table-cell text-right">Total (m)</TableHead>
+                  <TableHead className="hidden sm:table-cell text-right tabular-nums">Sisa (m)</TableHead>
+                  <TableHead className="hidden sm:table-cell text-right tabular-nums">Total (m)</TableHead>
                   <TableHead className="text-center">Status</TableHead>
                   <TableHead className="cell-sticky-end text-right">Aksi</TableHead>
                 </TableRow>
@@ -998,33 +962,49 @@ export const RawMaterialModule: React.FC = () => {
                     icon={<Layers size={20} />}
                     title="Belum ada data lot kain proyek"
                     description="Kain yang masuk dari pembelian proyek dapat dicatat di sini."
+                    action={
+                      <Button size="sm" onClick={handleOpenAddRoll}>
+                        <Plus size={16} aria-hidden="true" /> Tambah Lot Kain
+                      </Button>
+                    }
                   />
                 ) : (
                   filteredRolls.map(roll => (
                     <TableRow key={roll.id}>
-                      <TableCell className="cell-sticky-start whitespace-nowrap font-mono font-bold text-slate-900">
+                      <TableCell className="cell-sticky-start font-mono font-bold text-slate-900">
                         {roll.id}
                       </TableCell>
-                      <TableCell className="whitespace-nowrap font-mono text-slate-600">
+                      <TableCell className="hidden xl:table-cell font-mono text-slate-600">
                         Roll {roll.rollNumber}
                       </TableCell>
                       <TableCell className="hidden md:table-cell font-semibold text-slate-900">
-                        {roll.fabricName}
+                        <span className="block max-w-[180px] truncate" title={roll.fabricName}>
+                          {roll.fabricName}
+                        </span>
                       </TableCell>
                       <TableCell className="hidden md:table-cell text-slate-700">
-                        {roll.color}
+                        <span className="block max-w-[140px] truncate" title={roll.color}>
+                          {roll.color}
+                        </span>
                       </TableCell>
-                      <TableCell className="text-right font-bold text-slate-900 whitespace-nowrap">
-                        {roll.remainingMeters} m
+                      <TableCell className="hidden sm:table-cell text-right tabular-nums font-bold text-slate-900">
+                        {roll.remainingMeters}
                       </TableCell>
-                      <TableCell className="hidden md:table-cell text-right whitespace-nowrap text-slate-600">
-                        {roll.lengthMeters} m
+                      <TableCell className="hidden sm:table-cell text-right tabular-nums text-slate-600">
+                        {roll.lengthMeters}
                       </TableCell>
-                      <TableCell className="text-center whitespace-nowrap">
-                        <StatusBadge status={roll.status} />
+                      <TableCell className="text-center">
+                        <StatusBadge status={roll.status} size="sm" solid />
                       </TableCell>
                       <TableCell className="cell-sticky-end text-right">
                         <TableRowActions>
+                          <RowActionButton
+                            label="Ubah"
+                            icon={Pencil}
+                            onClick={() => handleOpenEditRoll(roll)}
+                            ariaLabel={`Ubah sisa dan status lot ${roll.id}`}
+                            title="Ubah sisa meter dan status roll"
+                          />
                           <RowDetailButton label={roll.id} onClick={() => setDetailRollId(roll.id)} />
                         </TableRowActions>
                       </TableCell>
@@ -1045,13 +1025,9 @@ export const RawMaterialModule: React.FC = () => {
         subtitle={detailStock && <span className="font-mono">{detailStock.id}</span>}
         status={
           detailStock && (
-            isOutOfStock(detailStock) ? (
-              <Badge variant="rose">Stok Habis (0)</Badge>
-            ) : detailStockLow ? (
-              <Badge variant="amber">Stok Menipis</Badge>
-            ) : (
-              <Badge variant="emerald">Stok Aman</Badge>
-            )
+            <Badge variant={stockCondition(detailStock).variant} size="sm" solid>
+              {stockCondition(detailStock).label}
+            </Badge>
           )
         }
         footer={
@@ -1153,6 +1129,20 @@ export const RawMaterialModule: React.FC = () => {
         title={detailRoll?.fabricName}
         subtitle={detailRoll && <span className="font-mono">{detailRoll.id} · Roll {detailRoll.rollNumber}</span>}
         status={detailRoll && <StatusBadge status={detailRoll.status} />}
+        footer={
+          detailRoll && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                setDetailRollId(null);
+                handleOpenEditRoll(detailRoll);
+              }}
+            >
+              <Pencil size={16} aria-hidden="true" /> Ubah Sisa / Status
+            </Button>
+          )
+        }
       >
         {detailRoll && (
           <>
@@ -1478,13 +1468,49 @@ export const RawMaterialModule: React.FC = () => {
         </form>
       </Modal>
 
-      {/* MODAL: ADD FABRIC ROLL */}
+      {/* MODAL: ADD / EDIT FABRIC ROLL */}
       <Modal
         isOpen={isFabricModalOpen}
-        onClose={() => setIsFabricModalOpen(false)}
-        title="Tambah Lot Roll Kain Proyek"
+        onClose={() => {
+          setIsFabricModalOpen(false);
+          setEditingRollId(null);
+        }}
+        title={editingRollId ? `Ubah Lot Kain ${editingRollId}` : 'Tambah Lot Roll Kain Proyek'}
       >
-        <form onSubmit={handleCreateRoll} className="space-y-4">
+        <form onSubmit={handleSaveRoll} className="space-y-4">
+          {editingRollId && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 rounded-xl border border-teal-200 bg-teal-50/60 p-3">
+              <div>
+                <label htmlFor="rm-remaining" className={labelClass}>Sisa Kain (m)</label>
+                <input
+                  id="rm-remaining"
+                  type="number"
+                  min={0}
+                  max={Number(rollForm.lengthMeters) || undefined}
+                  step="any"
+                  required
+                  value={rollForm.remainingMeters ?? ''}
+                  onChange={(e) => setRollForm({ ...rollForm, remainingMeters: Number(e.target.value) })}
+                  className={`${fieldClass} font-semibold text-slate-900`}
+                />
+                <p className="text-xs text-slate-500 mt-1">Dari panjang awal {rollForm.lengthMeters || 0} m. Sisa 0 m otomatis menjadi Habis.</p>
+              </div>
+              <div>
+                <label htmlFor="rm-status" className={labelClass}>Status Roll</label>
+                <select
+                  id="rm-status"
+                  value={rollForm.status || 'Available'}
+                  onChange={(e) => setRollForm({ ...rollForm, status: e.target.value as FabricRoll['status'] })}
+                  className={fieldClass}
+                >
+                  {ROLL_STATUSES.map(s => (
+                    <option key={s} value={s}>{s}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+          )}
+
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <label htmlFor="rm-fabric" className={labelClass}>Nama Kain</label>
@@ -1537,12 +1563,15 @@ export const RawMaterialModule: React.FC = () => {
             <Button
               type="button"
               variant="outline"
-              onClick={() => setIsFabricModalOpen(false)}
+              onClick={() => {
+                setIsFabricModalOpen(false);
+                setEditingRollId(null);
+              }}
             >
               Batal
             </Button>
             <Button type="submit">
-              Simpan Lot Kain
+              {editingRollId ? 'Simpan Perubahan' : 'Simpan Lot Kain'}
             </Button>
           </div>
         </form>

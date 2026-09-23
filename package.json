@@ -11,6 +11,7 @@
     "dev:server": "tsx watch server/index.ts",
     "dev": "tsx server/index.ts",
     "seed:test": "node server/scripts/seed-test-data.mjs",
+    "backup": "node server/scripts/backup.mjs",
     "dev:test": "node server/scripts/dev-test.mjs",
     "build": "vite build",
     "build:server": "esbuild server/index.ts --bundle --platform=node --format=esm --target=node18 --packages=external --outfile=dist-server/server.js",

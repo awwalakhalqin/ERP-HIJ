@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Factory, Search, Plus, Download, CheckCircle2, AlertTriangle } from 'lucide-react';
 import { SewingDailyLog, SPK, Operator } from '../../types';
-import { fetchResource, createResource, updateResource } from '../../services/api';
+import { fetchResource, createResource } from '../../services/api';
 import { formatDate, exportTableToExcel, generateId, cn } from '../../lib/utils';
 import { Badge } from '../ui/Badge';
 import { Modal } from '../ui/Modal';
@@ -56,14 +56,14 @@ export const SewingModule: React.FC = () => {
     date: new Date().toISOString().split('T')[0],
     lineId: 'Line 1 (Kaos/Polo)',
     spkId: '',
-    operatorId: 'OPR-001',
-    operatorName: 'Siti Aminah',
+    operatorId: '',
+    operatorName: '',
     operationType: 'Jahit Utama',
     outputPieces: 35,
     defectPieces: 1,
     spiCompliant: true,
     seamStrengthOk: true,
-    notes: 'Kerapihan jahitan dan benang sesuai standar SOP-09.'
+    notes: ''
   });
 
   const loadData = async () => {
@@ -74,36 +74,8 @@ export const SewingModule: React.FC = () => {
         fetchResource<SPK>('spk_produksi'),
         fetchResource<Operator>('operators')
       ]);
-      setLogs(logRes.length > 0 ? logRes : [
-        {
-          id: 'SEW-001',
-          date: '2026-09-02',
-          lineId: 'Line 1 (Kaos)',
-          spkId: 'SPK-ORD-002',
-          operatorId: 'OPR-001',
-          operatorName: 'Siti Aminah',
-          operationType: 'Jahit Utama',
-          outputPieces: 37,
-          defectPieces: 0,
-          spiCompliant: true,
-          seamStrengthOk: true,
-          notes: 'Standar SPI 10-12 jarum ganda lulus uji tarik.'
-        },
-        {
-          id: 'SEW-002',
-          date: '2026-09-03',
-          lineId: 'Line 2 (Jaket)',
-          spkId: 'SPK-ORD-001',
-          operatorId: 'OPR-002',
-          operatorName: 'Ahmad Fauzi',
-          operationType: 'Obras',
-          outputPieces: 40,
-          defectPieces: 1,
-          spiCompliant: true,
-          seamStrengthOk: true,
-          notes: 'Obras 4 benang tepi rapi.'
-        }
-      ]);
+      // Show what is really there; an empty table is the honest state.
+      setLogs(logRes);
       setSpks(spkRes);
       setOperators(oprRes);
       if (spkRes.length > 0 && !formData.spkId) {
@@ -166,7 +138,8 @@ export const SewingModule: React.FC = () => {
       date: formData.date || new Date().toISOString().split('T')[0],
       lineId: formData.lineId || 'Line 1',
       spkId: formData.spkId || 'SPK-GEN',
-      operatorId: formData.operatorId || 'OPR-001',
+      // A typed-in name has no registered operator id; never attribute it to a sample id.
+      operatorId: formData.operatorId || '',
       operatorName: formData.operatorName || 'Penjahit',
       operationType: formData.operationType as any || 'Jahit Utama',
       outputPieces: Number(formData.outputPieces) || 1,
@@ -177,18 +150,13 @@ export const SewingModule: React.FC = () => {
     };
 
     try {
+      // The server recomputes the SPK's sewing counter from every log on this
+      // write, so no counter is read back and re-sent from here.
       await createResource('sewing-logs', log);
-      // Auto update SPK sewing progress
-      const spk = spks.find(s => s.id === log.spkId);
-      if (spk) {
-        await updateResource('spk_produksi', spk.id, {
-          sewing: (spk.sewing || 0) + log.outputPieces
-        });
-      }
       setIsModalOpen(false);
       loadData();
-    } catch (err) {
-      setFormError('Output jahit gagal disimpan. Periksa koneksi ke server, lalu simpan lagi.');
+    } catch (err: any) {
+      setFormError(err?.message || 'Output jahit gagal disimpan. Periksa koneksi ke server, lalu simpan lagi.');
     } finally {
       setSaving(false);
     }
@@ -249,12 +217,12 @@ export const SewingModule: React.FC = () => {
           <TableHeader>
             <TableRow>
               <TableHead className="cell-sticky-start">No. Catatan</TableHead>
-              <TableHead>Operator</TableHead>
+              <TableHead className="hidden md:table-cell">Operator</TableHead>
               <TableHead className="hidden md:table-cell">Lini</TableHead>
               <TableHead className="hidden md:table-cell">SPK</TableHead>
               <TableHead className="hidden xl:table-cell">Pekerjaan</TableHead>
-              <TableHead className="hidden sm:table-cell text-right">Output</TableHead>
-              <TableHead className="hidden sm:table-cell text-right">Cacat</TableHead>
+              <TableHead className="hidden sm:table-cell text-right tabular-nums">Output</TableHead>
+              <TableHead className="hidden sm:table-cell text-right tabular-nums">Cacat</TableHead>
               <TableHead className="hidden lg:table-cell">Tanggal</TableHead>
               <TableHead className="text-center">Mutu</TableHead>
               <TableHead className="cell-sticky-end text-right">Aksi</TableHead>
@@ -269,35 +237,50 @@ export const SewingModule: React.FC = () => {
                 icon={<Factory size={20} />}
                 title={searchQuery ? 'Tidak ada output jahit yang cocok' : 'Belum ada output jahit'}
                 description={searchQuery ? 'Coba kata kunci lain.' : 'Catat output jahit setiap penjahit di akhir shift.'}
+                action={
+                  !searchQuery && (
+                    <Button size="sm" onClick={handleOpenModal}>
+                      <Plus size={16} aria-hidden="true" /> Catat Output Jahit
+                    </Button>
+                  )
+                }
               />
             ) : (
               filteredLogs.map(log => (
                 <TableRow key={log.id}>
-                  <TableCell className="cell-sticky-start whitespace-nowrap font-mono font-bold text-slate-900">
+                  <TableCell className="cell-sticky-start font-mono font-bold text-slate-900">
                     {log.id}
                   </TableCell>
-                  <TableCell className="font-semibold text-slate-900 break-words">{log.operatorName}</TableCell>
-                  <TableCell className="hidden md:table-cell whitespace-nowrap">{log.lineId}</TableCell>
-                  <TableCell className="hidden md:table-cell whitespace-nowrap font-mono font-semibold text-slate-900">
+                  <TableCell className="hidden md:table-cell">
+                    <span className="block max-w-[180px] truncate font-semibold text-slate-900" title={log.operatorName}>
+                      {log.operatorName}
+                    </span>
+                  </TableCell>
+                  <TableCell className="hidden md:table-cell">
+                    <span className="block max-w-[160px] truncate" title={log.lineId}>
+                      {log.lineId}
+                    </span>
+                  </TableCell>
+                  <TableCell className="hidden md:table-cell font-mono font-semibold text-slate-900">
                     {log.spkId}
                   </TableCell>
-                  <TableCell className="hidden xl:table-cell whitespace-nowrap">
+                  <TableCell className="hidden xl:table-cell">
                     {OPERATION_LABELS[log.operationType] ?? log.operationType}
                   </TableCell>
-                  <TableCell className="hidden sm:table-cell text-right whitespace-nowrap font-bold text-slate-900">
+                  <TableCell className="hidden sm:table-cell text-right tabular-nums font-bold text-slate-900">
                     {log.outputPieces} Pcs
                   </TableCell>
-                  <TableCell className="hidden sm:table-cell text-right whitespace-nowrap">
+                  <TableCell className="hidden sm:table-cell text-right tabular-nums">
                     <span className={log.defectPieces > 0 ? 'font-semibold text-brand-red' : 'text-slate-500'}>
                       {log.defectPieces} Pcs
                     </span>
                   </TableCell>
-                  <TableCell className="hidden lg:table-cell whitespace-nowrap">{formatDate(log.date)}</TableCell>
-                  <TableCell className="text-center whitespace-nowrap">
+                  <TableCell className="hidden lg:table-cell">{formatDate(log.date)}</TableCell>
+                  <TableCell className="text-center">
                     {isQualityOk(log) ? (
-                      <Badge variant="emerald">Sesuai</Badge>
+                      <Badge variant="done" size="sm" solid>Sesuai</Badge>
                     ) : (
-                      <Badge variant="rose">Perlu cek</Badge>
+                      <Badge variant="critical" size="sm" solid>Perlu cek</Badge>
                     )}
                   </TableCell>
                   <TableCell className="cell-sticky-end text-right">

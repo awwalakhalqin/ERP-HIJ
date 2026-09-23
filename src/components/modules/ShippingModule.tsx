@@ -7,10 +7,12 @@ import { StatusBadge } from '../ui/Badge';
 import { Modal } from '../ui/Modal';
 import { exportElementToPdf } from '../../services/pdfGenerator';
 import { Card } from '../ui/Card';
+import { COMPANY_CONTACT } from '../../config/contact';
 import { Button } from '../ui/Button';
 import { Input } from '../ui/Input';
+import { FormError } from '../ui/Field';
 import { PageHeader } from '../ui/PageHeader';
-import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell, TableRowActions, TableEmptyRow, TableSkeletonRows } from '../ui/Table';
+import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell, TableRowActions, RowActionButton, TableEmptyRow, TableSkeletonRows } from '../ui/Table';
 import { DetailDrawer, DetailSection, DetailField, DetailStats, RowDetailButton } from '../ui/DetailDrawer';
 import { OrderFlowStepper } from '../ui/OrderFlowStepper';
 import { newestFirst } from '../../lib/ordering';
@@ -25,9 +27,12 @@ const NEXT_STEP: Partial<Record<Shipment['status'], { next: Shipment['status']; 
 
 export const ShippingModule: React.FC = () => {
   const [shipments, setShipments] = useState<Shipment[]>([]);
-  const [usingDemo, setUsingDemo] = useState(false);
   const [updatingId, setUpdatingId] = useState<string | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  // What the server said when a write was refused, shown where the action was taken.
+  const [formError, setFormError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
   const [orders, setOrders] = useState<Order[]>([]);
   const [qcReports, setQcReports] = useState<QCReport[]>([]);
   const [loading, setLoading] = useState(true);
@@ -45,11 +50,11 @@ export const ShippingModule: React.FC = () => {
     customerId: '',
     customerName: '',
     destinationAddress: '',
-    courier: 'J&T Cargo',
+    courier: '',
     trackingNumber: '',
     packageWeightKg: 8.5,
     koliCount: 1,
-    shippingCost: 75000,
+    shippingCost: 0,
     paidBy: 'Penerima (COD Ongkir)',
     status: 'Surat Jalan Dibuat'
   });
@@ -62,25 +67,8 @@ export const ShippingModule: React.FC = () => {
         fetchResource<Order>('orders'),
         fetchResource<QCReport>('qc-reports')
       ]);
-      setUsingDemo(shipRes.length === 0);
-      setShipments(shipRes.length > 0 ? shipRes : [
-        {
-          id: 'SJ-2026-001',
-          orderId: 'ORD-002',
-          customerId: 'CUST-002',
-          customerName: 'Ibu Ariyani',
-          destinationAddress: 'Jl. Merdeka No. 45, Jakarta Selatan',
-          courier: 'J&T Cargo',
-          trackingNumber: 'JT98127391823',
-          packageWeightKg: 8.2,
-          koliCount: 1,
-          shippingCost: 85000,
-          paidBy: 'Pengirim',
-          estimatedArrival: '2026-09-04',
-          status: 'Delivered',
-          timestamp: '2026-09-02T16:30:00Z'
-        }
-      ]);
+      // Show what is really there; an empty table is the honest state.
+      setShipments(shipRes);
       setOrders(orderRes);
       setQcReports(qcRes || []);
     } catch (err) {
@@ -104,6 +92,7 @@ export const ShippingModule: React.FC = () => {
     if (!step) return;
     try {
       setUpdatingId(s.id);
+      setActionError(null);
       const updated = await updateResource<Shipment & { draftInvoiceId?: string }>('shipments', s.id, { status: step.next });
       showToast(
         updated?.draftInvoiceId
@@ -111,8 +100,9 @@ export const ShippingModule: React.FC = () => {
           : `${s.id}: ${statusLabel(step.next)}.`
       );
       await loadData();
-    } catch (err) {
-      alert('Gagal memperbarui status pengiriman. Coba lagi.');
+    } catch (err: any) {
+      // The server explains why it refused (e.g. QC gate); relay that, not a generic line.
+      setActionError(err?.message || 'Gagal memperbarui status pengiriman. Coba lagi.');
     } finally {
       setUpdatingId(null);
     }
@@ -120,26 +110,28 @@ export const ShippingModule: React.FC = () => {
 
   const handleCreateShipment = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (saving) return;
     if (!formData.orderId) {
-      alert('Pilih pesanan terlebih dahulu.');
+      setFormError('Pilih pesanan terlebih dahulu.');
       return;
     }
 
-    // Gerbang Anti-Skip: Surat Jalan hanya boleh dibuat jika pesanan telah lolos QC ('Accept')
+    // Client pre-check of the QC gate (SOP-16). The server enforces the same
+    // rule and its message is shown if it still refuses.
     const orderQC = qcReports.filter(q => q.orderId === formData.orderId);
     const hasPassedQC = orderQC.some(q => q.status === 'Accept');
     if (!hasPassedQC) {
-      alert('Gerbang Anti-Skip: Pesanan belum lolos Quality Control (QC). Hanya pesanan dengan hasil QC "Accept" yang dapat dibuatkan Surat Jalan.');
+      setFormError('Pesanan belum lolos QC. Hanya pesanan dengan hasil QC "Accept" yang dapat dibuatkan Surat Jalan.');
       return;
     }
 
     const shipment: Shipment = {
       id: generateId('SJ'),
-      orderId: formData.orderId || 'ORD-GEN',
+      orderId: formData.orderId,
       customerId: formData.customerId || 'CUST-GEN',
       customerName: formData.customerName || 'Klien',
       destinationAddress: formData.destinationAddress || 'Alamat Tujuan',
-      courier: formData.courier || 'J&T Cargo',
+      courier: formData.courier || '-',
       trackingNumber: formData.trackingNumber || '',
       packageWeightKg: Number(formData.packageWeightKg) || 1,
       koliCount: Number(formData.koliCount) || 1,
@@ -150,15 +142,24 @@ export const ShippingModule: React.FC = () => {
     };
 
     try {
+      setSaving(true);
+      setFormError(null);
       const created = await createResource<Shipment & { draftInvoiceId?: string }>('shipments', shipment);
       setIsModalOpen(false);
       if (created?.draftInvoiceId) {
         showToast(`Draf faktur ${created.draftInvoiceId} dibuat untuk Keuangan.`);
       }
       loadData();
-    } catch (err) {
-      alert('Gagal membuat surat jalan. Coba lagi.');
+    } catch (err: any) {
+      setFormError(err?.message || 'Gagal membuat surat jalan. Coba lagi.');
+    } finally {
+      setSaving(false);
     }
+  };
+
+  const openCreateModal = () => {
+    setFormError(null);
+    setIsModalOpen(true);
   };
 
   const handleDownloadSuratJalan = async () => {
@@ -224,7 +225,7 @@ export const ShippingModule: React.FC = () => {
             >
               <Download size={16} aria-hidden="true" /> Unduh Excel
             </Button>
-            <Button size="sm" onClick={() => setIsModalOpen(true)}>
+            <Button size="sm" onClick={openCreateModal}>
               <Plus size={16} aria-hidden="true" /> Buat Surat Jalan
             </Button>
           </>
@@ -232,7 +233,7 @@ export const ShippingModule: React.FC = () => {
       />
 
       <Card className="p-4">
-        <div className="relative w-full sm:w-80">
+        <div className="relative w-full sm:w-96">
           <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" aria-hidden="true" />
           <Input
             type="search"
@@ -269,6 +270,17 @@ export const ShippingModule: React.FC = () => {
                 icon={<Truck size={20} />}
                 title={query ? 'Tidak ada pengiriman yang cocok' : 'Belum ada pengiriman'}
                 description={query ? 'Coba kata kunci lain.' : 'Buat surat jalan setelah pesanan lolos QC dan siap dikirim.'}
+                action={
+                  query ? (
+                    <Button variant="outline" size="sm" onClick={() => setSearchQuery('')}>
+                      Hapus Pencarian
+                    </Button>
+                  ) : (
+                    <Button size="sm" onClick={openCreateModal}>
+                      <Plus size={16} aria-hidden="true" /> Buat Surat Jalan
+                    </Button>
+                  )
+                }
               />
             ) : (
               filteredShipments.map(s => (
@@ -280,10 +292,14 @@ export const ShippingModule: React.FC = () => {
                     {s.orderId}
                   </TableCell>
                   <TableCell className="hidden md:table-cell font-medium text-slate-900">
-                    {s.customerName}
+                    <span className="block max-w-[180px] truncate" title={s.customerName}>
+                      {s.customerName}
+                    </span>
                   </TableCell>
-                  <TableCell className="hidden xl:table-cell max-w-[200px] truncate text-slate-500" title={s.destinationAddress}>
-                    {s.destinationAddress}
+                  <TableCell className="hidden xl:table-cell text-slate-500">
+                    <span className="block max-w-[180px] truncate" title={s.destinationAddress}>
+                      {s.destinationAddress}
+                    </span>
                   </TableCell>
                   <TableCell className="hidden xl:table-cell whitespace-nowrap font-medium text-slate-800">
                     {s.courier}
@@ -292,28 +308,25 @@ export const ShippingModule: React.FC = () => {
                     {s.trackingNumber ? (
                       trackingLink(
                         s.trackingNumber,
-                        'font-mono text-xs font-semibold text-teal-700 hover:underline inline-flex items-center gap-1'
+                        'font-mono text-sm font-semibold text-teal-700 hover:underline inline-flex items-center gap-1'
                       )
                     ) : (
                       '—'
                     )}
                   </TableCell>
                   <TableCell className="text-center whitespace-nowrap">
-                    <StatusBadge status={s.status} />
+                    <StatusBadge status={s.status} size="sm" solid />
                   </TableCell>
                   <TableCell className="cell-sticky-end text-right">
                     <TableRowActions>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
+                      <RowActionButton
+                        label="Cetak"
+                        icon={Printer}
+                        display="labeled"
                         onClick={() => openPrint(s)}
-                        aria-label={`Cetak surat jalan ${s.id}`}
-                        className="hidden sm:inline-flex h-8 min-w-8 gap-1.5 px-2.5 text-xs"
-                      >
-                        <Printer size={14} aria-hidden="true" />
-                        <span className="hidden sm:inline">Cetak</span>
-                      </Button>
+                        ariaLabel={`Cetak surat jalan ${s.id}`}
+                        title="Cetak surat jalan"
+                      />
                       <RowDetailButton label={s.id} onClick={() => setDetailId(s.id)} />
                     </TableRowActions>
                   </TableCell>
@@ -326,7 +339,10 @@ export const ShippingModule: React.FC = () => {
 
       <DetailDrawer
         isOpen={!!detailShipment}
-        onClose={() => setDetailId(null)}
+        onClose={() => {
+          setDetailId(null);
+          setActionError(null);
+        }}
         title={detailShipment?.customerName}
         subtitle={detailShipment && (
           <span className="font-mono">{detailShipment.id} · {formatDate(detailShipment.timestamp)}</span>
@@ -334,7 +350,7 @@ export const ShippingModule: React.FC = () => {
         status={detailShipment && <StatusBadge status={detailShipment.status} />}
         footer={detailShipment && (
           <>
-            {!usingDemo && detailStep && (
+            {detailStep && (
               <Button
                 type="button"
                 variant="outline"
@@ -355,6 +371,7 @@ export const ShippingModule: React.FC = () => {
           const linkedOrder = orders.find(o => o.id === detailShipment.orderId || o.po === detailShipment.orderId);
           return (
             <>
+              {actionError && <div className="mb-4"><FormError>{actionError}</FormError></div>}
               <OrderFlowStepper
                 currentStep={6}
                 needsSample={linkedOrder?.needsSample !== false}
@@ -418,6 +435,7 @@ export const ShippingModule: React.FC = () => {
 
           return (
             <form onSubmit={handleCreateShipment} className="space-y-5">
+              <FormError>{formError}</FormError>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <label htmlFor="ship-order" className={labelClass}>No. Pesanan</label>
@@ -426,6 +444,7 @@ export const ShippingModule: React.FC = () => {
                     value={formData.orderId}
                     onChange={(e) => {
                       const ord = orders.find(o => o.id === e.target.value);
+                      setFormError(null);
                       setFormData({
                         ...formData,
                         orderId: e.target.value,
@@ -549,8 +568,8 @@ export const ShippingModule: React.FC = () => {
                 <Button type="button" variant="outline" onClick={() => setIsModalOpen(false)}>
                   Batal
                 </Button>
-                <Button type="submit" disabled={!formData.orderId || !hasPassedQC}>
-                  Buat Surat Jalan
+                <Button type="submit" disabled={saving || !formData.orderId || !hasPassedQC}>
+                  {saving ? 'Menyimpan…' : 'Buat Surat Jalan'}
                 </Button>
               </div>
             </form>
@@ -575,7 +594,7 @@ export const ShippingModule: React.FC = () => {
                 <div>
                   <h2 className="text-xl font-black text-teal-800">PT HASIL INTI JUALAN (HIJ)</h2>
                   <p className="text-xs text-slate-500">Konveksi & Garmen</p>
-                  <p className="text-xs text-slate-500 mt-1">Telp: 0812-3456-7890 • apps.hasilintijualan.com</p>
+                  <p className="text-xs text-slate-500 mt-1">WA: {COMPANY_CONTACT.whatsappDisplay} • {COMPANY_CONTACT.website.replace('https://', '').replace('http://', '')}</p>
                 </div>
               </div>
               <div className="text-right">

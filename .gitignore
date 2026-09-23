@@ -24,6 +24,9 @@ server/data/*.json
 server/data-test/*.json
 uploads/
 
+# Salinan data dari `npm run backup` — berisi data pelanggan, jangan di-commit.
+backups/
+
 # Plaintext account passwords, handed out once per person and then deleted.
 KREDENSIAL-AWAL.md
 

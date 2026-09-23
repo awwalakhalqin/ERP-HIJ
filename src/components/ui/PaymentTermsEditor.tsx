@@ -4,7 +4,7 @@ import { PaymentTerm } from '../../types';
 import { formatCurrency } from '../../lib/utils';
 import { Button } from './Button';
 import { Input } from './Input';
-import { FieldLabel, FieldHint, FieldError, Select } from './Field';
+import { FieldLabel, FieldHint, FieldError } from './Field';
 
 /*
  * Installments are agreed with the customer on the quotation and then printed
@@ -12,18 +12,9 @@ import { FieldLabel, FieldHint, FieldError, Select } from './Field';
  * single "DP 50%" field.
  */
 
-export const DUE_RULES = [
-  'Saat deal penawaran',
-  'Sebelum produksi dimulai',
-  'Setelah sampel disetujui',
-  'Setelah produksi selesai',
-  'Sebelum pengiriman',
-  'Setelah barang diterima'
-];
-
 export const DEFAULT_PAYMENT_SCHEDULE: Omit<PaymentTerm, 'amount'>[] = [
-  { id: 'term-dp', label: 'DP', percentage: 50, dueRule: 'Saat deal penawaran' },
-  { id: 'term-final', label: 'Pelunasan', percentage: 50, dueRule: 'Sebelum pengiriman' }
+  { id: 'term-dp', label: 'DP', percentage: 50 },
+  { id: 'term-final', label: 'Pelunasan', percentage: 50 }
 ];
 
 /** Recalculate each installment's amount from the current total. */
@@ -76,8 +67,7 @@ export const PaymentTermsEditor: React.FC<PaymentTermsEditorProps> = ({
         id: `term-${Date.now()}`,
         label: `Termin ${terms.length + 1}`,
         percentage: remaining,
-        amount: 0,
-        dueRule: DUE_RULES[1]
+        amount: 0
       }
     ];
     onChange(withAmounts(next, total));
@@ -93,7 +83,7 @@ export const PaymentTermsEditor: React.FC<PaymentTermsEditorProps> = ({
         {terms.map((term, index) => (
           <div
             key={term.id}
-            className="grid grid-cols-1 gap-3 rounded-xl border border-border bg-muted/30 p-3 sm:grid-cols-[1fr_92px_1fr_auto]"
+            className="grid grid-cols-1 gap-3 rounded-xl border border-border bg-muted/30 p-3 sm:grid-cols-[1fr_92px_auto]"
           >
             <div>
               <FieldLabel htmlFor={`${idPrefix}-label-${index}`} className="text-xs">
@@ -122,21 +112,6 @@ export const PaymentTermsEditor: React.FC<PaymentTermsEditorProps> = ({
                 onChange={e => update(index, { percentage: Number(e.target.value) })}
                 className="text-right font-semibold tabular-nums"
               />
-            </div>
-
-            <div>
-              <FieldLabel htmlFor={`${idPrefix}-due-${index}`} className="text-xs">
-                Jatuh tempo
-              </FieldLabel>
-              <Select
-                id={`${idPrefix}-due-${index}`}
-                value={term.dueRule || DUE_RULES[0]}
-                onChange={e => update(index, { dueRule: e.target.value })}
-              >
-                {DUE_RULES.map(rule => (
-                  <option key={rule} value={rule}>{rule}</option>
-                ))}
-              </Select>
             </div>
 
             <div className="flex items-end justify-between gap-2 sm:flex-col sm:items-end">
