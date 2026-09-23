@@ -948,6 +948,8 @@ export const OrdersModule: React.FC = () => {
   };
 
   // Filter & Sort Orders
+  const spkOrderIds = useMemo(() => new Set(spks.map(s => s.orderId)), [spks]);
+
   const filteredOrders = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     const rows = orders.filter(item => {
@@ -960,10 +962,12 @@ export const OrdersModule: React.FC = () => {
         (item.material || '').toLowerCase().includes(q) ||
         (item.picName || '').toLowerCase().includes(q);
 
+      // A queued SPK is already on the floor's list, so it counts as production here.
+      const hasSpk = spkOrderIds.has(item.id);
       const matchStage =
         orderStageFilter === 'ALL' ? true :
-        orderStageFilter === 'WAITING' ? (item.status === 'Order' || item.status === 'Sample') :
-        orderStageFilter === 'IN_PRODUCTION' ? item.status === 'In Production' :
+        orderStageFilter === 'WAITING' ? ((item.status === 'Order' || item.status === 'Sample') && !hasSpk) :
+        orderStageFilter === 'IN_PRODUCTION' ? (item.status === 'In Production' || ((item.status === 'Order' || item.status === 'Sample') && hasSpk)) :
         orderStageFilter === 'QC' ? item.status === 'QC' :
         orderStageFilter === 'COMPLETED' ? (item.status === 'Shipping' || item.status === 'Completed') : true;
 
@@ -983,12 +987,13 @@ export const OrdersModule: React.FC = () => {
       if (key === 'status') return item.status;
       return (item as any)[key];
     });
-  }, [orders, searchQuery, orderStageFilter, orderSort]);
+  }, [orders, spkOrderIds, searchQuery, orderStageFilter, orderSort]);
 
   // Order Counts
   const orderCounts = useMemo(() => {
-    const waiting = orders.filter(o => o.status === 'Order' || o.status === 'Sample').length;
-    const inProd = orders.filter(o => o.status === 'In Production').length;
+    const pending = (o: Order) => o.status === 'Order' || o.status === 'Sample';
+    const waiting = orders.filter(o => pending(o) && !spkOrderIds.has(o.id)).length;
+    const inProd = orders.filter(o => o.status === 'In Production' || (pending(o) && spkOrderIds.has(o.id))).length;
     const qc = orders.filter(o => o.status === 'QC').length;
     const completed = orders.filter(o => o.status === 'Shipping' || o.status === 'Completed').length;
     return { all: orders.length, waiting, inProd, qc, completed };

@@ -260,8 +260,8 @@ export function getOrderReadiness(order: Order, data: ReadinessData): OrderReadi
 
 /**
  * Orders with no SPK yet, still before production ('Order', or 'Sample' while
- * the sample is being made). Issuing the SPK moves an order to 'In Production',
- * so older orders already in production without an SPK record are not listed.
+ * the sample is being made) and no SPK yet. An issued SPK keeps the order at
+ * 'Order' until the floor records work, so the SPK itself is what excludes it.
  *
  * 'Sample' is included because nothing reliably flips it to 'Order' — linking an
  * already-approved sample did not — and the order then vanished from PPIC while

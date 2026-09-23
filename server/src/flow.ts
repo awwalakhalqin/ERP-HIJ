@@ -135,7 +135,9 @@ function derivedOrderStatus(order: any): string | null {
     readTable('qc_reports').some((q: any) => q.orderId === order.id && q.status === 'Accept');
   if (qcAccepted) return 'QC';
 
-  if (spks.length > 0) return 'In Production';
+  // An SPK in the queue is a plan, not production: the order reads
+  // "Diproduksi" only once the floor has recorded work on it.
+  if (spks.some((s: any) => s.status === 'In Progress' || s.status === 'Finishing')) return 'In Production';
   return null;
 }
 
@@ -150,6 +152,18 @@ export function syncOrderStatus(orderId: string | undefined): any | null {
   const order = findById('orders', orderId);
   if (!order || order.status === 'Cancelled') return null;
   const next = derivedOrderStatus(order);
+  /*
+   * The one step back. "In Production" used to be set the moment an SPK was
+   * issued, so an order read Diproduksi beside an SPK still "Antre". An order
+   * whose SPKs are all still queued returns to "Order"; nothing else is undone.
+   */
+  if (!next && order.status === 'In Production') {
+    const spks = readTable('spk_produksi').filter((s: any) => s.orderId === order.id);
+    if (spks.length > 0 && spks.every((s: any) => s.status === 'Queued')) {
+      return updateItem('orders', order.id, { status: 'Order' });
+    }
+    return null;
+  }
   if (!next) return null;
   const currentRank = STATUS_RANK[order.status] ?? -1;
   if ((STATUS_RANK[next] ?? -1) <= currentRank) return null;
