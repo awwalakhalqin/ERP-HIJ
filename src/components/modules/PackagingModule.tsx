@@ -30,6 +30,8 @@ import {
   TableRowActions,
   TableEmptyRow,
   TableSkeletonRows,
+  useTablePage,
+  TablePagination,
   type SortState
 } from '../ui/Table';
 import {
@@ -213,6 +215,8 @@ export const PackagingModule: React.FC = () => {
   // Every sortable column maps straight onto a stored field.
   const sortedSlips = sortRows(filteredSlips, sort, (slip, key) => (slip as any)[key]);
 
+  const { pageRows: pagedSlips, pagination } = useTablePage(sortedSlips);
+
   const isSearching = searchQuery.trim() !== '';
 
   // Headline numbers echoed in the modal footer while the staff types.
@@ -336,7 +340,7 @@ export const PackagingModule: React.FC = () => {
                 }
               />
             ) : (
-              sortedSlips.map(slip => (
+              pagedSlips.map(slip => (
                 <TableRow key={slip.id}>
                   <TableCell className="cell-sticky-start font-mono font-bold text-slate-900">
                     {slip.id}
@@ -374,6 +378,7 @@ export const PackagingModule: React.FC = () => {
             )}
           </TableBody>
         </Table>
+        <TablePagination {...pagination} label="box" />
       </Card>
 
       <DetailDrawer

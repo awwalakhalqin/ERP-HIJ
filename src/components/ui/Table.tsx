@@ -326,7 +326,7 @@ export const RowActionButton: React.FC<RowActionButtonProps> = ({
       aria-label={ariaLabel || label}
       title={title || label}
       className={cn(
-        'h-8 gap-1.5 px-2 text-xs sm:px-2.5',
+        'h-8 gap-1.5 px-2 text-xs sm:px-2.5 pointer-coarse:min-h-11',
         tone === 'primary' && 'border-brand-teal/50',
         rowActionTone[tone],
         className
@@ -344,7 +344,7 @@ export const RowActionButton: React.FC<RowActionButtonProps> = ({
       disabled={disabled}
       aria-label={ariaLabel || label}
       title={title || label}
-      className={cn('size-8', rowActionTone[tone], className)}
+      className={cn('size-8 pointer-coarse:size-11', rowActionTone[tone], className)}
     >
       <Icon size={15} aria-hidden="true" />
     </Button>
@@ -398,3 +398,108 @@ export const TableSkeletonRows: React.FC<{ columns: number; rows?: number }> = (
     ))}
   </>
 );
+
+/*
+ * Paginasi tabel.
+ *
+ * Tabel dulu merender setiap baris yang lolos filter. Dengan 3.045 pesanan itu
+ * berarti 118 ribu elemen DOM, halaman butuh 3,9 detik untuk tampil, dan tiap
+ * huruf yang diketik di kotak cari membekukan layar ~240 ms. Data pabrik hanya
+ * bertambah, jadi jumlah baris yang dirender harus dibatasi, bukan dipercepat.
+ *
+ * Pemakaian di modul:
+ *   const { pageRows, pagination } = useTablePage(filteredOrders);
+ *   {pageRows.map(...)}
+ *   <TablePagination {...pagination} />
+ */
+export const TABLE_PAGE_SIZE = 50;
+
+export interface TablePageInfo {
+  page: number;
+  pageCount: number;
+  total: number;
+  from: number;
+  to: number;
+  onPageChange: (page: number) => void;
+}
+
+export function useTablePage<T>(rows: T[], pageSize = TABLE_PAGE_SIZE) {
+  const [page, setPage] = React.useState(1);
+  const total = rows.length;
+  const pageCount = Math.max(1, Math.ceil(total / pageSize));
+
+  /*
+   * Menyaring daftar biasanya memperpendeknya. Tanpa ini, seseorang yang sedang
+   * di halaman 7 lalu mengetik pencarian akan melihat tabel kosong — datanya
+   * ada, halamannya saja yang sudah tidak ada.
+   */
+  const current = Math.min(page, pageCount);
+  React.useEffect(() => {
+    if (page !== current) setPage(current);
+  }, [page, current]);
+
+  const start = (current - 1) * pageSize;
+  const pageRows = React.useMemo(() => rows.slice(start, start + pageSize), [rows, start, pageSize]);
+
+  return {
+    pageRows,
+    pagination: {
+      page: current,
+      pageCount,
+      total,
+      from: total === 0 ? 0 : start + 1,
+      to: Math.min(start + pageSize, total),
+      onPageChange: setPage
+    } as TablePageInfo
+  };
+}
+
+/** Baris navigasi di bawah tabel. Tidak tampil kalau semuanya muat dalam satu halaman. */
+export const TablePagination: React.FC<TablePageInfo & { label?: string }> = ({
+  page,
+  pageCount,
+  total,
+  from,
+  to,
+  onPageChange,
+  label = 'baris'
+}) => {
+  if (pageCount <= 1) return null;
+  return (
+    <nav
+      aria-label="Navigasi halaman tabel"
+      className="no-print flex flex-wrap items-center justify-between gap-3 border-t border-border px-4 py-3"
+    >
+      <p className="text-xs text-muted-foreground tabular-nums" aria-live="polite">
+        Menampilkan <span className="font-semibold text-foreground">{from}</span>–
+        <span className="font-semibold text-foreground">{to}</span> dari{' '}
+        <span className="font-semibold text-foreground">{total}</span> {label}
+      </p>
+      <div className="flex items-center gap-1.5">
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          disabled={page <= 1}
+          onClick={() => onPageChange(page - 1)}
+          aria-label="Halaman sebelumnya"
+        >
+          Sebelumnya
+        </Button>
+        <span className="px-2 text-xs font-semibold tabular-nums text-muted-foreground">
+          {page} / {pageCount}
+        </span>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          disabled={page >= pageCount}
+          onClick={() => onPageChange(page + 1)}
+          aria-label="Halaman berikutnya"
+        >
+          Berikutnya
+        </Button>
+      </div>
+    </nav>
+  );
+};

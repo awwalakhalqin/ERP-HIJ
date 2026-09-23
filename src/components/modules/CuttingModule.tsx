@@ -18,7 +18,7 @@ import {
   Select
 } from '../ui/Field';
 import { PageHeader } from '../ui/PageHeader';
-import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell, TableRowActions, TableEmptyRow, TableSkeletonRows } from '../ui/Table';
+import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell, TableRowActions, TableEmptyRow, TableSkeletonRows, useTablePage, TablePagination } from '../ui/Table';
 import { DetailDrawer, DetailSection, DetailField, DetailStats, RowDetailButton } from '../ui/DetailDrawer';
 import { newestFirst } from '../../lib/ordering';
 
@@ -159,6 +159,8 @@ export const CuttingModule: React.FC = () => {
     b.operatorCutting.toLowerCase().includes(searchQuery.toLowerCase())
   ));
 
+  const { pageRows: pagedBatches, pagination } = useTablePage(filteredBatches);
+
   // Headline numbers shown in the modal footer while the operator types.
   const formPieces = Number(formData.totalPiecesCut) || 0;
   const formYield = Number(formData.cuttingYieldPercentage) || 0;
@@ -233,7 +235,7 @@ export const CuttingModule: React.FC = () => {
                 }
               />
             ) : (
-              filteredBatches.map(b => (
+              pagedBatches.map(b => (
                 <TableRow key={b.id}>
                   <TableCell className="cell-sticky-start">
                     <span className="font-mono font-bold text-slate-900">{b.id}</span>
@@ -270,6 +272,7 @@ export const CuttingModule: React.FC = () => {
             )}
           </TableBody>
         </Table>
+        <TablePagination {...pagination} label="batch" />
       </Card>
 
       <DetailDrawer

@@ -39,6 +39,8 @@ import {
   TableSkeletonRows,
   TableSortHead,
   sortRows,
+  useTablePage,
+  TablePagination,
   type SortState
 } from '../ui/Table';
 import {
@@ -121,6 +123,8 @@ export const BundleTrackingModule: React.FC = () => {
   const [stageBundle, setStageBundle] = useState<WIPBundle | null>(null);
   const [stageOperator, setStageOperator] = useState('');
   const [savingStage, setSavingStage] = useState(false);
+  /** Sedang memasang seluruh baris untuk dicetak; lihat handlePrintBundleTickets. */
+  const [printingAll, setPrintingAll] = useState(false);
   const [stageError, setStageError] = useState<string | null>(null);
   const [stageFieldErrors, setStageFieldErrors] = useState<Record<string, string>>({});
 
@@ -286,9 +290,29 @@ export const BundleTrackingModule: React.FC = () => {
     }
   };
 
+  /*
+   * Tiket dicetak dari tabel yang sedang tampil, sedangkan tabelnya hanya
+   * memuat 50 baris per halaman. Kalau dialog cetak dibuka begitu saja, yang
+   * keluar cuma bundel di halaman yang sedang dilihat — dan itu tidak
+   * kelihatan salah sampai tiketnya sudah dipotong dan ditempel. Jadi seluruh
+   * baris hasil saringan dipasang dulu, baru dialog cetak dibuka.
+   */
   const handlePrintBundleTickets = () => {
-    window.print();
+    setPrintingAll(true);
   };
+
+  useEffect(() => {
+    if (!printingAll) return;
+    // Dua frame: yang pertama memasang barisnya, yang kedua memastikan browser
+    // sudah menata ulang sebelum dialognya membekukan halaman.
+    const frame = requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        window.print();
+        setPrintingAll(false);
+      })
+    );
+    return () => cancelAnimationFrame(frame);
+  }, [printingAll]);
 
   const filteredBundles = bundles.filter(bundle => {
     const matchesSearch =
@@ -309,6 +333,8 @@ export const BundleTrackingModule: React.FC = () => {
     }
     return key === 'lastScan' ? lastScanAt(bundle) : (bundle as any)[key];
   });
+
+  const { pageRows: pagedBundles, pagination } = useTablePage(sortedBundles);
 
   const isFiltering = searchQuery.trim() !== '' || stageFilter !== 'ALL';
 
@@ -426,7 +452,7 @@ export const BundleTrackingModule: React.FC = () => {
                   )
                 }
               />
-            ) : sortedBundles.map(bundle => {
+            ) : (printingAll ? sortedBundles : pagedBundles).map(bundle => {
               const scannedAt = lastScanAt(bundle);
               return (
                 <TableRow key={bundle.id}>
@@ -461,6 +487,7 @@ export const BundleTrackingModule: React.FC = () => {
             })}
           </TableBody>
         </Table>
+        <TablePagination {...pagination} label="bundel" />
       </Card>
 
       {/* BUNDLE ROW DETAIL */}

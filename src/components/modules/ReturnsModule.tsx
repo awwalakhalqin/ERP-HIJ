@@ -10,7 +10,7 @@ import { Button } from '../ui/Button';
 import { Input } from '../ui/Input';
 import { FormError } from '../ui/Field';
 import { PageHeader } from '../ui/PageHeader';
-import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell, TableRowActions, RowActionButton, TableEmptyRow, TableSkeletonRows } from '../ui/Table';
+import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell, TableRowActions, RowActionButton, TableEmptyRow, TableSkeletonRows, useTablePage, TablePagination } from '../ui/Table';
 import { DetailDrawer, DetailSection, DetailField, DetailStats, DetailBlock, RowDetailButton } from '../ui/DetailDrawer';
 import { newestFirst } from '../../lib/ordering';
 
@@ -97,6 +97,8 @@ export const ReturnsModule: React.FC = () => {
     String(c.defectCategory || '').toLowerCase().includes(query)
   ));
 
+  const { pageRows: pagedComplaints, pagination } = useTablePage(filteredComplaints);
+
   const openInvestigateFromDetail = (complaint: CustomerReturnComplaint) => {
     setDetailComplaint(null);
     handleOpenInvestigate(complaint);
@@ -161,7 +163,7 @@ export const ReturnsModule: React.FC = () => {
                 }
               />
             ) : (
-              filteredComplaints.map(c => (
+              pagedComplaints.map(c => (
                 <TableRow key={c.id}>
                   <TableCell className="cell-sticky-start whitespace-nowrap">
                     <span className="font-mono font-bold text-slate-900">{c.id}</span>
@@ -206,6 +208,7 @@ export const ReturnsModule: React.FC = () => {
             )}
           </TableBody>
         </Table>
+        <TablePagination {...pagination} label="tiket" />
       </Card>
 
       <DetailDrawer

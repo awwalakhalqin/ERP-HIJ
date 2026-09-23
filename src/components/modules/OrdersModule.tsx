@@ -68,6 +68,8 @@ import {
   RowActionButton,
   TableSortHead,
   sortRows,
+  useTablePage,
+  TablePagination,
   type SortState
 } from '../ui/Table';
 import { PageHeader } from '../ui/PageHeader';
@@ -1023,6 +1025,8 @@ export const OrdersModule: React.FC = () => {
     });
   }, [orders, spkOrderIds, searchQuery, orderStageFilter, orderSort]);
 
+  const { pageRows: pagedOrders, pagination } = useTablePage(filteredOrders);
+
   // Order Counts
   const orderCounts = useMemo(() => {
     const pending = (o: Order) => o.status === 'Order' || o.status === 'Sample';
@@ -1422,7 +1426,7 @@ export const OrdersModule: React.FC = () => {
                   }
                 />
               ) : (
-                filteredOrders.map(order => {
+                pagedOrders.map(order => {
                 const matchingSpk = spks.find(s => s.orderId === order.id);
                 const readiness = readinessByOrder.get(order.id);
                 const isOptional = isSpkOptionalForOrder(order);
@@ -1530,6 +1534,7 @@ export const OrdersModule: React.FC = () => {
               )}
             </TableBody>
           </Table>
+          <TablePagination {...pagination} label="pesanan" />
         </Card>
       )}
 

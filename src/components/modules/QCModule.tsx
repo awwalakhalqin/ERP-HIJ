@@ -26,7 +26,7 @@ import {
   Textarea
 } from '../ui/Field';
 import { PageHeader } from '../ui/PageHeader';
-import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell, TableRowActions, RowActionButton, TableEmptyRow, TableSkeletonRows } from '../ui/Table';
+import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell, TableRowActions, RowActionButton, TableEmptyRow, TableSkeletonRows, useTablePage, TablePagination } from '../ui/Table';
 import { DetailDrawer, DetailSection, DetailField, DetailStats, DetailBlock, RowDetailButton } from '../ui/DetailDrawer';
 import { newestFirst } from '../../lib/ordering';
 
@@ -173,6 +173,8 @@ export const QCModule: React.FC = () => {
   );
   const reinspectCount = awaitingQc.filter(spk => !!latestReportFor(spk)).length;
 
+  const { pageRows: pagedAwaitingQc, pagination: awaitingPagination } = useTablePage(awaitingQc);
+
   /** Opens the inspection form already pointed at this SPK. */
   const handleInspectSpk = (spkId: string) => {
     handleSpkSelect(spkId);
@@ -279,6 +281,8 @@ export const QCModule: React.FC = () => {
     return matchesSearch && r.status === statusFilter;
   }));
 
+  const { pageRows: pagedReports, pagination: reportPagination } = useTablePage(filteredReports);
+
   return (
     <div className="space-y-6">
       <PageHeader
@@ -341,7 +345,7 @@ export const QCModule: React.FC = () => {
                   description="SPK akan muncul di sini sendiri begitu produksinya selesai."
                 />
               ) : (
-                awaitingQc.map(spk => {
+                pagedAwaitingQc.map(spk => {
                   const latest = latestReportFor(spk);
                   return (
                   <TableRow key={spk.id}>
@@ -395,6 +399,7 @@ export const QCModule: React.FC = () => {
               )}
             </TableBody>
           </Table>
+          <TablePagination {...awaitingPagination} label="SPK" />
         </Card>
       </section>
 
@@ -458,7 +463,7 @@ export const QCModule: React.FC = () => {
                 }
               />
             ) : (
-              filteredReports.map(report => {
+              pagedReports.map(report => {
                 const defects = totalDefects(report);
                 return (
                   <TableRow key={report.id}>
@@ -497,6 +502,7 @@ export const QCModule: React.FC = () => {
             )}
           </TableBody>
         </Table>
+        <TablePagination {...reportPagination} label="pemeriksaan" />
       </Card>
 
       {/* AWAITING-QC SPK DETAIL */}

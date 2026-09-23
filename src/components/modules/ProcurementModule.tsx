@@ -26,7 +26,7 @@ import { FormError } from '../ui/Field';
 import { Toast, useToast } from '../ui/Toast';
 import { useConfirm } from '../ui/ConfirmDialog';
 import { PageHeader } from '../ui/PageHeader';
-import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell, TableRowActions, RowActionButton, TableEmptyRow, TableSkeletonRows } from '../ui/Table';
+import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell, TableRowActions, RowActionButton, TableEmptyRow, TableSkeletonRows, useTablePage, TablePagination } from '../ui/Table';
 import { DetailDrawer, DetailSection, DetailField, DetailStats, RowDetailButton } from '../ui/DetailDrawer';
 import { newestFirst } from '../../lib/ordering';
 
@@ -234,6 +234,8 @@ export const ProcurementModule: React.FC = () => {
     return matchesSearch && matchesCategory && matchesProject;
   }));
 
+  const { pageRows: pagedItems, pagination } = useTablePage(filteredItems);
+
   const isFiltered = searchQuery !== '' || categoryFilter !== 'ALL' || projectFilter !== 'ALL';
 
   const handleExport = () => {
@@ -432,7 +434,7 @@ export const ProcurementModule: React.FC = () => {
                 }
               />
             ) : (
-              filteredItems.map((item) => {
+              pagedItems.map((item) => {
                 const linkedOrder = orders.find(o => o.id === item.intendedFor || o.id === item.orderId);
                 const customerName = linkedOrder?.customerName || item.customerName;
                 return (
@@ -505,6 +507,7 @@ export const ProcurementModule: React.FC = () => {
             )}
           </TableBody>
         </Table>
+        <TablePagination {...pagination} label="catatan pembelian" />
       </Card>
 
       {/* Purchase detail drawer */}

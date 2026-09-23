@@ -30,7 +30,7 @@ import { FormError } from '../ui/Field';
 import { Toast, useToast } from '../ui/Toast';
 import { useConfirm } from '../ui/ConfirmDialog';
 import { PageHeader } from '../ui/PageHeader';
-import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell, TableRowActions, TableEmptyRow, TableSkeletonRows, RowActionButton } from '../ui/Table';
+import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell, TableRowActions, TableEmptyRow, TableSkeletonRows, RowActionButton, useTablePage, TablePagination } from '../ui/Table';
 import { Tabs, TabsList, TabsTrigger } from '../ui/Tabs';
 import { DetailDrawer, DetailSection, DetailField, DetailStats, DetailBlock, RowDetailButton } from '../ui/DetailDrawer';
 import { newestFirst } from '../../lib/ordering';
@@ -480,6 +480,9 @@ export const FinanceModule: React.FC = () => {
     }));
   }, [payments, searchQuery, paymentMethodFilter]);
 
+  const { pageRows: pagedInvoices, pagination: invoicePagination } = useTablePage(filteredInvoices);
+  const { pageRows: pagedPayments, pagination: paymentPagination } = useTablePage(filteredPayments);
+
   // Row detail records
   const detailInvoice = detailInvoiceId ? invoices.find(i => i.id === detailInvoiceId) ?? null : null;
   const detailInvoicePayments = detailInvoice
@@ -670,7 +673,7 @@ export const FinanceModule: React.FC = () => {
                     }
                   />
                 ) : (
-                  filteredInvoices.map(inv => {
+                  pagedInvoices.map(inv => {
                     // A replaced revision is never paid; its successor carries the balance.
                     const hasBalance = Number(inv.balanceRemaining) > 0 && !inv.supersededBy;
                     return (
@@ -768,6 +771,7 @@ export const FinanceModule: React.FC = () => {
                 )}
               </TableBody>
             </Table>
+            <TablePagination {...invoicePagination} label="faktur" />
           </div>
         )}
 
@@ -818,7 +822,7 @@ export const FinanceModule: React.FC = () => {
                     }
                   />
                 ) : (
-                  filteredPayments.map(pay => (
+                  pagedPayments.map(pay => (
                     <TableRow key={pay.id}>
                       {/* No. Transaksi */}
                       <TableCell className="cell-sticky-start whitespace-nowrap">
@@ -879,6 +883,7 @@ export const FinanceModule: React.FC = () => {
                 )}
               </TableBody>
             </Table>
+            <TablePagination {...paymentPagination} label="pembayaran" />
           </div>
         )}
       </Card>

@@ -30,7 +30,7 @@ import { FormError } from '../ui/Field';
 import { Toast, useToast } from '../ui/Toast';
 import { useConfirm } from '../ui/ConfirmDialog';
 import { PageHeader } from '../ui/PageHeader';
-import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell, TableRowActions, RowActionButton, TableEmptyRow, TableSkeletonRows } from '../ui/Table';
+import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell, TableRowActions, RowActionButton, TableEmptyRow, TableSkeletonRows, useTablePage, TablePagination } from '../ui/Table';
 import { DetailDrawer, DetailSection, DetailField, DetailStats, RowDetailButton } from '../ui/DetailDrawer';
 import { newestFirst } from '../../lib/ordering';
 
@@ -214,6 +214,10 @@ export const RawMaterialModule: React.FC = () => {
       String(r.reason || '').toLowerCase().includes(q)
     );
   }));
+
+  const { pageRows: pagedStockItems, pagination: stockPagination } = useTablePage(filteredStockItems);
+  const { pageRows: pagedOpnames, pagination: opnamePagination } = useTablePage(filteredOpnames);
+  const { pageRows: pagedRolls, pagination: rollPagination } = useTablePage(filteredRolls);
 
   // --- Handlers: Accessories CRUD ---
   const handleOpenAdd = () => {
@@ -765,7 +769,7 @@ export const RawMaterialModule: React.FC = () => {
                     description="Tambahkan item aksesoris baru dengan tombol di atas."
                   />
                 ) : (
-                  filteredStockItems.map(item => {
+                  pagedStockItems.map(item => {
                     const low = isLowStock(item);
                     const empty = isOutOfStock(item);
                     const condition = stockCondition(item);
@@ -841,6 +845,7 @@ export const RawMaterialModule: React.FC = () => {
                 )}
               </TableBody>
             </Table>
+            <TablePagination {...stockPagination} label="aksesoris" />
           </Card>
         </div>
       )}
@@ -895,7 +900,7 @@ export const RawMaterialModule: React.FC = () => {
                     description="Catatan hasil opname fisik akan tersimpan otomatis di sini."
                   />
                 ) : (
-                  filteredOpnames.map(op => {
+                  pagedOpnames.map(op => {
                     const diff = Number(op.difference) || 0;
                     const diffLabel = diff > 0 ? 'Lebih' : diff < 0 ? 'Kurang' : 'Sesuai';
                     return (
@@ -941,6 +946,7 @@ export const RawMaterialModule: React.FC = () => {
                 )}
               </TableBody>
             </Table>
+            <TablePagination {...opnamePagination} label="audit" />
           </Card>
         </div>
       )}
@@ -996,7 +1002,7 @@ export const RawMaterialModule: React.FC = () => {
                     }
                   />
                 ) : (
-                  filteredRolls.map(roll => (
+                  pagedRolls.map(roll => (
                     <TableRow key={roll.id}>
                       <TableCell className="cell-sticky-start font-mono font-bold text-slate-900">
                         {roll.id}
@@ -1040,6 +1046,7 @@ export const RawMaterialModule: React.FC = () => {
                 )}
               </TableBody>
             </Table>
+            <TablePagination {...rollPagination} label="roll" />
           </Card>
         </div>
       )}

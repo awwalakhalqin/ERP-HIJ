@@ -61,6 +61,8 @@ import {
   TableSkeletonRows,
   TableSortHead,
   sortRows,
+  useTablePage,
+  TablePagination,
   type SortState
 } from '../ui/Table';
 import {
@@ -656,6 +658,9 @@ export const PPICModule: React.FC = () => {
     [filteredSpks, spkSort]
   );
 
+  const { pageRows: pagedAwaitingOrders, pagination: awaitingPagination } = useTablePage(awaitingOrders);
+  const { pageRows: pagedSpks, pagination: spkPagination } = useTablePage(sortedSpks);
+
 
   /*
    * The gate checklist lives in the row's detail drawer now: the queue table
@@ -817,7 +822,7 @@ export const PPICModule: React.FC = () => {
                   description="Semua pesanan yang sudah deal sudah punya surat perintah kerja."
                 />
               ) : (
-                awaitingOrders.map(order => {
+                pagedAwaitingOrders.map(order => {
                   const readiness = getOrderReadiness(order, readinessData);
                   const isSaving = savingOrderId === order.id;
                   const orderRef = order.po || order.id;
@@ -890,6 +895,7 @@ export const PPICModule: React.FC = () => {
               )}
             </TableBody>
           </Table>
+          <TablePagination {...awaitingPagination} label="pesanan" />
         </Card>
       </section>
 
@@ -997,7 +1003,7 @@ export const PPICModule: React.FC = () => {
                   }
                 />
               ) : (
-                sortedSpks.map(spk => {
+                pagedSpks.map(spk => {
                   const pct = Math.min(100, Math.max(0, spk.progress || 0));
                   return (
                     <TableRow key={spk.id}>
@@ -1079,6 +1085,7 @@ export const PPICModule: React.FC = () => {
               )}
             </TableBody>
           </Table>
+          <TablePagination {...spkPagination} label="SPK" />
         </Card>
       </section>
 

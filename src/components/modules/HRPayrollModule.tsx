@@ -9,7 +9,7 @@ import { Modal } from '../ui/Modal';
 import { Card } from '../ui/Card';
 import { Button } from '../ui/Button';
 import { PageHeader } from '../ui/PageHeader';
-import { Table, TableHeader, TableBody, TableFooter, TableHead, TableRow, TableCell, TableRowActions, RowActionButton, TableEmptyRow, TableSkeletonRows } from '../ui/Table';
+import { Table, TableHeader, TableBody, TableFooter, TableHead, TableRow, TableCell, TableRowActions, RowActionButton, TableEmptyRow, TableSkeletonRows, useTablePage, TablePagination } from '../ui/Table';
 import { DetailDrawer, DetailSection, DetailField, DetailStats, DetailBlock, RowDetailButton } from '../ui/DetailDrawer';
 import { newestFirst } from '../../lib/ordering';
 
@@ -350,6 +350,8 @@ export const HRPayrollModule: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [assignments, weekRange, spkById]);
 
+  const { pageRows: pagedRecap, pagination: recapPagination } = useTablePage(weeklyRecap.list);
+
   /** "SPK-ORD-019 · 45%" — id first, because that is what people track by. */
   const spkLabel = (spkId: string) => {
     const spk = spkById.get(spkId);
@@ -449,6 +451,8 @@ export const HRPayrollModule: React.FC = () => {
 
   const sortedOperators = newestFirst(operators);
 
+  const { pageRows: pagedOperators, pagination: operatorPagination } = useTablePage(sortedOperators);
+
   return (
     <div className="space-y-6">
       <PageHeader
@@ -538,7 +542,7 @@ export const HRPayrollModule: React.FC = () => {
                   description="Catat petugas di menu Surat Perintah Kerja; rekapnya muncul di sini sendiri."
                 />
               ) : (
-                weeklyRecap.list.map(r => {
+                pagedRecap.map(r => {
                   const taskSummary = [...r.tasks.entries()].map(([t, q]) => `${t} ${q} pcs`).join(' · ');
                   const spkEntries = [...r.spks.entries()];
                   // One line per row: the first two SPKs, the rest folded into "+N".
@@ -620,6 +624,7 @@ export const HRPayrollModule: React.FC = () => {
               </TableFooter>
             )}
           </Table>
+          <TablePagination {...recapPagination} label="petugas" />
         </Card>
       </section>
 
@@ -652,7 +657,7 @@ export const HRPayrollModule: React.FC = () => {
                 }
               />
             ) : (
-              sortedOperators.map(opr => (
+              pagedOperators.map(opr => (
                 <TableRow key={opr.id}>
                   <TableCell className="cell-sticky-start whitespace-nowrap">
                     <span className="font-mono font-bold text-slate-900">{opr.id}</span>
@@ -688,6 +693,7 @@ export const HRPayrollModule: React.FC = () => {
             )}
           </TableBody>
         </Table>
+        <TablePagination {...operatorPagination} label="petugas" />
       </Card>
 
       {/* OPERATOR DETAIL */}

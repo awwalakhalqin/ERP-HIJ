@@ -31,7 +31,7 @@ import { FieldLabel, FieldHint, FieldError, FormError, FormSection, FormNotice, 
 import { Toast, useToast } from '../ui/Toast';
 import { useConfirm } from '../ui/ConfirmDialog';
 import { PageHeader } from '../ui/PageHeader';
-import { Table, TableHeader, TableHead, TableBody, TableRow, TableCell, TableRowActions, RowActionButton, TableEmptyRow, TableSkeletonRows } from '../ui/Table';
+import { Table, TableHeader, TableHead, TableBody, TableRow, TableCell, TableRowActions, RowActionButton, TableEmptyRow, TableSkeletonRows, useTablePage, TablePagination } from '../ui/Table';
 import { DetailDrawer, DetailSection, DetailField, DetailStats, DetailBlock, RowDetailButton } from '../ui/DetailDrawer';
 import { newestFirst } from '../../lib/ordering';
 
@@ -301,6 +301,8 @@ export const CustomersModule: React.FC<CustomersModuleProps> = ({ onPreviewCusto
     }));
   }, [customers, searchQuery, statusFilter]);
 
+  const { pageRows: pagedCustomers, pagination } = useTablePage(filteredCustomers);
+
   const activeCount = useMemo(() => customers.filter(c => c.status === 'Active').length, [customers]);
   const totalLtv = useMemo(() => orders.reduce((sum, o) => sum + (Number(o.totalPrice) || 0), 0), [orders]);
   const activeOrdersCount = useMemo(() => orders.filter(o => o.status !== 'Completed').length, [orders]);
@@ -549,7 +551,7 @@ export const CustomersModule: React.FC<CustomersModuleProps> = ({ onPreviewCusto
                 }
               />
             ) : (
-              filteredCustomers.map((cust) => {
+              pagedCustomers.map((cust) => {
                 const orderCount = getCustomerOrders(cust.id).length;
                 const ltv = getCustomerLtv(cust.id);
                 const rawPhone = cust.phone || cust.contact || '';
@@ -629,6 +631,7 @@ export const CustomersModule: React.FC<CustomersModuleProps> = ({ onPreviewCusto
             )}
           </TableBody>
         </Table>
+        <TablePagination {...pagination} label="pelanggan" />
       </Card>
 
       {/* CUSTOMER DETAIL DRAWER */}

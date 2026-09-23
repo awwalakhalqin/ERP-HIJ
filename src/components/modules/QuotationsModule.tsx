@@ -39,6 +39,8 @@ import {
   TableSortHead,
   RowActionButton,
   sortRows,
+  useTablePage,
+  TablePagination,
   type SortState
 } from '../ui/Table';
 import { PageHeader } from '../ui/PageHeader';
@@ -792,6 +794,8 @@ export const QuotationsModule: React.FC = () => {
     });
   }, [quotations, searchQuery, quoStageFilter, quotationSort]);
 
+  const { pageRows: pagedQuotations, pagination } = useTablePage(filteredQuotations);
+
   /*
    * One number for the whole form. The summary card, the instalment editor, and
    * the saved payload all read this, so they cannot disagree about what the
@@ -1009,7 +1013,7 @@ export const QuotationsModule: React.FC = () => {
                   }
                 />
               ) : (
-                filteredQuotations.map(quo => {
+                pagedQuotations.map(quo => {
                 const total = Number(quo.totalPrice) || (Number(quo.quantity) * Number(quo.price));
                 return (
                   <TableRow key={quo.id}>
@@ -1145,6 +1149,7 @@ export const QuotationsModule: React.FC = () => {
               )}
             </TableBody>
           </Table>
+          <TablePagination {...pagination} label="penawaran" />
         </Card>
       )}
 

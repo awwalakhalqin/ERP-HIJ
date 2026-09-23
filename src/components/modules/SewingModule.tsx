@@ -18,7 +18,7 @@ import {
   ChipButton
 } from '../ui/Field';
 import { PageHeader } from '../ui/PageHeader';
-import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell, TableRowActions, TableEmptyRow, TableSkeletonRows } from '../ui/Table';
+import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell, TableRowActions, TableEmptyRow, TableSkeletonRows, useTablePage, TablePagination } from '../ui/Table';
 import { DetailDrawer, DetailSection, DetailField, DetailStats, RowDetailButton } from '../ui/DetailDrawer';
 import { newestFirst } from '../../lib/ordering';
 
@@ -168,6 +168,8 @@ export const SewingModule: React.FC = () => {
     l.lineId.toLowerCase().includes(searchQuery.toLowerCase())
   ));
 
+  const { pageRows: pagedLogs, pagination } = useTablePage(filteredLogs);
+
   const isQualityOk = (log: SewingDailyLog) => log.spiCompliant && log.seamStrengthOk;
 
   // Headline numbers shown in the modal footer while the operator types.
@@ -246,7 +248,7 @@ export const SewingModule: React.FC = () => {
                 }
               />
             ) : (
-              filteredLogs.map(log => (
+              pagedLogs.map(log => (
                 <TableRow key={log.id}>
                   <TableCell className="cell-sticky-start font-mono font-bold text-slate-900">
                     {log.id}
@@ -293,6 +295,7 @@ export const SewingModule: React.FC = () => {
             )}
           </TableBody>
         </Table>
+        <TablePagination {...pagination} label="catatan" />
       </Card>
 
       <DetailDrawer

@@ -289,7 +289,9 @@
 }
 
 @layer base {
-  * {
+  /* Diwariskan dari body — memakai selektor universal memaksa perhitungan gaya
+     di setiap elemen tanpa hasil yang berbeda. */
+  body {
     font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
   }
   

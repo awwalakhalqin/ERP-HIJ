@@ -13,7 +13,7 @@ import { Input } from '../ui/Input';
 import { FormError } from '../ui/Field';
 import { Toast, useToast } from '../ui/Toast';
 import { PageHeader } from '../ui/PageHeader';
-import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell, TableRowActions, RowActionButton, TableEmptyRow, TableSkeletonRows } from '../ui/Table';
+import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell, TableRowActions, RowActionButton, TableEmptyRow, TableSkeletonRows, useTablePage, TablePagination } from '../ui/Table';
 import { DetailDrawer, DetailSection, DetailField, DetailStats, RowDetailButton } from '../ui/DetailDrawer';
 import { OrderFlowStepper } from '../ui/OrderFlowStepper';
 import { newestFirst } from '../../lib/ordering';
@@ -193,6 +193,8 @@ export const ShippingModule: React.FC = () => {
     (s.trackingNumber || '').toLowerCase().includes(query)
   ));
 
+  const { pageRows: pagedShipments, pagination } = useTablePage(filteredShipments);
+
   const detailShipment = detailId ? shipments.find(s => s.id === detailId) ?? null : null;
   const detailStep = detailShipment ? NEXT_STEP[detailShipment.status] : undefined;
 
@@ -280,7 +282,7 @@ export const ShippingModule: React.FC = () => {
                 }
               />
             ) : (
-              filteredShipments.map(s => (
+              pagedShipments.map(s => (
                 <TableRow key={s.id}>
                   <TableCell className="cell-sticky-start whitespace-nowrap">
                     <span className="font-mono font-bold text-slate-900">{s.id}</span>
@@ -332,6 +334,7 @@ export const ShippingModule: React.FC = () => {
             )}
           </TableBody>
         </Table>
+        <TablePagination {...pagination} label="surat jalan" />
       </Card>
 
       <DetailDrawer

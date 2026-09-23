@@ -10,7 +10,7 @@ import { Card } from '../ui/Card';
 import { Button } from '../ui/Button';
 import { Input } from '../ui/Input';
 import { PageHeader } from '../ui/PageHeader';
-import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell, TableRowActions, RowActionButton, TableEmptyRow, TableSkeletonRows } from '../ui/Table';
+import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell, TableRowActions, RowActionButton, TableEmptyRow, TableSkeletonRows, useTablePage, TablePagination } from '../ui/Table';
 import { DetailDrawer, DetailSection, DetailField, DetailStats, DetailBlock, RowDetailButton } from '../ui/DetailDrawer';
 import { newestFirst } from '../../lib/ordering';
 import { FieldLabel, FieldHint, FieldError, FormError, Select } from '../ui/Field';
@@ -355,6 +355,8 @@ export const PatternGradingModule: React.FC = () => {
 
   const sortedPatterns = newestFirst(patterns);
 
+  const { pageRows: pagedPatterns, pagination: patternPagination } = useTablePage(sortedPatterns);
+
   /*
    * Rows stay in stored order: S, M, L, XL reads as a chart, not a log — so the
    * newest-first rule that governs every other table deliberately does not
@@ -619,7 +621,7 @@ export const PatternGradingModule: React.FC = () => {
                   </Button>
                 }
               />
-            ) : sortedPatterns.map(p => {
+            ) : pagedPatterns.map(p => {
               const refs = orderRefs(p);
               return (
                 <TableRow key={p.id}>
@@ -671,6 +673,7 @@ export const PatternGradingModule: React.FC = () => {
             })}
           </TableBody>
         </Table>
+        <TablePagination {...patternPagination} label="pola" />
       </Card>
 
       {/* MARKER EFFICIENCY & FABRIC YIELD CALCULATOR */}

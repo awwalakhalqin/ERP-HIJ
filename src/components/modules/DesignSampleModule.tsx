@@ -40,6 +40,8 @@ import {
   TableSkeletonRows,
   TableSortHead,
   sortRows,
+  useTablePage,
+  TablePagination,
   type SortState
 } from '../ui/Table';
 import {
@@ -784,6 +786,9 @@ export const DesignSampleModule: React.FC = () => {
   const sortedDesigns = sortRows(designs, designSort, (design, key) => (design as any)[key]);
   const sortedSamples = sortRows(samples, sampleSort, (sample, key) => (sample as any)[key]);
 
+  const { pageRows: pagedDesigns, pagination: designPagination } = useTablePage(sortedDesigns);
+  const { pageRows: pagedSamples, pagination: samplePagination } = useTablePage(sortedSamples);
+
   const detailDesign = detailDesignId ? designs.find(d => d.id === detailDesignId) ?? null : null;
   const detailSample = detailSampleId ? samples.find(s => s.id === detailSampleId) ?? null : null;
 
@@ -864,7 +869,7 @@ export const DesignSampleModule: React.FC = () => {
                       </Button>
                     }
                   />
-                ) : sortedDesigns.map(design => {
+                ) : pagedDesigns.map(design => {
                   const cust = customerOf(design.customerId);
                   return (
                     <TableRow key={design.id}>
@@ -926,6 +931,7 @@ export const DesignSampleModule: React.FC = () => {
                 })}
               </TableBody>
             </Table>
+            <TablePagination {...designPagination} label="desain" />
           </Card>
         </div>
       )}
@@ -975,7 +981,7 @@ export const DesignSampleModule: React.FC = () => {
                       </Button>
                     }
                   />
-                ) : sortedSamples.map(sample => {
+                ) : pagedSamples.map(sample => {
                   const cust = customerOf(sample.customerId);
                   return (
                     <TableRow key={sample.id}>
@@ -1033,6 +1039,7 @@ export const DesignSampleModule: React.FC = () => {
                 })}
               </TableBody>
             </Table>
+            <TablePagination {...samplePagination} label="sampel" />
           </Card>
         </div>
       )}
