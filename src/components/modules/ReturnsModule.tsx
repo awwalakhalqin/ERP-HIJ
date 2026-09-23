@@ -8,6 +8,7 @@ import { Modal } from '../ui/Modal';
 import { Card } from '../ui/Card';
 import { Button } from '../ui/Button';
 import { Input } from '../ui/Input';
+import { FormError } from '../ui/Field';
 import { PageHeader } from '../ui/PageHeader';
 import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell, TableRowActions, RowActionButton, TableEmptyRow, TableSkeletonRows } from '../ui/Table';
 import { DetailDrawer, DetailSection, DetailField, DetailStats, DetailBlock, RowDetailButton } from '../ui/DetailDrawer';
@@ -34,6 +35,8 @@ export const ReturnsModule: React.FC = () => {
   const [detailComplaint, setDetailComplaint] = useState<CustomerReturnComplaint | null>(null);
 
   // Investigation form
+  /** Galat penyimpanan, ditampilkan di dalam modal supaya isian tetap terlihat. */
+  const [formError, setFormError] = useState<string | null>(null);
   const [rootCause, setRootCause] = useState('');
   const [actionTaken, setActionTaken] = useState<any>('Perbaikan Gratis');
   const [status, setStatus] = useState<any>('In Repair');
@@ -57,6 +60,7 @@ export const ReturnsModule: React.FC = () => {
 
   const handleOpenInvestigate = (complaint: CustomerReturnComplaint) => {
     setSelectedComplaint(complaint);
+    setFormError(null);
     setRootCause(complaint.rootCauseAnalysis || '');
     setActionTaken(complaint.actionTaken || 'Perbaikan Gratis');
     // A complaint filed from the portal arrives as 'Submitted'; opening it
@@ -68,6 +72,7 @@ export const ReturnsModule: React.FC = () => {
   const handleSaveInvestigation = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedComplaint) return;
+    setFormError(null);
     try {
       await updateResource('returns', selectedComplaint.id, {
         rootCauseAnalysis: rootCause,
@@ -78,7 +83,7 @@ export const ReturnsModule: React.FC = () => {
       setIsInvestigationModalOpen(false);
       loadData();
     } catch (err: any) {
-      alert(err?.message || 'Gagal menyimpan penanganan retur. Coba lagi.');
+      setFormError(err?.message || 'Gagal menyimpan penanganan retur. Coba lagi.');
     }
   };
 
@@ -291,6 +296,8 @@ export const ReturnsModule: React.FC = () => {
         maxWidth="lg"
       >
         <form onSubmit={handleSaveInvestigation} className="space-y-5">
+          <FormError>{formError}</FormError>
+
           <div className="p-4 bg-slate-50 rounded-xl border border-slate-200 space-y-1.5 text-sm">
             <p className="font-bold text-slate-900">{selectedComplaint?.customerName || '—'} · {selectedComplaint?.orderId || '—'}</p>
             <p className="text-slate-700">Keluhan: <strong>{selectedComplaint?.defectCategory || '—'}</strong> ({Number(selectedComplaint?.defectQty) || 0} Pcs)</p>

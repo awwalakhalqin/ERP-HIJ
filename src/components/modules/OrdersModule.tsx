@@ -87,6 +87,8 @@ import {
   FormNotice,
   ChipButton
 } from '../ui/Field';
+import { Toast, useToast } from '../ui/Toast';
+import { useConfirm } from '../ui/ConfirmDialog';
 import { Modal } from '../ui/Modal';
 import { InvoiceDocument } from '../documents/InvoiceDocument';
 import { OrderFlowStepper } from '../ui/OrderFlowStepper';
@@ -153,6 +155,8 @@ const SpkStatusTag: React.FC<{ spk?: SPK; readiness?: OrderReadiness; order?: Or
 };
 
 export const OrdersModule: React.FC = () => {
+  const { toast, showToast } = useToast();
+  const { confirm, confirmDialog } = useConfirm();
   const [orders, setOrders] = useState<Order[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [spks, setSpks] = useState<SPK[]>([]);
@@ -166,7 +170,6 @@ export const OrdersModule: React.FC = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [orderStageFilter, setOrderStageFilter] = useState<'ALL' | 'WAITING' | 'IN_PRODUCTION' | 'QC' | 'COMPLETED'>('ALL');
   const [orderSort, setOrderSort] = useState<SortState>({ key: 'newest', direction: 'desc' });
-  const [toastMessage, setToastMessage] = useState<string | null>(null);
 
   // Excel import: parse locally, show the plan, write nothing until approved.
   const importFileRef = useRef<HTMLInputElement>(null);
@@ -227,11 +230,6 @@ export const OrdersModule: React.FC = () => {
   const [dpForm, setDpForm] = useState({ amount: 0, date: '', bankAccount: '', notes: '' });
   const [dpSaving, setDpSaving] = useState(false);
   const [dpError, setDpError] = useState<string | null>(null);
-
-  const showToast = (msg: string) => {
-    setToastMessage(msg);
-    setTimeout(() => setToastMessage(null), 4500);
-  };
 
   const loadData = useCallback(async () => {
     try {
@@ -833,7 +831,12 @@ export const OrdersModule: React.FC = () => {
 
   // Quick Issue SPK Manual for Repeat Order or Qty < 50
   const handleQuickIssueSpk = async (order: Order) => {
-    if (!window.confirm(`Terbitkan SPK Manual untuk pesanan ${order.po || order.id}?`)) return;
+    const approved = await confirm({
+      title: `Terbitkan SPK manual untuk ${order.po || order.id}?`,
+      message: `Pesanan ${order.quantity} pcs ${order.productType} langsung masuk antrean produksi dan tampil di papan SPK lantai jahit.`,
+      confirmLabel: 'Terbitkan SPK'
+    });
+    if (!approved) return;
 
     try {
       setIssuingSpkId(order.id);
@@ -850,7 +853,7 @@ export const OrdersModule: React.FC = () => {
        * straight to the table — or, offline, to a local queue — and report
        * success for an SPK the server had refused or never received.
        */
-      alert(err?.message || 'Gagal menerbitkan SPK manual. Coba lagi.');
+      showToast(err?.message || 'Gagal menerbitkan SPK manual. Coba lagi.', 'error');
     } finally {
       setIssuingSpkId(null);
     }
@@ -904,19 +907,32 @@ export const OrdersModule: React.FC = () => {
    * started; a queued SPK goes with the cancellation.
    */
   const handleCancelOrder = async (order: Order) => {
-    if (!window.confirm(`Batalkan pesanan ${order.po || order.id}? SPK yang masih antre ikut dihapus; pembayaran yang sudah masuk tetap tercatat di Keuangan.`)) return;
+    const approved = await confirm({
+      title: `Batalkan pesanan ${order.po || order.id}?`,
+      message: 'SPK yang masih antre ikut dihapus dan pesanan berhenti diproduksi. Pembayaran yang sudah masuk tetap tercatat di Keuangan.',
+      confirmLabel: 'Batalkan Pesanan',
+      cancelLabel: 'Kembali',
+      tone: 'danger'
+    });
+    if (!approved) return;
     try {
       const updated = await updateResource<Order>('orders', order.id, { status: 'Cancelled' });
       setSelectedOrder(updated);
       await loadData();
       showToast(`Pesanan ${order.po || order.id} dibatalkan.`);
     } catch (err: any) {
-      window.alert(err?.message || 'Pesanan tidak bisa dibatalkan.');
+      showToast(err?.message || 'Pesanan tidak bisa dibatalkan.', 'error');
     }
   };
 
   const handleDeleteOrder = async (id: string) => {
-    if (!window.confirm(`Hapus pesanan ${id}? Tindakan ini tidak dapat dibatalkan.`)) return;
+    const approved = await confirm({
+      title: `Hapus pesanan ${id}?`,
+      message: 'Data pesanan hilang permanen dan tidak bisa dikembalikan. Bila pesanan sudah berjalan, pakai Batalkan supaya riwayatnya tetap tersimpan.',
+      confirmLabel: 'Hapus Pesanan',
+      tone: 'danger'
+    });
+    if (!approved) return;
     try {
       await deleteResource('orders', id);
       showToast(`Pesanan ${id} berhasil dihapus.`);
@@ -924,7 +940,7 @@ export const OrdersModule: React.FC = () => {
       if (selectedOrder?.id === id) setSelectedOrder(null);
     } catch (err: any) {
       // e.g. the order already has an SPK or payments — the server says which.
-      alert(err?.message || 'Gagal menghapus pesanan. Coba lagi.');
+      showToast(err?.message || 'Gagal menghapus pesanan. Coba lagi.', 'error');
     }
   };
 
@@ -1019,17 +1035,6 @@ export const OrdersModule: React.FC = () => {
 
   return (
     <div className="space-y-6">
-      {/* Toast Notification */}
-      {toastMessage && (
-        <div
-          role="status"
-          className="fixed bottom-6 right-6 z-50 flex items-center gap-3 rounded-2xl border border-border bg-popover px-4 py-3 text-sm font-medium text-popover-foreground shadow-lg animate-in fade-in slide-in-from-bottom-2"
-        >
-          <Sparkles size={18} className="text-brand-teal shrink-0" aria-hidden="true" />
-          <span>{toastMessage}</span>
-        </div>
-      )}
-
       <input
         ref={importFileRef}
         type="file"
@@ -2386,6 +2391,9 @@ export const OrdersModule: React.FC = () => {
           </div>
         </div>
       </Modal>
+
+      <Toast toast={toast} />
+      {confirmDialog}
     </div>
   );
 };

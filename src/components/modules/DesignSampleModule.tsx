@@ -11,6 +11,7 @@ import { getCurrentUser } from '../../lib/session';
 import { StatusBadge } from '../ui/Badge';
 import { Modal } from '../ui/Modal';
 import { Toast, useToast } from '../ui/Toast';
+import { useConfirm } from '../ui/ConfirmDialog';
 import { Card } from '../ui/Card';
 import { Button } from '../ui/Button';
 import { Input } from '../ui/Input';
@@ -278,6 +279,7 @@ export const DesignSampleModule: React.FC = () => {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [activeSubTab, setActiveSubTab] = useState<SubTab>('designs');
   const { toast, showToast } = useToast();
+  const { confirm, confirmDialog } = useConfirm();
 
   // Sorting per table
   const [designSort, setDesignSort] = useState<SortState>({ key: 'timestamp', direction: 'desc' });
@@ -662,7 +664,12 @@ export const DesignSampleModule: React.FC = () => {
       return;
     }
     const where = design.orderId ? ` untuk pesanan ${design.orderId}` : '';
-    if (!window.confirm(`Setujui desain ${design.id}${where}? Desain ini yang akan tercetak di surat SPK.`)) return;
+    const approved = await confirm({
+      title: `Setujui desain ${design.id}${where}?`,
+      message: 'Desain inilah yang tercetak di surat SPK dan dipakai produksi. Perubahan setelah ini harus lewat revisi desain baru.',
+      confirmLabel: 'Setujui Desain'
+    });
+    if (!approved) return;
     try {
       await updateResource('designs', design.id, {
         status: 'Approved',
@@ -690,7 +697,12 @@ export const DesignSampleModule: React.FC = () => {
   };
 
   const handleApproveSample = async (sample: Sample) => {
-    if (!window.confirm(`Setujui sampel ${sample.id}? Sampel ini menjadi acuan produksi massal.`)) return;
+    const approved = await confirm({
+      title: `Setujui sampel ${sample.id}?`,
+      message: 'Sampel ini menjadi acuan produksi massal, dan pesanan yang masih menunggu sampel langsung lanjut ke tahap berikutnya.',
+      confirmLabel: 'Setujui Sampel'
+    });
+    if (!approved) return;
     try {
       await updateResource('samples', sample.id, {
         status: 'Approved',
@@ -1801,6 +1813,9 @@ export const DesignSampleModule: React.FC = () => {
           </div>
         )}
       </Modal>
+
+      {/* Ditaruh paling akhir supaya kotak konfirmasi tampil di atas drawer dan modal lain. */}
+      {confirmDialog}
     </div>
   );
 };

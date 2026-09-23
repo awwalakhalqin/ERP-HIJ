@@ -27,6 +27,8 @@ import { Card } from '../ui/Card';
 import { Button } from '../ui/Button';
 import { Input } from '../ui/Input';
 import { FormError } from '../ui/Field';
+import { Toast, useToast } from '../ui/Toast';
+import { useConfirm } from '../ui/ConfirmDialog';
 import { PageHeader } from '../ui/PageHeader';
 import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell, TableRowActions, TableEmptyRow, TableSkeletonRows, RowActionButton } from '../ui/Table';
 import { Tabs, TabsList, TabsTrigger } from '../ui/Tabs';
@@ -38,6 +40,8 @@ const selectClass = 'w-full h-10 px-3 text-sm border border-slate-300 rounded-lg
 const linkClass = 'inline-flex min-h-10 items-center gap-1.5 text-sm font-semibold text-brand-teal-dark underline underline-offset-4 hover:text-slate-900';
 
 export const FinanceModule: React.FC = () => {
+  const { toast, showToast } = useToast();
+  const { confirm, ask, confirmDialog } = useConfirm();
   const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [payments, setPayments] = useState<Payment[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
@@ -63,6 +67,8 @@ export const FinanceModule: React.FC = () => {
   const [detailPaymentId, setDetailPaymentId] = useState<string | null>(null);
 
   // Form State: Catat Kas Masuk
+  /** Galat isian form, ditampilkan di dalam modal tepat di atas tombol simpan. */
+  const [paymentFormError, setPaymentFormError] = useState<string | null>(null);
   const [paymentForm, setPaymentForm] = useState({
     invoiceId: '',
     orderId: '',
@@ -80,6 +86,7 @@ export const FinanceModule: React.FC = () => {
   });
 
   // Form State: Buat Faktur Invoice
+  const [invoiceFormError, setInvoiceFormError] = useState<string | null>(null);
   const [newInvoice, setNewInvoice] = useState<Partial<Invoice>>({
     orderId: '',
     customerId: '',
@@ -134,6 +141,7 @@ export const FinanceModule: React.FC = () => {
 
   // Header action: open an empty Catat Pembayaran form
   const handleOpenNewPayment = () => {
+    setPaymentFormError(null);
     setPaymentForm({
       invoiceId: '',
       orderId: '',
@@ -154,6 +162,7 @@ export const FinanceModule: React.FC = () => {
 
   // Header action: open an empty Buat Faktur form
   const handleOpenNewInvoice = () => {
+    setInvoiceFormError(null);
     setNewInvoice({
       orderId: '',
       customerId: '',
@@ -171,6 +180,7 @@ export const FinanceModule: React.FC = () => {
 
   // Quick action: Open Catat Kas Masuk for a specific invoice
   const handleOpenPayForInvoice = (inv: Invoice) => {
+    setPaymentFormError(null);
     setPaymentForm({
       invoiceId: inv.id,
       orderId: inv.orderId || '',
@@ -239,7 +249,12 @@ export const FinanceModule: React.FC = () => {
 
   // SOP-20: finance reviews a draft invoice before it goes to the customer
   const handleMarkInvoiceSent = async (inv: Invoice) => {
-    if (!window.confirm(`Tandai faktur ${inv.id} sudah diperiksa dan dikirim ke pelanggan?`)) return;
+    const approved = await confirm({
+      title: `Tandai faktur ${inv.id} sudah dikirim?`,
+      message: `Faktur dicatat sudah diperiksa dan dikirim ke ${inv.customerName}, lengkap dengan nama pemeriksa dan waktunya. Label Draf hilang dari daftar faktur.`,
+      confirmLabel: 'Tandai Sudah Dikirim'
+    });
+    if (!approved) return;
     try {
       await updateResource('invoices', inv.id, {
         reviewStatus: 'Sent',
@@ -247,20 +262,22 @@ export const FinanceModule: React.FC = () => {
         sentBy: getCurrentUser()?.name || 'Admin Keuangan'
       });
       await loadData();
+      showToast(`Faktur ${inv.id} ditandai sudah dikirim ke pelanggan.`);
     } catch (err) {
-      alert('Gagal memperbarui faktur. Coba lagi.');
+      showToast('Gagal memperbarui faktur. Coba lagi.', 'error');
     }
   };
 
   // Submit Kas Masuk
   const handleSubmitPayment = async (e: React.FormEvent) => {
     e.preventDefault();
+    setPaymentFormError(null);
     if (!paymentForm.amount || paymentForm.amount <= 0) {
-      alert('Masukkan jumlah pembayaran yang valid.');
+      setPaymentFormError('Masukkan jumlah pembayaran yang valid.');
       return;
     }
     if (!paymentForm.paymentMethod) {
-      alert('Pilih metode pembayaran.');
+      setPaymentFormError('Pilih metode pembayaran.');
       return;
     }
 
@@ -294,7 +311,7 @@ export const FinanceModule: React.FC = () => {
       setIsRecordPaymentOpen(false);
       await loadData();
     } catch (err: any) {
-      alert(err.message || 'Gagal mencatat pembayaran. Coba lagi.');
+      setPaymentFormError(err.message || 'Gagal mencatat pembayaran. Coba lagi.');
     } finally {
       setSubmitting(false);
     }
@@ -306,18 +323,28 @@ export const FinanceModule: React.FC = () => {
       const res = await authFetch(`/api/payments/${paymentId}/verify`, { method: 'POST' });
       if (res.ok) {
         await loadData();
+        showToast(`Pembayaran ${paymentId} diverifikasi dan dihitung ke fakturnya.`);
       } else {
         const data = await res.json().catch(() => ({} as any));
-        alert(data.error || 'Gagal memverifikasi pembayaran. Coba lagi.');
+        showToast(data.error || 'Gagal memverifikasi pembayaran. Coba lagi.', 'error');
       }
     } catch (err) {
-      alert('Koneksi bermasalah. Coba lagi.');
+      showToast('Koneksi bermasalah. Coba lagi.', 'error');
     }
   };
 
   /** A payment recorded by mistake is voided (kept as history); the invoice and order are recomputed. */
   const handleRejectPayment = async (paymentId: string) => {
-    const reason = window.prompt(`Batalkan pembayaran ${paymentId}? Tulis alasannya (mis. salah nominal / salah pesanan):`);
+    const reason = await ask({
+      title: `Batalkan pembayaran ${paymentId}?`,
+      message: 'Pembayaran tetap tersimpan sebagai riwayat, tetapi tidak lagi dihitung sebagai kas masuk. Faktur dan pesanan terkait langsung dihitung ulang.',
+      inputLabel: 'Alasan pembatalan',
+      placeholder: 'Mis. salah nominal / salah pesanan',
+      hint: 'Alasan ini tersimpan di riwayat pembayaran sebagai jejak audit.',
+      confirmLabel: 'Batalkan Pembayaran',
+      cancelLabel: 'Kembali',
+      tone: 'danger'
+    });
     if (reason === null) return;
     try {
       const res = await authFetch(`/api/payments/${paymentId}/reject`, {
@@ -327,12 +354,13 @@ export const FinanceModule: React.FC = () => {
       });
       if (res.ok) {
         await loadData();
+        showToast(`Pembayaran ${paymentId} dibatalkan.`);
       } else {
         const data = await res.json().catch(() => ({} as any));
-        alert(data.error || 'Gagal membatalkan pembayaran. Coba lagi.');
+        showToast(data.error || 'Gagal membatalkan pembayaran. Coba lagi.', 'error');
       }
     } catch {
-      alert('Koneksi bermasalah. Coba lagi.');
+      showToast('Koneksi bermasalah. Coba lagi.', 'error');
     }
   };
 
@@ -346,8 +374,9 @@ export const FinanceModule: React.FC = () => {
 
   const handleCreateInvoice = async (e: React.FormEvent) => {
     e.preventDefault();
+    setInvoiceFormError(null);
     if (!newInvoice.total || newInvoice.total <= 0) {
-      alert('Isi total tagihan faktur.');
+      setInvoiceFormError('Isi total tagihan faktur.');
       return;
     }
 
@@ -383,7 +412,7 @@ export const FinanceModule: React.FC = () => {
       setIsInvoiceModalOpen(false);
       await loadData();
     } catch (err: any) {
-      alert(err.message || 'Gagal membuat faktur. Coba lagi.');
+      setInvoiceFormError(err.message || 'Gagal membuat faktur. Coba lagi.');
     } finally {
       setSubmitting(false);
     }
@@ -1083,6 +1112,8 @@ export const FinanceModule: React.FC = () => {
         maxWidth="xl"
       >
         <form onSubmit={handleSubmitPayment} className="space-y-5">
+          <FormError>{paymentFormError}</FormError>
+
           {/* Linked Order Selector — lets a DP be recorded before an invoice exists */}
           <div>
             <label htmlFor="fin-pay-order" className={labelClass}>Pesanan</label>
@@ -1301,6 +1332,8 @@ export const FinanceModule: React.FC = () => {
         maxWidth="xl"
       >
         <form onSubmit={handleCreateInvoice} className="space-y-5">
+          <FormError>{invoiceFormError}</FormError>
+
           <div>
             <label htmlFor="fin-inv-order" className={labelClass}>Pesanan</label>
             <select
@@ -1464,6 +1497,8 @@ export const FinanceModule: React.FC = () => {
         </div>
       </Modal>
 
+      <Toast toast={toast} />
+      {confirmDialog}
     </div>
   );
 };

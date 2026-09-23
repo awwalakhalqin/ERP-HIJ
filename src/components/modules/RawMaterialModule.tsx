@@ -26,6 +26,9 @@ import { Modal } from '../ui/Modal';
 import { Card } from '../ui/Card';
 import { Button } from '../ui/Button';
 import { Input } from '../ui/Input';
+import { FormError } from '../ui/Field';
+import { Toast, useToast } from '../ui/Toast';
+import { useConfirm } from '../ui/ConfirmDialog';
 import { PageHeader } from '../ui/PageHeader';
 import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell, TableRowActions, RowActionButton, TableEmptyRow, TableSkeletonRows } from '../ui/Table';
 import { DetailDrawer, DetailSection, DetailField, DetailStats, RowDetailButton } from '../ui/DetailDrawer';
@@ -62,6 +65,15 @@ const stockCondition = (item: InventoryItem): { label: string; variant: 'critica
       : { label: 'Stok Aman', variant: 'done' };
 
 export const RawMaterialModule: React.FC = () => {
+  const { toast, showToast } = useToast();
+  const { confirm, confirmDialog } = useConfirm();
+  /*
+   * Tiga modal dengan form berbeda, jadi galatnya juga terpisah — pesan dari
+   * form aksesoris tidak pernah tersisa di form opname atau roll kain.
+   */
+  const [itemError, setItemError] = useState<string | null>(null);
+  const [opnameError, setOpnameError] = useState<string | null>(null);
+  const [rollError, setRollError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'inventory' | 'opname' | 'fabric'>('inventory');
   const [records, setRecords] = useState<any[]>([]);
   const [opnameRecords, setOpnameRecords] = useState<StockOpnameRecord[]>([]);
@@ -216,19 +228,23 @@ export const RawMaterialModule: React.FC = () => {
       location: '',
       supplier: ''
     });
+    setItemError(null);
     setIsAddModalOpen(true);
   };
 
   const handleOpenEdit = (item: InventoryItem) => {
     setSelectedItem(item);
     setItemForm({ ...item });
+    setItemError(null);
     setIsEditModalOpen(true);
   };
 
   const handleSaveItem = async (e: React.FormEvent) => {
     e.preventDefault();
+    setItemError(null);
+    // Galat isian tampil di dalam modal, tepat di atas form yang sedang diperbaiki.
     if (!itemForm.name?.trim()) {
-      alert('Nama aksesoris wajib diisi.');
+      setItemError('Nama aksesoris wajib diisi.');
       return;
     }
 
@@ -248,18 +264,24 @@ export const RawMaterialModule: React.FC = () => {
       setIsEditModalOpen(false);
       loadData();
     } catch (err) {
-      alert('Gagal menyimpan data aksesoris.');
+      setItemError('Gagal menyimpan data aksesoris.');
     }
   };
 
   const handleDeleteItem = async (id: string, name: string) => {
-    if (window.confirm(`Hapus item aksesoris "${name}" (${id})?`)) {
-      try {
-        await deleteResource('raw-materials', id);
-        loadData();
-      } catch (err) {
-        alert('Gagal menghapus item.');
-      }
+    const approved = await confirm({
+      title: `Hapus aksesoris "${name}"?`,
+      message: `Item ${id} hilang permanen dari daftar stok gudang dan tidak bisa dikembalikan. Riwayat stock opname yang sudah tercatat tetap tersimpan.`,
+      confirmLabel: 'Hapus Aksesoris',
+      tone: 'danger'
+    });
+    if (!approved) return;
+    try {
+      await deleteResource('raw-materials', id);
+      loadData();
+      showToast(`Aksesoris "${name}" dihapus dari gudang.`);
+    } catch (err) {
+      showToast('Gagal menghapus item.', 'error');
     }
   };
 
@@ -267,7 +289,7 @@ export const RawMaterialModule: React.FC = () => {
   const handleOpenOpname = (item?: InventoryItem) => {
     const targetItem = item || (stockItems.length > 0 ? stockItems[0] : null);
     if (!targetItem) {
-      alert('Belum ada data aksesoris untuk di-opname.');
+      showToast('Belum ada data aksesoris untuk di-opname.', 'error');
       return;
     }
 
@@ -281,6 +303,7 @@ export const RawMaterialModule: React.FC = () => {
       auditor: '',
       opnameDate: new Date().toISOString().split('T')[0]
     });
+    setOpnameError(null);
     setIsOpnameModalOpen(true);
   };
 
@@ -300,15 +323,16 @@ export const RawMaterialModule: React.FC = () => {
 
   const handleSaveOpname = async (e: React.FormEvent) => {
     e.preventDefault();
+    setOpnameError(null);
     const targetItem = stockItems.find(i => i.id === opnameForm.itemId);
     if (!targetItem) {
-      alert('Item aksesoris tidak valid.');
+      setOpnameError('Item aksesoris tidak valid.');
       return;
     }
 
     const difference = opnameForm.physicalStock - opnameForm.systemStock;
     if (difference !== 0 && !opnameForm.reason.trim()) {
-      alert('Karena terdapat selisih stok fisik dan sistem, mohon isi alasan/keterangan selisih.');
+      setOpnameError('Karena terdapat selisih stok fisik dan sistem, mohon isi alasan/keterangan selisih.');
       return;
     }
 
@@ -340,11 +364,11 @@ export const RawMaterialModule: React.FC = () => {
       });
 
       setIsOpnameModalOpen(false);
-      alert(`Stock Opname "${targetItem.name}" berhasil dicatat!\nStok sistem disesuaikan menjadi ${opnameForm.physicalStock} ${opnameForm.unit} (Selisih: ${difference > 0 ? '+' : ''}${difference} ${opnameForm.unit}).`);
+      showToast(`Opname "${targetItem.name}" tercatat. Stok sistem kini ${opnameForm.physicalStock} ${opnameForm.unit} (selisih ${difference > 0 ? '+' : ''}${difference} ${opnameForm.unit}).`);
       loadData();
     } catch (err) {
       console.error(err);
-      alert('Gagal menyimpan hasil stock opname.');
+      setOpnameError('Gagal menyimpan hasil stock opname.');
     }
   };
 
@@ -364,6 +388,7 @@ export const RawMaterialModule: React.FC = () => {
       supplier: '',
       status: 'Available'
     });
+    setRollError(null);
     setIsFabricModalOpen(true);
   };
 
@@ -374,11 +399,13 @@ export const RawMaterialModule: React.FC = () => {
   const handleOpenEditRoll = (roll: FabricRoll) => {
     setEditingRollId(roll.id);
     setRollForm({ ...roll });
+    setRollError(null);
     setIsFabricModalOpen(true);
   };
 
   const handleSaveRoll = async (e: React.FormEvent) => {
     e.preventDefault();
+    setRollError(null);
 
     if (editingRollId) {
       const lengthMeters = Number(rollForm.lengthMeters) || 0;
@@ -397,7 +424,7 @@ export const RawMaterialModule: React.FC = () => {
         setEditingRollId(null);
         loadData();
       } catch (err: any) {
-        alert(err?.message || 'Gagal menyimpan perubahan roll kain.');
+        setRollError(err?.message || 'Gagal menyimpan perubahan roll kain.');
       }
       return;
     }
@@ -423,7 +450,7 @@ export const RawMaterialModule: React.FC = () => {
       setIsFabricModalOpen(false);
       loadData();
     } catch (err: any) {
-      alert(err?.message || 'Gagal menyimpan roll kain.');
+      setRollError(err?.message || 'Gagal menyimpan roll kain.');
     }
   };
 
@@ -1178,6 +1205,7 @@ export const RawMaterialModule: React.FC = () => {
         maxWidth="lg"
       >
         <form onSubmit={handleSaveItem} className="space-y-4">
+          <FormError>{itemError}</FormError>
           <div>
             <label htmlFor="acc-name" className={labelClass}>Nama Aksesoris *</label>
             <input
@@ -1325,6 +1353,7 @@ export const RawMaterialModule: React.FC = () => {
         maxWidth="lg"
       >
         <form onSubmit={handleSaveOpname} className="space-y-4">
+          <FormError>{opnameError}</FormError>
           <div className="p-3 bg-teal-50 border border-teal-200 rounded-xl text-xs text-teal-900">
             <p className="font-semibold flex items-center gap-1.5">
               <ClipboardCheck size={16} className="text-teal-700" />
@@ -1478,6 +1507,7 @@ export const RawMaterialModule: React.FC = () => {
         title={editingRollId ? `Ubah Lot Kain ${editingRollId}` : 'Tambah Lot Roll Kain Proyek'}
       >
         <form onSubmit={handleSaveRoll} className="space-y-4">
+          <FormError>{rollError}</FormError>
           {editingRollId && (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 rounded-xl border border-teal-200 bg-teal-50/60 p-3">
               <div>
@@ -1576,6 +1606,9 @@ export const RawMaterialModule: React.FC = () => {
           </div>
         </form>
       </Modal>
+
+      <Toast toast={toast} />
+      {confirmDialog}
     </div>
   );
 };

@@ -14,6 +14,7 @@ import { fetchResource, createResource, updateResource, deleteResource } from '.
 import { formatDate, formatDateTime, generateId } from '../../lib/utils';
 import { getCurrentUser } from '../../lib/session';
 import { Toast, useToast } from '../ui/Toast';
+import { useConfirm } from '../ui/ConfirmDialog';
 import { Badge } from '../ui/Badge';
 import { Modal } from '../ui/Modal';
 import { Card } from '../ui/Card';
@@ -91,6 +92,7 @@ export const AccountsModule: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const { toast, showToast } = useToast();
+  const { confirm, confirmDialog } = useConfirm();
 
   // Who is signed in, so the screen cannot lock its own operator out.
   const currentUser = getCurrentUser();
@@ -245,7 +247,13 @@ export const AccountsModule: React.FC = () => {
       showToast(blocked, 'error');
       return false;
     }
-    if (!window.confirm(`Hapus akun ${user.name || user.username}?`)) return false;
+    const approved = await confirm({
+      title: `Hapus akun ${user.name || user.username}?`,
+      message: 'Akun ini langsung kehilangan akses ke aplikasi dan tidak bisa dipulihkan. Catatan yang pernah dibuatnya tetap tersimpan.',
+      confirmLabel: 'Hapus Akun',
+      tone: 'danger'
+    });
+    if (!approved) return false;
     try {
       await deleteResource('users', user.id);
       showToast('Akun dihapus.');
@@ -675,6 +683,11 @@ export const AccountsModule: React.FC = () => {
           </div>
         </form>
       </Modal>
+
+      {/* Terakhir dalam urutan DOM: Modal dan DetailDrawer sama-sama z-50 tanpa
+          portal, jadi konfirmasi hanya tampil di atas keduanya bila dirender
+          paling belakang. */}
+      {confirmDialog}
     </div>
   );
 };

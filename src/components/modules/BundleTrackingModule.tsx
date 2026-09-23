@@ -5,7 +5,6 @@ import {
   Plus,
   Scan,
   Printer,
-  CheckCircle2,
   ArrowRight
 } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
@@ -13,6 +12,7 @@ import { WIPBundle, SPK } from '../../types';
 import { fetchResource, createResource, scanWIPBundle } from '../../services/api';
 import { formatDate, formatDateTime } from '../../lib/utils';
 import { StatusBadge } from '../ui/Badge';
+import { Toast, useToast } from '../ui/Toast';
 import { Modal } from '../ui/Modal';
 import { ScannerModal } from '../common/ScannerModal';
 import { Card } from '../ui/Card';
@@ -126,12 +126,7 @@ export const BundleTrackingModule: React.FC = () => {
 
   // Scan feedback shown on the page (the scanner closes itself after a read)
   const [scanError, setScanError] = useState<string | null>(null);
-  const [toastMessage, setToastMessage] = useState<string | null>(null);
-
-  const showToast = (msg: string) => {
-    setToastMessage(msg);
-    setTimeout(() => setToastMessage(null), 4000);
-  };
+  const { toast, showToast } = useToast();
 
   const loadData = async () => {
     try {
@@ -321,17 +316,6 @@ export const BundleTrackingModule: React.FC = () => {
 
   return (
     <div className="space-y-6">
-      {/* Scan result notification */}
-      {toastMessage && (
-        <div
-          role="status"
-          className="fixed top-5 left-4 right-4 sm:left-auto sm:right-5 z-50 sm:max-w-md bg-slate-900 text-white px-4 py-3 rounded-2xl shadow-xl border border-teal-500/50 flex items-center gap-2.5 text-sm font-medium"
-        >
-          <CheckCircle2 size={18} className="text-teal-400 shrink-0" aria-hidden="true" />
-          <span className="min-w-0 break-words">{toastMessage}</span>
-        </div>
-      )}
-
       <PageHeader
         title="Lacak Bundel"
         description="Scan QR bundel untuk pindah ke tahap berikutnya."
@@ -817,6 +801,8 @@ export const BundleTrackingModule: React.FC = () => {
         title="Scan QR Bundel"
         subtitle="Arahkan kamera ke QR pada tiket bundel."
       />
+
+      <Toast toast={toast} />
     </div>
   );
 };

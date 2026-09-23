@@ -44,6 +44,8 @@ import {
   Select,
   Textarea
 } from '../ui/Field';
+import { Toast, useToast } from '../ui/Toast';
+import { useConfirm } from '../ui/ConfirmDialog';
 import { PageHeader } from '../ui/PageHeader';
 import { OrderFlowStepper } from '../ui/OrderFlowStepper';
 import {
@@ -69,6 +71,10 @@ import {
 } from '../ui/DetailDrawer';
 
 export const PPICModule: React.FC = () => {
+  // Satu kabar singkat memakai Toast bersama, supaya kegagalan tampil merah dan
+  // tidak pernah terbaca seperti keberhasilan.
+  const { toast, showToast } = useToast();
+  const { confirm, confirmDialog } = useConfirm();
   const [spks, setSpks] = useState<SPK[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
   /** Live charts from the Size Chart page; the printed SPK shows the one its order names. */
@@ -132,7 +138,6 @@ export const PPICModule: React.FC = () => {
     designs: []
   });
   const [inventory, setInventory] = useState<InventoryItem[]>([]);
-  const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [savingOrderId, setSavingOrderId] = useState<string | null>(null);
 
   const [waiveOrder, setWaiveOrder] = useState<Order | null>(null);
@@ -257,10 +262,17 @@ export const PPICModule: React.FC = () => {
   };
 
   const handleRemoveAssignment = async (assignment: WorkAssignment) => {
-    if (!window.confirm(`Hapus catatan ${assignment.operatorName} (${assignment.task}, ${assignment.qty} pcs)?`)) return;
+    const approved = await confirm({
+      title: `Hapus catatan kerja ${assignment.operatorName}?`,
+      message: `${assignment.task} ${assignment.qty} pcs beserta upahnya hilang permanen, dan progres tahap ini ikut berkurang sebanyak itu.`,
+      confirmLabel: 'Hapus Catatan',
+      tone: 'danger'
+    });
+    if (!approved) return;
     try {
       await deleteResource('work-assignments', assignment.id);
       await loadData();
+      showToast(`Catatan ${assignment.operatorName} (${assignment.task}, ${assignment.qty} pcs) dihapus.`);
     } catch {
       setWorkerError('Gagal menghapus catatan. Coba lagi.');
     }
@@ -299,11 +311,6 @@ export const PPICModule: React.FC = () => {
     loadData();
   }, []);
 
-  const showToast = (msg: string) => {
-    setToastMessage(msg);
-    setTimeout(() => setToastMessage(null), 4000);
-  };
-
   const today = () => new Date().toISOString().split('T')[0];
 
   const awaitingOrders = useMemo(() => ordersAwaitingSpk(orders, spks), [orders, spks]);
@@ -327,14 +334,19 @@ export const PPICModule: React.FC = () => {
       showToast(successMsg);
       await loadData();
     } catch (err) {
-      alert('Gagal menyimpan perubahan pesanan. Coba lagi.');
+      showToast('Gagal menyimpan perubahan pesanan. Coba lagi.', 'error');
     } finally {
       setSavingOrderId(null);
     }
   };
 
-  const handleApproveSpecialTerms = (order: Order) => {
-    if (!window.confirm(`Setujui termin khusus untuk ${order.id}? Produksi boleh dimulai sebelum DP diterima.`)) return;
+  const handleApproveSpecialTerms = async (order: Order) => {
+    const approved = await confirm({
+      title: `Setujui termin khusus untuk ${order.id}?`,
+      message: 'Produksi boleh dimulai sebelum DP diterima, dan persetujuan ini tercatat atas nama Anda di riwayat pesanan.',
+      confirmLabel: 'Setujui Termin'
+    });
+    if (!approved) return;
     updateOrderFields(
       order,
       { specialTermsApprovedBy: currentUser?.name || 'Owner', specialTermsApprovedAt: new Date().toISOString() },
@@ -342,8 +354,19 @@ export const PPICModule: React.FC = () => {
     );
   };
 
-  const handleUndoConfirmation = (order: Order, key: RequirementKey) => {
-    if (!window.confirm(`Batalkan konfirmasi untuk ${order.id}?`)) return;
+  const handleUndoConfirmation = async (order: Order, key: RequirementKey) => {
+    const approved = await confirm({
+      title: `Batalkan konfirmasi untuk ${order.id}?`,
+      message:
+        key === 'dp'
+          ? 'Persetujuan termin khusus dicabut, jadi syarat DP kembali menahan penerbitan SPK.'
+          : key === 'sample'
+            ? 'Tanda repeat order dilepas, jadi sampel fisik kembali wajib disetujui sebelum SPK terbit.'
+            : 'Konfirmasi stok bahan dilepas, jadi syarat bahan kembali menahan penerbitan SPK.',
+      confirmLabel: 'Batalkan Konfirmasi',
+      tone: 'danger'
+    });
+    if (!approved) return;
     const fields: Partial<Order> =
       key === 'dp'
         ? { specialTermsApprovedBy: '', specialTermsApprovedAt: '' }
@@ -744,14 +767,6 @@ export const PPICModule: React.FC = () => {
 
   return (
     <div className="space-y-6">
-      {/* Toast Notification */}
-      {toastMessage && (
-        <div className="fixed top-5 left-4 right-4 sm:left-auto sm:right-5 z-50 sm:max-w-md bg-slate-900 text-white px-4 py-3 rounded-2xl shadow-xl border border-teal-500/50 flex items-center gap-2.5 text-sm font-semibold" role="status">
-          <CheckCircle2 size={18} className="text-teal-400 shrink-0" aria-hidden="true" />
-          <span className="min-w-0 break-words">{toastMessage}</span>
-        </div>
-      )}
-
       <PageHeader
         title="Surat Perintah Kerja (SPK)"
         description="Antrean pesanan yang menunggu SPK, dan daftar SPK berjalan beserta progres tiap tahapnya."
@@ -1837,6 +1852,9 @@ export const PPICModule: React.FC = () => {
           );
         })()}
       </Modal>
+
+      <Toast toast={toast} />
+      {confirmDialog}
     </div>
   );
 };

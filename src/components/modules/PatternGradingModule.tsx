@@ -14,6 +14,8 @@ import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell, TableRow
 import { DetailDrawer, DetailSection, DetailField, DetailStats, DetailBlock, RowDetailButton } from '../ui/DetailDrawer';
 import { newestFirst } from '../../lib/ordering';
 import { FieldLabel, FieldHint, FieldError, FormError, Select } from '../ui/Field';
+import { Toast, useToast } from '../ui/Toast';
+import { useConfirm } from '../ui/ConfirmDialog';
 
 const PATTERN_CATEGORIES = ['Kaos', 'Kemeja', 'Jaket', 'Celana', 'Baju Koko', 'Rompi', 'Lainnya'];
 
@@ -37,12 +39,16 @@ function nextPatternCode(category: string, patterns: Pattern[]): string {
 }
 
 export const PatternGradingModule: React.FC = () => {
+  const { toast, showToast } = useToast();
+  const { confirm, confirmDialog } = useConfirm();
 
   // Pattern register (SOP-06)
   const [patterns, setPatterns] = useState<Pattern[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
   const [loadingPatterns, setLoadingPatterns] = useState(true);
   const [isAddOpen, setIsAddOpen] = useState(false);
+  /** Galat isian modal Tambah Pola; terpisah dari chartError milik editor size chart. */
+  const [patternError, setPatternError] = useState<string | null>(null);
   const [codeTouched, setCodeTouched] = useState(false);
   const [newPattern, setNewPattern] = useState({
     id: '',
@@ -116,6 +122,7 @@ export const PatternGradingModule: React.FC = () => {
 
   const handleOpenAdd = () => {
     setCodeTouched(false);
+    setPatternError(null);
     setNewPattern({
       id: nextPatternCode('Kaos', patterns),
       productName: '',
@@ -130,13 +137,14 @@ export const PatternGradingModule: React.FC = () => {
 
   const handleCreatePattern = async (e: React.FormEvent) => {
     e.preventDefault();
+    setPatternError(null);
     const code = newPattern.id.trim().toUpperCase();
     if (!code) {
-      alert('Isi kode pola.');
+      setPatternError('Isi kode pola.');
       return;
     }
     if (patterns.some(p => p.id.toUpperCase() === code)) {
-      alert(`Kode pola ${code} sudah dipakai.`);
+      setPatternError(`Kode pola ${code} sudah dipakai. Ganti dengan kode lain.`);
       return;
     }
 
@@ -159,12 +167,17 @@ export const PatternGradingModule: React.FC = () => {
       setIsAddOpen(false);
       loadPatterns();
     } catch (err) {
-      alert('Gagal menyimpan pola. Coba lagi.');
+      setPatternError('Gagal menyimpan pola. Coba lagi.');
     }
   };
 
   const handleFinalize = async (pattern: Pattern) => {
-    if (!window.confirm(`Tandai pola ${pattern.id} sebagai final? Pola final menjadi acuan resmi pemotongan.`)) return;
+    const approved = await confirm({
+      title: `Tandai pola ${pattern.id} sebagai final?`,
+      message: 'Pola final menjadi acuan resmi pemotongan. Untuk mengubahnya lagi, pola harus dibuatkan revisi baru.',
+      confirmLabel: 'Tandai Final'
+    });
+    if (!approved) return;
     try {
       await updateResource('patterns', pattern.id, {
         status: 'Final',
@@ -172,13 +185,19 @@ export const PatternGradingModule: React.FC = () => {
         finalizedAt: new Date().toISOString()
       });
       loadPatterns();
+      showToast(`Pola ${pattern.id} ditandai final dan siap dipakai memotong.`);
     } catch (err) {
-      alert('Gagal memperbarui pola. Coba lagi.');
+      showToast('Gagal memperbarui pola. Coba lagi.', 'error');
     }
   };
 
   const handleRevise = async (pattern: Pattern) => {
-    if (!window.confirm(`Buat revisi pola ${pattern.id}? Status kembali ke draf sampai ditandai final lagi.`)) return;
+    const approved = await confirm({
+      title: `Buat revisi pola ${pattern.id}?`,
+      message: 'Nomor revisi naik satu dan status kembali ke draf, sehingga pola ini tidak boleh dipakai memotong sampai ditandai final lagi.',
+      confirmLabel: 'Buat Revisi'
+    });
+    if (!approved) return;
     try {
       await updateResource('patterns', pattern.id, {
         revision: (Number(pattern.revision) || 0) + 1,
@@ -187,8 +206,9 @@ export const PatternGradingModule: React.FC = () => {
         finalizedAt: ''
       });
       loadPatterns();
+      showToast(`Pola ${pattern.id} kembali ke draf sebagai revisi ${(Number(pattern.revision) || 0) + 1}.`);
     } catch (err) {
-      alert('Gagal membuat revisi. Coba lagi.');
+      showToast('Gagal membuat revisi. Coba lagi.', 'error');
     }
   };
 
@@ -207,7 +227,7 @@ export const PatternGradingModule: React.FC = () => {
       setLinkPattern(null);
       loadPatterns();
     } catch (err) {
-      alert('Gagal menghubungkan pesanan. Coba lagi.');
+      showToast('Gagal menghubungkan pesanan. Coba lagi.', 'error');
     }
   };
 
@@ -248,13 +268,20 @@ export const PatternGradingModule: React.FC = () => {
   };
 
   const handleDeleteChart = async (chart: SizeChart) => {
-    if (!window.confirm(`Hapus size chart "${chart.name}" milik ${chart.customerName || chart.customerId}?`)) return;
+    const approved = await confirm({
+      title: `Hapus size chart "${chart.name}"?`,
+      message: `Chart khusus ${chart.customerName || chart.customerId} beserta seluruh baris ukurannya hilang permanen. Salin dulu dari standar bila masih dibutuhkan.`,
+      confirmLabel: 'Hapus Size Chart',
+      tone: 'danger'
+    });
+    if (!approved) return;
     try {
       await deleteResource('size-charts', chart.id);
       setSelectedChartId('');
       loadPatterns();
+      showToast(`Size chart "${chart.name}" dihapus.`);
     } catch {
-      alert('Gagal menghapus size chart. Coba lagi.');
+      showToast('Gagal menghapus size chart. Coba lagi.', 'error');
     }
   };
 
@@ -959,6 +986,8 @@ export const PatternGradingModule: React.FC = () => {
       {/* ADD PATTERN MODAL */}
       <Modal isOpen={isAddOpen} onClose={() => setIsAddOpen(false)} title="Tambah Pola" maxWidth="2xl">
         <form onSubmit={handleCreatePattern} className="space-y-5">
+          <FormError>{patternError}</FormError>
+
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <label htmlFor="pg-category" className={labelClass}>Kategori</label>
@@ -1111,6 +1140,9 @@ export const PatternGradingModule: React.FC = () => {
           </div>
         </form>
       </Modal>
+
+      <Toast toast={toast} />
+      {confirmDialog}
     </div>
   );
 };

@@ -11,6 +11,7 @@ import { COMPANY_CONTACT } from '../../config/contact';
 import { Button } from '../ui/Button';
 import { Input } from '../ui/Input';
 import { FormError } from '../ui/Field';
+import { Toast, useToast } from '../ui/Toast';
 import { PageHeader } from '../ui/PageHeader';
 import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell, TableRowActions, RowActionButton, TableEmptyRow, TableSkeletonRows } from '../ui/Table';
 import { DetailDrawer, DetailSection, DetailField, DetailStats, RowDetailButton } from '../ui/DetailDrawer';
@@ -26,9 +27,10 @@ const NEXT_STEP: Partial<Record<Shipment['status'], { next: Shipment['status']; 
 };
 
 export const ShippingModule: React.FC = () => {
+  // Satu kotak pesan untuk seluruh modul: kabar berhasil hijau, kegagalan merah.
+  const { toast, showToast } = useToast();
   const [shipments, setShipments] = useState<Shipment[]>([]);
   const [updatingId, setUpdatingId] = useState<string | null>(null);
-  const [toastMessage, setToastMessage] = useState<string | null>(null);
   // What the server said when a write was refused, shown where the action was taken.
   const [formError, setFormError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -89,11 +91,6 @@ export const ShippingModule: React.FC = () => {
   useEffect(() => {
     loadData();
   }, []);
-
-  const showToast = (msg: string) => {
-    setToastMessage(msg);
-    setTimeout(() => setToastMessage(null), 5000);
-  };
 
   const handleAdvanceStatus = async (s: Shipment) => {
     const step = NEXT_STEP[s.status];
@@ -174,7 +171,7 @@ export const ShippingModule: React.FC = () => {
     try {
       await exportElementToPdf('surat-jalan-doc', `SuratJalan_${printShipment.id}`);
     } catch (err) {
-      alert('Gagal membuat PDF surat jalan. Coba lagi.');
+      showToast('Gagal membuat PDF surat jalan. Coba lagi.', 'error');
     }
   };
 
@@ -213,13 +210,6 @@ export const ShippingModule: React.FC = () => {
 
   return (
     <div className="space-y-6">
-      {toastMessage && (
-        <div className="fixed top-5 left-4 right-4 sm:left-auto sm:right-5 z-50 sm:max-w-sm bg-slate-900 text-white px-4 py-3 rounded-2xl shadow-xl border border-teal-500/50 flex items-center gap-2.5 text-sm font-semibold" role="status">
-          <CheckCircle2 size={18} className="text-teal-400 shrink-0" aria-hidden="true" />
-          <span className="min-w-0 break-words">{toastMessage}</span>
-        </div>
-      )}
-
       <PageHeader
         title="Pengiriman"
         description="Buat surat jalan dan pantau status kiriman ke pelanggan."
@@ -677,6 +667,8 @@ export const ShippingModule: React.FC = () => {
           </div>
         </div>
       </Modal>
+
+      <Toast toast={toast} />
     </div>
   );
 };

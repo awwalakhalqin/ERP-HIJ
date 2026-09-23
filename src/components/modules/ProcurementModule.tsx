@@ -22,6 +22,9 @@ import { Modal } from '../ui/Modal';
 import { Card } from '../ui/Card';
 import { Button } from '../ui/Button';
 import { Input } from '../ui/Input';
+import { FormError } from '../ui/Field';
+import { Toast, useToast } from '../ui/Toast';
+import { useConfirm } from '../ui/ConfirmDialog';
 import { PageHeader } from '../ui/PageHeader';
 import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell, TableRowActions, RowActionButton, TableEmptyRow, TableSkeletonRows } from '../ui/Table';
 import { DetailDrawer, DetailSection, DetailField, DetailStats, RowDetailButton } from '../ui/DetailDrawer';
@@ -37,6 +40,10 @@ const CATEGORIES = [
 ] as const;
 
 export const ProcurementModule: React.FC = () => {
+  const { toast, showToast } = useToast();
+  const { confirm, confirmDialog } = useConfirm();
+  /** Galat isian form, ditampilkan di dalam modal tepat di atas kolom yang salah. */
+  const [formError, setFormError] = useState<string | null>(null);
   const [items, setItems] = useState<Procurement[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(true);
@@ -119,6 +126,7 @@ export const ProcurementModule: React.FC = () => {
       category: 'Kain Utama',
       notes: ''
     });
+    setFormError(null);
     setIsModalOpen(true);
   };
 
@@ -126,6 +134,7 @@ export const ProcurementModule: React.FC = () => {
     setIsEditMode(true);
     setSelectedItem(item);
     setFormData({ ...item });
+    setFormError(null);
     setIsModalOpen(true);
   };
 
@@ -158,12 +167,15 @@ export const ProcurementModule: React.FC = () => {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setFormError(null);
+    // Galat isian muncul di dalam modal, bukan di kotak browser yang menutupi
+    // form yang sedang diperbaiki.
     if (!formData.intendedFor) {
-      alert('Harap pilih Proyek / Pesanan tujuan. Pengadaan bahan wajib terikat ke kebutuhan proyek.');
+      setFormError('Harap pilih Proyek / Pesanan tujuan. Pengadaan bahan wajib terikat ke kebutuhan proyek.');
       return;
     }
     if (!formData.itemName?.trim()) {
-      alert('Nama barang / spesifikasi bahan wajib diisi.');
+      setFormError('Nama barang / spesifikasi bahan wajib diisi.');
       return;
     }
 
@@ -183,18 +195,26 @@ export const ProcurementModule: React.FC = () => {
       loadData();
     } catch (err) {
       console.error('Save procurement error:', err);
-      alert('Gagal menyimpan catatan pembelian. Coba lagi.');
+      setFormError('Gagal menyimpan catatan pembelian. Coba lagi.');
     }
   };
 
   const handleDelete = async (id: string) => {
-    if (window.confirm(`Hapus catatan pembelian ${id}?`)) {
-      try {
-        await deleteResource('procurements', id);
-        loadData();
-      } catch (err) {
-        console.error('Delete error:', err);
-      }
+    const item = items.find(i => i.id === id);
+    const approved = await confirm({
+      title: `Hapus catatan pembelian ${id}?`,
+      message: `Riwayat pembelian${item ? ` ${item.itemName}` : ''} beserta nilai belanjanya hilang permanen dan ikut keluar dari rekap belanja proyek. Bahan yang sudah dibeli tidak terpengaruh.`,
+      confirmLabel: 'Hapus Catatan',
+      tone: 'danger'
+    });
+    if (!approved) return;
+    try {
+      await deleteResource('procurements', id);
+      loadData();
+      showToast(`Catatan pembelian ${id} dihapus.`);
+    } catch (err) {
+      console.error('Delete error:', err);
+      showToast('Gagal menghapus catatan pembelian. Coba lagi.', 'error');
     }
   };
 
@@ -615,6 +635,8 @@ export const ProcurementModule: React.FC = () => {
         maxWidth="2xl"
       >
         <form onSubmit={handleSubmit} className="space-y-5">
+          <FormError>{formError}</FormError>
+
           {/* Linked Project Selection (Wajib) */}
           <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl space-y-3">
             <div>
@@ -851,6 +873,9 @@ export const ProcurementModule: React.FC = () => {
           </div>
         </form>
       </Modal>
+
+      <Toast toast={toast} />
+      {confirmDialog}
     </div>
   );
 };

@@ -27,7 +27,9 @@ import { Modal } from '../ui/Modal';
 import { Card } from '../ui/Card';
 import { Button } from '../ui/Button';
 import { Input } from '../ui/Input';
-import { FieldLabel, FieldHint, FieldError, FormSection, FormNotice, Select, Textarea, ChipButton } from '../ui/Field';
+import { FieldLabel, FieldHint, FieldError, FormError, FormSection, FormNotice, Select, Textarea, ChipButton } from '../ui/Field';
+import { Toast, useToast } from '../ui/Toast';
+import { useConfirm } from '../ui/ConfirmDialog';
 import { PageHeader } from '../ui/PageHeader';
 import { Table, TableHeader, TableHead, TableBody, TableRow, TableCell, TableRowActions, RowActionButton, TableEmptyRow, TableSkeletonRows } from '../ui/Table';
 import { DetailDrawer, DetailSection, DetailField, DetailStats, DetailBlock, RowDetailButton } from '../ui/DetailDrawer';
@@ -45,6 +47,10 @@ interface CustomersModuleProps {
 }
 
 export const CustomersModule: React.FC<CustomersModuleProps> = ({ onPreviewCustomerPortal }) => {
+  const { toast, showToast } = useToast();
+  const { confirm, confirmDialog } = useConfirm();
+  /** Galat isian form, ditampilkan di dalam modal tepat di atas tombol simpan. */
+  const [formError, setFormError] = useState<string | null>(null);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(true);
@@ -186,6 +192,7 @@ export const CustomersModule: React.FC<CustomersModuleProps> = ({ onPreviewCusto
       password: generateSecurePassword(),
       portalAccessActive: true
     });
+    setFormError(null);
     setIsModalOpen(true);
   };
 
@@ -199,20 +206,24 @@ export const CustomersModule: React.FC<CustomersModuleProps> = ({ onPreviewCusto
       password: '',
       portalAccessActive: customer.portalAccessActive !== false
     });
+    setFormError(null);
     setIsModalOpen(true);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setFormError(null);
+    // Galat isian muncul di dalam modal, tepat di atas tombol simpan — bukan di
+    // kotak browser yang menutupi form yang sedang diperbaiki.
     if (!formData.name?.trim()) {
-      alert('Nama pelanggan wajib diisi.');
+      setFormError('Nama pelanggan wajib diisi.');
       return;
     }
 
     if (formData.portalAccessActive !== false && formData.username) {
       const val = validateUsername(formData.username, selectedCustomer?.id);
       if (!val.valid) {
-        alert(`Validasi Username Gagal: ${val.message}`);
+        setFormError(`Username belum bisa dipakai: ${val.message}`);
         return;
       }
     }
@@ -238,24 +249,30 @@ export const CustomersModule: React.FC<CustomersModuleProps> = ({ onPreviewCusto
       loadData();
     } catch (err: any) {
       console.error('Save customer error:', err);
-      alert(err.message || 'Gagal menyimpan data pelanggan.');
+      setFormError(err.message || 'Gagal menyimpan data pelanggan.');
     }
   };
 
   /** Returns true when the user confirmed the deletion. */
   const handleDelete = async (id: string) => {
-    if (window.confirm(`Hapus data pelanggan ${id}? Tindakan ini tidak dapat dibatalkan.`)) {
-      try {
-        await deleteResource('customers', id);
-        loadData();
-      } catch (err: any) {
-        // e.g. 409: the customer still has orders or quotations — the server says which.
-        alert(err?.message || 'Gagal menghapus pelanggan. Coba lagi.');
-        return false;
-      }
-      return true;
+    const customer = customers.find(c => c.id === id);
+    const approved = await confirm({
+      title: `Hapus pelanggan ${customer?.name || id}?`,
+      message: 'Data pelanggan beserta akses portalnya dihapus permanen. Riwayat pesanan yang sudah ada tidak ikut terhapus.',
+      confirmLabel: 'Hapus Pelanggan',
+      tone: 'danger'
+    });
+    if (!approved) return false;
+    try {
+      await deleteResource('customers', id);
+      loadData();
+      showToast(`Pelanggan ${customer?.name || id} dihapus.`);
+    } catch (err: any) {
+      // e.g. 409: the customer still has orders or quotations — the server says which.
+      showToast(err?.message || 'Gagal menghapus pelanggan. Coba lagi.', 'error');
+      return false;
     }
-    return false;
+    return true;
   };
 
   const getCustomerOrders = (customerId: string) => {
@@ -825,6 +842,7 @@ export const CustomersModule: React.FC<CustomersModuleProps> = ({ onPreviewCusto
         }
       >
         <form id="customer-form" onSubmit={handleSubmit} className="space-y-5">
+          <FormError>{formError}</FormError>
           <FormSection
             step={1}
             title="Identitas"
@@ -1041,6 +1059,9 @@ export const CustomersModule: React.FC<CustomersModuleProps> = ({ onPreviewCusto
           </FormSection>
         </form>
       </Modal>
+
+      <Toast toast={toast} />
+      {confirmDialog}
     </div>
   );
 };

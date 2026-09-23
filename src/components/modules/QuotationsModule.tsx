@@ -61,6 +61,7 @@ import {
 } from '../ui/Field';
 import { Modal } from '../ui/Modal';
 import { Toast, useToast } from '../ui/Toast';
+import { useConfirm } from '../ui/ConfirmDialog';
 import { QuotationDocument } from '../documents/QuotationDocument';
 import {
   PaymentTermsEditor,
@@ -159,6 +160,7 @@ export const QuotationsModule: React.FC = () => {
   const [quoStageFilter, setQuoStageFilter] = useState<'ALL' | 'PENDING' | 'APPROVED' | 'REJECTED'>('ALL');
   const [quotationSort, setQuotationSort] = useState<SortState>({ key: 'newest', direction: 'desc' });
   const { toast, showToast } = useToast();
+  const { confirm, confirmDialog } = useConfirm();
 
   // Selected design for auto-fill
   const [selectedDesignId, setSelectedDesignId] = useState<string>('');
@@ -716,7 +718,13 @@ export const QuotationsModule: React.FC = () => {
     !q.supersededBy && !(q.status === 'Approved' && !!q.orderId);
 
   const handleDeleteQuotation = async (id: string) => {
-    if (!window.confirm(`Hapus surat penawaran ${id}? Tindakan ini tidak dapat dibatalkan.`)) return;
+    const approved = await confirm({
+      title: `Hapus surat penawaran ${id}?`,
+      message: 'Surat penawaran beserta rincian harganya hilang permanen dan tidak dapat dikembalikan. Klien yang sudah menerima salinannya perlu dikabari ulang.',
+      confirmLabel: 'Hapus Penawaran',
+      tone: 'danger'
+    });
+    if (!approved) return;
     try {
       await deleteResource('quotations', id);
       showToast(`Surat penawaran ${id} telah dihapus.`);
@@ -2022,6 +2030,9 @@ export const QuotationsModule: React.FC = () => {
           </div>
         </div>
       </Modal>
+
+      {/* Ditaruh paling akhir supaya kotak konfirmasi tampil di atas drawer dan modal lain. */}
+      {confirmDialog}
     </div>
   );
 };
