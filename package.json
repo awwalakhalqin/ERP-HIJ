@@ -18,7 +18,9 @@
     "build:all": "npm run build",
     "start": "node dist-server/server.js",
     "lint": "tsc --noEmit && tsc --noEmit -p tsconfig.server.json",
-    "build:client": "vite build"
+    "build:client": "vite build",
+    "migrate:sqlite": "node server/scripts/migrate-to-sqlite.mjs",
+    "check:storage": "tsx server/scripts/check-storage.ts"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.1.14",
@@ -38,6 +40,7 @@
     "lucide-react": "^0.546.0",
     "motion": "^12.38.0",
     "multer": "^2.1.1",
+    "node-sqlite3-wasm": "^0.8.60",
     "qrcode.react": "^4.2.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",

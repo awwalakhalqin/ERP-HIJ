@@ -14,10 +14,12 @@
  */
 import fs from 'fs';
 import path from 'path';
+import { openStore } from './lib/table-store.mjs';
 import crypto from 'crypto';
 
 const DATA_DIR = path.join(process.cwd(), 'server', 'data');
-const TABLES = ['users.json', 'customers.json'];
+const store = openStore(DATA_DIR, { readonly: true });
+const TABLES = ['users', 'customers'];
 const PREFIX = 'scrypt$';
 
 function hashPassword(plain) {
@@ -29,17 +31,15 @@ function hashPassword(plain) {
 let totalChanged = 0;
 
 for (const file of TABLES) {
-  const filePath = path.join(DATA_DIR, file);
-  if (!fs.existsSync(filePath)) {
-    console.log(`- ${file}: tidak ada, dilewati`);
-    continue;
-  }
-
   let rows;
   try {
-    rows = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+    rows = store.read(file);
   } catch (e) {
     console.error(`! ${file}: gagal dibaca, dilewati —`, e.message);
+    continue;
+  }
+  if (rows.length === 0) {
+    console.log(`- ${file}: kosong, dilewati`);
     continue;
   }
   if (!Array.isArray(rows)) {
@@ -61,11 +61,9 @@ for (const file of TABLES) {
   }
 
   if (changed > 0) {
-    // Same temp-file-then-rename the server uses, so an interrupted run cannot
-    // truncate an account table.
-    const tempPath = `${filePath}.tmp`;
-    fs.writeFileSync(tempPath, JSON.stringify(rows, null, 2), 'utf-8');
-    fs.renameSync(tempPath, filePath);
+    // Satu transaksi: sebuah jalannya yang terputus tidak bisa meninggalkan
+    // tabel akun setengah jadi.
+    store.write(file, rows);
   }
 
   totalChanged += changed;
@@ -80,3 +78,5 @@ console.log(
     ? `\nSelesai. ${totalChanged} kata sandi dipindahkan ke scrypt.`
     : '\nTidak ada yang perlu diubah — semua kata sandi sudah ter-hash.'
 );
+
+store.close();

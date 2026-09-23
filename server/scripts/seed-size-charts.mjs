@@ -13,13 +13,13 @@
  */
 import fs from 'fs';
 import path from 'path';
+import { openStore } from './lib/table-store.mjs';
 
 const argIndex = process.argv.indexOf('--data-dir');
 const DATA_DIR = path.resolve(
   process.cwd(),
   argIndex !== -1 ? process.argv[argIndex + 1] : path.join('server', 'data')
 );
-const FILE = path.join(DATA_DIR, 'size_charts.json');
 
 const IMAGE_DIR = '/templates/size chart';
 const COMMON_NOTES =
@@ -142,15 +142,8 @@ if (!fs.existsSync(DATA_DIR)) {
   process.exit(1);
 }
 
-let existing = [];
-if (fs.existsSync(FILE)) {
-  try {
-    const parsed = JSON.parse(fs.readFileSync(FILE, 'utf-8'));
-    if (Array.isArray(parsed)) existing = parsed;
-  } catch {
-    console.warn('size_charts.json tidak terbaca, dibuat ulang.');
-  }
-}
+const store = openStore(DATA_DIR);
+const existing = store.read('size_charts');
 
 // Charts a client owns are never touched by reseeding the factory's own.
 const customerCharts = existing.filter(c => c.scope === 'customer');
@@ -165,9 +158,8 @@ const seeded = STANDARD_CHARTS.map(chart => ({
 }));
 
 const merged = [...seeded, ...customerCharts];
-const tmp = `${FILE}.tmp`;
-fs.writeFileSync(tmp, JSON.stringify(merged, null, 2), 'utf-8');
-fs.renameSync(tmp, FILE);
+store.write('size_charts', merged);
+store.close();
 
 console.log(`Size chart standar HIJ: ${seeded.length} tersimpan.`);
 for (const c of seeded) {

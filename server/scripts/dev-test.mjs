@@ -15,8 +15,8 @@ const DATA_DIR = 'server/data-test';
 const API_PORT = process.env.PORT || '3002';
 const CLIENT_PORT = process.env.CLIENT_PORT || '5174';
 
-if (!fs.existsSync(path.join(process.cwd(), DATA_DIR))) {
-  console.error(`Dataset uji belum ada di ${DATA_DIR}.`);
+if (!fs.existsSync(path.join(process.cwd(), DATA_DIR, 'hij.db'))) {
+  console.error(`Basis data uji belum ada di ${DATA_DIR}/hij.db.`);
   console.error('Jalankan dulu:  npm run seed:test');
   process.exit(1);
 }

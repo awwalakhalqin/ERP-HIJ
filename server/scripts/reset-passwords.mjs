@@ -15,6 +15,7 @@
  */
 import fs from 'fs';
 import path from 'path';
+import { openStore } from './lib/table-store.mjs';
 import crypto from 'crypto';
 
 const DATA_DIR = path.join(process.cwd(), 'server', 'data');
@@ -34,18 +35,17 @@ function hashPassword(plain) {
   return `scrypt$${salt}$${crypto.scryptSync(plain, salt, 64).toString('hex')}`;
 }
 
+// Tabel dibaca dari hij.db; nama berkas lama dipakai sebagai nama tabel.
+const store = openStore(DATA_DIR, { readonly: true });
+const tableOf = (file) => file.replace(/\.json$/, '');
+
 function readTable(file) {
-  const p = path.join(DATA_DIR, file);
-  if (!fs.existsSync(p)) return null;
-  const rows = JSON.parse(fs.readFileSync(p, 'utf-8'));
-  return Array.isArray(rows) ? rows : null;
+  const rows = store.read(tableOf(file));
+  return rows.length > 0 ? rows : null;
 }
 
 function writeTable(file, rows) {
-  const p = path.join(DATA_DIR, file);
-  const tmp = `${p}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(rows, null, 2), 'utf-8');
-  fs.renameSync(tmp, p);
+  store.write(tableOf(file), rows);
 }
 
 const args = process.argv.slice(2);
@@ -124,3 +124,5 @@ console.log(`Pelanggan: ${issued.customers.length} kata sandi baru`);
 console.log('');
 console.log(`Daftar lengkap ditulis ke: ${OUT_FILE}`);
 console.log('Kirim per orang, lalu hapus berkas itu.');
+
+store.close();

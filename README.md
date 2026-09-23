@@ -12,7 +12,7 @@ Pesanan → Desain & Sampel → SPK → Potong/Jahit → QC → Kemas → Kirim.
 | --- | --- |
 | Tampilan | React 19 · TypeScript 5.8 · Vite 6 · Tailwind v4 |
 | Server | Express 4 dijalankan lewat `tsx`, dibundel dengan esbuild |
-| Penyimpanan | Berkas JSON di `server/data/` — tanpa SQL |
+| Penyimpanan | SQLite satu berkas (`hij.db`) di `server/data/`, lewat `node-sqlite3-wasm` — tanpa server basis data |
 | Autentikasi | scrypt untuk sandi, token HMAC-SHA256 berlaku 12 jam (modul `crypto` bawaan Node) |
 | Lain-lain | PWA (installable, jalan saat offline) · `xlsx` untuk impor & ekspor · jsPDF untuk dokumen cetak |
 
@@ -77,11 +77,14 @@ skrip pemasangan otomatis ada di [`deploy/README.md`](deploy/README.md).
    dan kata sandi lewat jaringan tanpa enkripsi.
 4. Supaya hidup lagi setelah restart atau crash, daftarkan `node dist-server/server.js`
    sebagai layanan (NSSM di Windows, atau pm2).
-5. `npm run backup` menyalin semua tabel dan unggahan ke `backups/<tanggal>/`.
+5. `npm run backup` menyalin basis data dan unggahan ke `backups/<tanggal>/`.
+   Salinan dibuat lewat `VACUUM INTO`, jadi aman dijalankan saat aplikasi hidup.
    Jadwalkan tiap malam (Task Scheduler) dan simpan salinannya di mesin lain.
-   **Memulihkan backup: hentikan server dulu**, salin berkas JSON-nya, lalu
-   jalankan lagi. Server memegang tabel di memori; berkas yang diganti saat
-   server hidup tidak terbaca dan akan tertimpa pada penulisan berikutnya.
+   **Memulihkan: hentikan aplikasi dulu**, salin `hij.db` ke `DATA_DIR`, lalu
+   jalankan lagi — berkas yang diganti saat aplikasi hidup tidak terbaca.
+   Sudah punya data dalam bentuk JSON dari versi sebelumnya? Pindahkan sekali
+   dengan `npm run migrate:sqlite` (aplikasi berhenti); berkas JSON lamanya
+   tidak dihapus, jadi bisa dibatalkan hanya dengan menghapus `hij.db`.
 6. Saat pertama dijalankan dengan versi ini, server menyelaraskan status
    pesanan dengan catatannya (log `Status N pesanan disesuaikan`): pesanan
    "Diproduksi" tanpa SPK berjalan kembali ke antrean SPK. SPK lama tanpa
@@ -103,12 +106,14 @@ yang rusak tidak pernah ditimpa — server berhenti dan memberi tahu.
 | `npm run lint` | Memeriksa tipe, tampilan dan server sekaligus |
 | `npm run build:all` | Build tampilan ke `dist/` dan server ke `dist-server/` |
 | `npm start` | Menjalankan hasil build |
-| `npm run backup` | Menyalin data dan unggahan ke `backups/<tanggal>/` |
+| `npm run backup` | Menyalin basis data dan unggahan ke `backups/<tanggal>/` |
+| `npm run migrate:sqlite` | Memindahkan tabel JSON lama ke `hij.db` (sekali, saat aplikasi berhenti) |
+| `npm run check:storage` | Memastikan transaksi membatalkan perubahan dengan benar |
 
 ## Datanya tidak ada di repositori ini
 
-`server/data/` memuat nama pelanggan, nomor telepon, alamat, harga, tagihan, dan
-hash sandi akun — jadi isinya tidak pernah ikut di-commit. Repositori ini publik;
+`server/data/hij.db` memuat nama pelanggan, nomor telepon, alamat, harga, tagihan,
+dan hash sandi akun — jadi isinya tidak pernah ikut di-commit. Repositori ini publik;
 data itu tinggal di server. Jalankan `npm run seed:test` untuk mendapat dataset
 yang bisa dipakai bekerja.
 

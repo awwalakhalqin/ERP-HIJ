@@ -1,14 +1,29 @@
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
+// Paket ini CommonJS: hanya default import yang bekerja saat bundel ESM
+// dijalankan Node. Named import gagal dengan "Named export not found".
+import sqlite from 'node-sqlite3-wasm';
+
+const { Database } = sqlite;
 
 /*
- * Which dataset this process serves.
+ * Penyimpanan: satu berkas SQLite, bukan 30 berkas JSON.
  *
- * DATA_DIR lets a test instance run against its own copy of the JSON tables, so
- * filling in trial orders never touches the real ones. Unset, it stays exactly
- * where it always was, so production is unaffected by the option existing.
+ * Sebelumnya tiap simpan menulis ulang seluruh tabel ke disk lewat debounce
+ * 100 ms, dan satu request yang menyentuh beberapa tabel bisa berhenti di
+ * tengah — faktur tercatat, pesanan tidak. Tabel-tabel itu memegang uang
+ * pelanggan, jadi keutuhannya lebih penting daripada kesederhanaan berkas.
+ *
+ * Yang berubah hanya berkas ini. Bentuk datanya tetap sama (satu baris = satu
+ * objek JSON bebas-skema), API-nya tetap sama, jadi index.ts dan seluruh modul
+ * tidak perlu tahu.
+ *
+ * Driver: node-sqlite3-wasm (SQLite dikompilasi ke WebAssembly). Driver native
+ * yang lazim, better-sqlite3, butuh compiler saat install — di hosting tanpa
+ * `make` pemasangannya gagal, dan aplikasi ini harus bisa dipasang di sana.
  */
+
 export const HIJ_MODE = process.env.HIJ_MODE === 'test' ? 'test' : 'production';
 
 export const DATA_DIR = process.env.DATA_DIR
@@ -19,139 +34,156 @@ if (!fs.existsSync(DATA_DIR)) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
 }
 
-// Memory Cache with Debounced File Persistence
-const memoryCache: Record<string, any[]> = {};
-const pendingWrites: Record<string, NodeJS.Timeout> = {};
+export const DB_PATH = path.join(DATA_DIR, 'hij.db');
 
-function getFilePath(tableName: string): string {
-  const safeName = tableName.toLowerCase().replace(/[^a-z0-9_]/g, '');
-  return path.join(DATA_DIR, `${safeName}.json`);
+const db = new Database(DB_PATH);
+/*
+ * WAL: penulis tidak memblokir pembaca, dan crash di tengah transaksi
+ * dibatalkan sendiri saat berkas dibuka lagi. NORMAL cukup di bawah WAL —
+ * commit tetap tahan crash aplikasi, yang berisiko hanya mati listrik mendadak.
+ */
+db.exec('PRAGMA journal_mode = WAL');
+db.exec('PRAGMA synchronous = NORMAL');
+db.exec('PRAGMA busy_timeout = 5000');
+
+/** Tabel yang sudah dipastikan ada di berkas ini. */
+const ensured = new Set<string>();
+
+/*
+ * Cache baris per tabel. readTable() dipanggil berkali-kali dalam satu request
+ * (index.ts memfilter di JS), jadi membaca ulang dari disk tiap kali akan jauh
+ * lebih lambat daripada versi JSON. Cache memegang array yang sama yang
+ * dikembalikan ke pemanggil, sehingga referensinya tetap hidup seperti dulu.
+ */
+const cache: Record<string, any[]> = {};
+
+function safeName(tableName: string): string {
+  return tableName.toLowerCase().replace(/[^a-z0-9_]/g, '');
+}
+
+function ensureTable(tableName: string): string {
+  const table = safeName(tableName);
+  if (ensured.has(table)) return table;
+  db.exec(`CREATE TABLE IF NOT EXISTS "${table}" (id TEXT PRIMARY KEY, pos REAL NOT NULL, data TEXT NOT NULL)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS "${table}_pos" ON "${table}" (pos)`);
+  ensured.add(table);
+  return table;
+}
+
+/** Daftar tabel yang ada di berkas — dipakai skrip backup dan migrasi. */
+export function listTables(): string[] {
+  const rows = db.all("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name") as any[];
+  return rows.map(r => String(r.name));
 }
 
 export function readTable(tableName: string): any[] {
-  const key = tableName.toLowerCase();
-  if (memoryCache[key]) {
-    return memoryCache[key];
-  }
-
-  const filePath = getFilePath(tableName);
-  if (fs.existsSync(filePath)) {
-    try {
-      const data = fs.readFileSync(filePath, 'utf-8');
-      const parsed = JSON.parse(data);
-      memoryCache[key] = Array.isArray(parsed) ? parsed : [];
-      return memoryCache[key];
-    } catch (e) {
-      /*
-       * Carrying on with an empty table would persist that emptiness over the
-       * real data on the next write — and for users.json, initAdmin would then
-       * create a fresh admin and every login would be gone. Set the damaged
-       * file aside and stop, so someone restores it from backup.
-       */
-      const aside = `${filePath}.corrupt-${Date.now()}`;
-      try {
-        fs.renameSync(filePath, aside);
-      } catch {
-        // If even the rename fails the original stays where it is.
-      }
-      console.error(`
-Tabel ${tableName} rusak dan tidak bisa dibaca: ${e}
-Berkasnya dipindahkan ke ${aside}.
-Pulihkan dari backup lalu jalankan server lagi.
-`);
-      process.exit(1);
-    }
-  }
-
-  memoryCache[key] = [];
-  return [];
+  const table = ensureTable(tableName);
+  if (cache[table]) return cache[table];
+  const rows = db.all(`SELECT data FROM "${table}" ORDER BY pos ASC`) as any[];
+  cache[table] = rows.map(r => JSON.parse(String(r.data)));
+  return cache[table];
 }
 
-/*
- * Write through a temp file and rename. A rename is atomic on the same volume,
- * so a crash mid-write leaves the previous table intact instead of a truncated
- * one — writing straight over the destination could lose the whole table.
+/**
+ * Mengganti seluruh isi tabel. Dipakai jalur impor massal; satu transaksi,
+ * jadi tabel tidak pernah terlihat separuh terisi.
  */
-function persist(tableName: string, data: any[]) {
-  const filePath = getFilePath(tableName);
-  const tempPath = `${filePath}.tmp`;
-  try {
-    fs.writeFileSync(tempPath, JSON.stringify(data, null, 2), 'utf-8');
-    fs.renameSync(tempPath, filePath);
-  } catch (e) {
-    console.error(`Failed to persist ${tableName} to disk:`, e);
-    try {
-      if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
-    } catch {
-      // A leftover temp file is harmless; the next write replaces it.
-    }
-  }
-}
-
 export function writeTable(tableName: string, data: any[]) {
-  const key = tableName.toLowerCase();
-  memoryCache[key] = data;
-
-  // Debounced write to disk for high-performance throughput
-  if (pendingWrites[key]) {
-    clearTimeout(pendingWrites[key]);
-  }
-
-  pendingWrites[key] = setTimeout(() => {
-    delete pendingWrites[key];
-    persist(tableName, data);
-  }, 100);
+  const table = ensureTable(tableName);
+  const rows = Array.isArray(data) ? data : [];
+  transaction(() => {
+    db.run(`DELETE FROM "${table}"`);
+    const insert = db.prepare(`INSERT OR REPLACE INTO "${table}" (id, pos, data) VALUES (?, ?, ?)`);
+    try {
+      rows.forEach((row, index) => {
+        const id = row?.id === undefined || row?.id === null || row?.id === '' ? `ID-${Date.now()}-${index}` : String(row.id);
+        insert.run([id, index, JSON.stringify({ ...row, id })]);
+      });
+    } finally {
+      insert.finalize();
+    }
+  });
+  cache[table] = rows;
 }
 
 /*
- * Shared hosting stops an idle app without warning, and the 100 ms debounce
- * means the most recent writes may still be in memory when that happens. Every
- * exit path drains them first.
+ * Transaksi. Satu request HTTP dibungkus satu transaksi oleh index.ts, jadi
+ * penulisan ke beberapa tabel dalam satu aksi selesai semua atau tidak sama
+ * sekali. Hitungan kedalaman membuat transaksi bersarang aman: hanya lapisan
+ * terluar yang benar-benar BEGIN/COMMIT.
  */
-export function flushPendingWrites() {
-  for (const key of Object.keys(pendingWrites)) {
-    clearTimeout(pendingWrites[key]);
-    delete pendingWrites[key];
-    const data = memoryCache[key];
-    if (Array.isArray(data)) persist(key, data);
+let depth = 0;
+
+export function beginTransaction() {
+  if (depth === 0) db.exec('BEGIN');
+  depth += 1;
+}
+
+export function commitTransaction() {
+  if (depth === 0) return;
+  depth -= 1;
+  if (depth === 0) db.exec('COMMIT');
+}
+
+/**
+ * Membatalkan transaksi, lalu melupakan apa yang sempat diingat proses ini.
+ *
+ * Cache dibuang karena isinya memuat perubahan yang barusan dibatalkan. Daftar
+ * tabel juga dibuang: CREATE TABLE ikut di dalam transaksi, jadi tabel yang
+ * baru lahir di dalamnya hilang lagi saat ROLLBACK — tanpa ini, query
+ * berikutnya mencari tabel yang sudah tidak ada.
+ */
+export function rollbackTransaction() {
+  if (depth === 0) return;
+  depth = 0;
+  try {
+    db.exec('ROLLBACK');
+  } finally {
+    for (const key of Object.keys(cache)) delete cache[key];
+    ensured.clear();
   }
 }
 
-let flushed = false;
-function flushOnce() {
-  if (flushed) return;
-  flushed = true;
-  flushPendingWrites();
+export function inTransaction(): boolean {
+  return depth > 0;
 }
 
-process.on('exit', flushOnce);
-for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) {
-  process.on(signal, () => {
-    flushOnce();
-    process.exit(0);
-  });
+function transaction<T>(fn: () => T): T {
+  beginTransaction();
+  try {
+    const result = fn();
+    commitTransaction();
+    return result;
+  } catch (err) {
+    rollbackTransaction();
+    throw err;
+  }
 }
-process.on('uncaughtException', (err) => {
-  console.error('Uncaught exception, flushing data before exit:', err);
-  flushOnce();
-  process.exit(1);
-});
 
 export function insertItem(tableName: string, item: any): any {
+  const table = ensureTable(tableName);
   const records = readTable(tableName);
   const now = new Date().toISOString();
   const newItem = {
     ...item,
-    id: item.id || `ID-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+    id: item.id || `ID-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
     timestamp: item.timestamp || now,
     updatedAt: now
   };
+  /*
+   * Baris baru muncul paling atas, sama seperti versi JSON yang memakai
+   * unshift(). Beberapa pencarian mengambil kecocokan pertama, jadi urutan ini
+   * bagian dari perilaku, bukan selera.
+   */
+  const lowest = db.get(`SELECT MIN(pos) AS m FROM "${table}"`) as any;
+  const pos = lowest?.m === null || lowest?.m === undefined ? 0 : Number(lowest.m) - 1;
+  db.run(`INSERT INTO "${table}" (id, pos, data) VALUES (?, ?, ?)`, [String(newItem.id), pos, JSON.stringify(newItem)]);
   records.unshift(newItem);
-  writeTable(tableName, records);
   return newItem;
 }
 
 export function updateItem(tableName: string, id: string, updates: any): any | null {
+  const table = ensureTable(tableName);
   const records = readTable(tableName);
   const index = records.findIndex(r => String(r.id).toLowerCase() === String(id).toLowerCase());
   if (index === -1) return null;
@@ -159,21 +191,24 @@ export function updateItem(tableName: string, id: string, updates: any): any | n
   // A key sent as undefined means "no change", not "erase" — re-running an
   // Excel import wiped values that had been fixed in the app.
   const changes = Object.fromEntries(Object.entries(updates || {}).filter(([, v]) => v !== undefined));
-  records[index] = {
+  const updated = {
     ...records[index],
     ...changes,
     id: records[index].id, // keep original ID
     updatedAt: new Date().toISOString()
   };
-  writeTable(tableName, records);
-  return records[index];
+  db.run(`UPDATE "${table}" SET data = ? WHERE id = ?`, [JSON.stringify(updated), String(records[index].id)]);
+  records[index] = updated;
+  return updated;
 }
 
 export function deleteItem(tableName: string, id: string): boolean {
+  const table = ensureTable(tableName);
   const records = readTable(tableName);
-  const filtered = records.filter(r => String(r.id).toLowerCase() !== String(id).toLowerCase());
-  if (filtered.length === records.length) return false;
-  writeTable(tableName, filtered);
+  const index = records.findIndex(r => String(r.id).toLowerCase() === String(id).toLowerCase());
+  if (index === -1) return false;
+  db.run(`DELETE FROM "${table}" WHERE id = ?`, [String(records[index].id)]);
+  records.splice(index, 1);
   return true;
 }
 
@@ -182,7 +217,42 @@ export function findById(tableName: string, id: string): any | null {
   return records.find(r => String(r.id).toLowerCase() === String(id).toLowerCase()) || null;
 }
 
-// Ensure default Admin user exists in users.json
+/*
+ * Menutup berkas dengan rapi saat proses berhenti. SQLite sudah menulis tiap
+ * commit ke disk, jadi tidak ada yang perlu "dikuras" seperti dulu; ini hanya
+ * memastikan WAL dilipat balik ke berkas utama supaya backup berupa satu
+ * berkas tetap lengkap.
+ */
+let closed = false;
+export function closeDatabase() {
+  if (closed) return;
+  closed = true;
+  try {
+    if (depth > 0) {
+      depth = 0;
+      db.exec('ROLLBACK');
+    }
+    db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+    db.close();
+  } catch {
+    // Proses tetap berhenti; data yang sudah di-commit aman di berkas.
+  }
+}
+
+process.on('exit', closeDatabase);
+for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) {
+  process.on(signal, () => {
+    closeDatabase();
+    process.exit(0);
+  });
+}
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught exception, menutup basis data sebelum keluar:', err);
+  closeDatabase();
+  process.exit(1);
+});
+
+// Ensure default Admin user exists
 /*
  * First-run admin. The password comes from INITIAL_ADMIN_PASSWORD when set;
  * otherwise a random one is generated and printed once, because shipping a

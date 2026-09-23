@@ -12,7 +12,11 @@ import {
   deleteItem, 
   findById,
   HIJ_MODE,
-  DATA_DIR
+  DATA_DIR,
+  beginTransaction,
+  commitTransaction,
+  rollbackTransaction,
+  inTransaction
 } from './db.js';
 import { getOrderReadiness, verifiedPaidForOrder, designForOrder } from '../../src/lib/readiness.js';
 import {
@@ -89,6 +93,51 @@ app.use(['/api/import/commit', '/api/sync'], express.json({ limit: '50mb' }));
 app.use(express.json({ limit: '2mb' }));
 app.use(express.urlencoded({ extended: true, limit: '2mb' }));
 app.use(attachActor((type, id) => findById(type === 'internal' ? 'users' : 'customers', id)));
+
+/*
+ * Satu request = satu transaksi.
+ *
+ * Beberapa aksi menyentuh banyak tabel sekaligus — menyetujui penawaran
+ * menulis pesanan, penawaran, dan faktur; revisi deal menulis enam tabel.
+ * Dulu tiap penulisan berdiri sendiri, jadi proses yang mati di tengah urutan
+ * meninggalkan faktur tanpa pesanan yang cocok. Sekarang transaksi ditutup
+ * sebelum jawaban dikirim, dan apa pun yang gagal membatalkan seluruh aksi.
+ *
+ * Hanya jalur /api yang dibungkus: berkas statis tidak menyentuh basis data.
+ */
+app.use('/api', (_req: Request, res: Response, next: NextFunction) => {
+  beginTransaction();
+  let settled = false;
+  const settle = (ok: boolean) => {
+    if (settled || !inTransaction()) return;
+    settled = true;
+    if (ok) commitTransaction();
+    else rollbackTransaction();
+  };
+
+  // Commit sebelum badan jawaban terkirim, supaya klien tidak pernah menerima
+  // "berhasil" untuk penulisan yang ternyata gagal disimpan.
+  const json = res.json.bind(res);
+  res.json = (body?: any) => {
+    try {
+      settle(res.statusCode < 500);
+    } catch (err) {
+      console.error('Commit gagal:', err);
+      if (!res.headersSent) return json({ error: 'Perubahan tidak bisa disimpan. Coba lagi.' });
+    }
+    return json(body);
+  };
+  const send = res.send.bind(res);
+  res.send = (body?: any) => {
+    settle(res.statusCode < 500);
+    return send(body);
+  };
+
+  // Jaring pengaman: jawaban yang tidak lewat json()/send(), atau koneksi putus.
+  res.on('finish', () => settle(res.statusCode < 500));
+  res.on('close', () => settle(false));
+  next();
+});
 
 /*
  * The storefront, payment gateway and top-up integrations are a separate
@@ -3251,6 +3300,8 @@ if (fs.existsSync(DIST_DIR)) {
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
   console.error('Unhandled error:', err);
+  // Aksi yang melempar tidak boleh meninggalkan separuh perubahan.
+  rollbackTransaction();
   if (res.headersSent) return;
   const status = Number(err?.status || err?.statusCode) || 500;
   const message = err?.type === 'entity.parse.failed'

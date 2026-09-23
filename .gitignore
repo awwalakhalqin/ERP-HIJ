@@ -22,6 +22,11 @@ dev-dist/
 # ---------------------------------------------------------------------------
 server/data/*.json
 server/data-test/*.json
+# Basis data SQLite (dan berkas jurnalnya) plus salinan JSON dari migrasi.
+*.db
+*.db-wal
+*.db-shm
+json-backup-*/
 uploads/
 
 # Salinan data dari `npm run backup` — berisi data pelanggan, jangan di-commit.
