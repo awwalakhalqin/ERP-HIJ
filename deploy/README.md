@@ -48,3 +48,33 @@ NEXT_PUBLIC_API_URL=https://erp.hasilintijualan.com/api npm run build:static
 Unggah seluruh isi `out/` (termasuk `.htaccess`) ke `public_html` domain utama.
 Halaman lacak memanggil API di `erp.` — pastikan host itu sudah hidup dan
 `ALLOWED_ORIGINS` memuat `https://hasilintijualan.com`.
+
+## C. Deploy dari GitHub di panel hosting (Hostinger Node.js app)
+
+| Pengaturan | Nilai |
+| --- | --- |
+| Node version | **20** (Tailwind v4 butuh Node ≥ 20) |
+| Install command | `npm ci --omit=dev` |
+| Build command | `npm run build:all` |
+| Start command | `npm start` |
+| Environment | `NODE_ENV=production`, `AUTH_SECRET=<64 hex acak>`, `ALLOWED_ORIGINS=https://hasilintijualan.com,https://www.hasilintijualan.com,https://erp.hasilintijualan.com`, `STOREFRONT_ENABLED=0`, `DATA_DIR=/home/<user>/hij-data` |
+
+`.env` tidak ikut di git, jadi variabel di atas wajib diisi di panel — tanpa
+`AUTH_SECRET` server produksi menolak jalan (disengaja).
+
+**Data harus di luar folder aplikasi.** Deploy dari Git menimpa folder repo, jadi
+`DATA_DIR` ditaruh di folder lain (mis. `/home/<user>/hij-data`) supaya pesanan,
+faktur, dan akun tidak hilang saat deploy ulang. Salin isi backup ke sana sekali
+di awal, saat aplikasi berhenti.
+
+**Kalau build gagal dengan `Cannot find native binding` / gagal memuat
+`vite.config.ts`**: itu bug npm pada optional dependencies (npm/cli#4828) —
+biner native Linux (`@tailwindcss/oxide-*`, `@rollup/*`, `@esbuild/*`) tidak
+terpasang. Repo ini sudah menyebut biner Linux itu di `optionalDependencies`,
+jadi cukup deploy ulang dari commit terbaru. Bila masih terjadi, hapus
+`node_modules` dan `package-lock.json` di server lalu `npm install --omit=dev`.
+
+**Portal pelanggan**: bila panel hanya mengizinkan satu domain per aplikasi,
+pakai `https://erp.hasilintijualan.com/portal` — aplikasi mengenali path itu
+sebagai pintu pelanggan. Bila `portal.hasilintijualan.com` bisa diarahkan ke
+aplikasi yang sama, pakai itu dan isi `VITE_PORTAL_HOST` sebelum build.
