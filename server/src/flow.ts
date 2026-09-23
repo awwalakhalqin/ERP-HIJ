@@ -138,7 +138,16 @@ function derivedOrderStatus(order: any): string | null {
   // An SPK in the queue is a plan, not production: the order reads
   // "Diproduksi" only once the floor has recorded work on it.
   if (spks.some((s: any) => s.status === 'In Progress' || s.status === 'Finishing')) return 'In Production';
+
+  // An order waiting on its sample moves on once the sample is approved or waived.
+  if (order.status === 'Sample' && sampleSettled(order)) return 'Order';
   return null;
+}
+
+/** The sample gate is passed: an approved sample record, or a waiver / approval noted on the order. */
+export function sampleSettled(order: any): boolean {
+  if (order.sampleWaivedBy || order.sampleStatus === 'Approved' || order.needsSample === false) return true;
+  return readTable('samples').some((s: any) => s.orderId === order.id && s.status === 'Approved');
 }
 
 /**
@@ -159,7 +168,7 @@ export function syncOrderStatus(orderId: string | undefined): any | null {
    */
   if (!next && order.status === 'In Production') {
     const spks = readTable('spk_produksi').filter((s: any) => s.orderId === order.id);
-    if (spks.length > 0 && spks.every((s: any) => s.status === 'Queued')) {
+    if (spks.every((s: any) => s.status === 'Queued')) {
       return updateItem('orders', order.id, { status: 'Order' });
     }
     return null;

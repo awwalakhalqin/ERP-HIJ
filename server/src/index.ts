@@ -23,7 +23,8 @@ import {
   invoiceStatusFor,
   withAmounts,
   syncOrderStatus,
-  syncAllOrderStatuses
+  syncAllOrderStatuses,
+  sampleSettled
 } from './flow.js';
 import {
   hashPassword,
@@ -502,13 +503,17 @@ app.get('/api/quick-track/:query', (req: Request, res: Response) => {
         String(o.po || o.poNumber || '').toLowerCase() === query
       );
 
-  // Match Shipment by SPK, Order, or Tracking Number (resi)
-  const shipment = shipments.find(sh => 
-    (spk && sh.spkId === spk.id) ||
-    (order && sh.orderId === order.id) ||
-    String(sh.trackingNumber || '').toLowerCase() === query ||
-    String(sh.id).toLowerCase() === query
-  );
+  // Match Shipment by SPK, Order, or Tracking Number (resi). With more than
+  // one surat jalan, the one that has got furthest tells the customer most.
+  const SHIPMENT_RANK: Record<string, number> = { Delivered: 4, 'In Transit': 3, 'Picked Up': 2 };
+  const shipment = shipments
+    .filter(sh =>
+      (spk && sh.spkId === spk.id) ||
+      (order && sh.orderId === order.id) ||
+      String(sh.trackingNumber || '').toLowerCase() === query ||
+      String(sh.id).toLowerCase() === query
+    )
+    .sort((a, b) => (SHIPMENT_RANK[b.status] || 0) - (SHIPMENT_RANK[a.status] || 0))[0];
 
   if (!spk && !order && !shipment) {
     return res.status(404).json({ 
@@ -667,11 +672,43 @@ function sizeChartSnapshot(chartId: string | undefined) {
   };
 }
 
+/**
+ * Production has started once any SPK of the order has work behind it, passed
+ * QC, or shipped. Quantity revisions and cancellations stop here: the cut
+ * fabric and the wages already booked cannot be revised away.
+ */
+function productionStartedReason(orderId: string): string | null {
+  const spks = readTable('spk_produksi').filter((s: any) => s.orderId === orderId);
+  const active = spks.find((s: any) => s.status !== 'Queued');
+  if (active) return `SPK ${active.id} sudah ${String(active.status) === 'In Progress' ? 'dikerjakan' : 'berjalan'}.`;
+  if (spks.some((s: any) => spkQcAccepted(s.id))) return 'Hasil QC sudah tercatat.';
+  if (readTable('shipments').some((s: any) => s.orderId === orderId)) return 'Surat jalan sudah dibuat.';
+  if (readTable('work_assignments').some((w: any) => w.orderId === orderId)) return 'Catatan kerja sudah ada.';
+  return null;
+}
+
+/** The order another live record already uses this PO number for, if any. */
+function poTakenBy(po: string | undefined, exceptId?: string): any | null {
+  const wanted = String(po || '').trim().toLowerCase();
+  if (!wanted) return null;
+  return readTable('orders').find((o: any) => o.id !== exceptId && String(o.po || '').trim().toLowerCase() === wanted) || null;
+}
+
+/** Money still owed on the order: the live invoice's balance, else total minus verified payments. */
+function outstandingForOrder(order: any): number | null {
+  const invoice = activeInvoiceForOrder(order.id);
+  if (invoice) return Math.max(0, Number(invoice.total) - verifiedPaidForInvoice(invoice));
+  const total = Number(order.totalPrice) || 0;
+  if (total <= 0) return null;
+  return Math.max(0, total - verifiedPaidForOrder(order.id, readTable('payments')));
+}
+
 /** Returns why an SPK may not be created for this order, or null when it may. */
 function spkBlockReason(orderId: string | undefined): string | null {
   if (!orderId) return 'SPK harus terhubung ke pesanan.';
   const order = findById('orders', orderId);
   if (!order) return 'Pesanan tidak ditemukan.';
+  if (order.status === 'Cancelled') return `Pesanan ${order.id} sudah dibatalkan.`;
   if (readTable('spk_produksi').some(s => s.orderId === order.id)) {
     return `SPK untuk pesanan ${order.id} sudah ada.`;
   }
@@ -808,6 +845,14 @@ app.post('/api/orders/:id/approve-dp', requireModule('Orders', 'Finance'), (req:
 
   const amount = Number(req.body?.amount);
   if (!amount || amount <= 0) return res.status(400).json({ error: 'Nominal DP harus lebih dari 0.' });
+  if (order.status === 'Cancelled') return res.status(409).json({ error: `Pesanan ${order.id} sudah dibatalkan.` });
+  const owed = outstandingForOrder(order);
+  if (owed !== null && owed <= 0) {
+    return res.status(409).json({ error: `Pesanan ${order.id} sudah lunas; tidak ada tagihan yang tersisa.` });
+  }
+  if (owed !== null && amount > owed) {
+    return res.status(409).json({ error: `Nominal Rp ${amount.toLocaleString('id-ID')} melebihi sisa tagihan Rp ${owed.toLocaleString('id-ID')}.` });
+  }
 
   const invoice = activeInvoiceForOrder(order.id);
   const paidSoFar = verifiedPaidForOrder(order.id, readTable('payments'));
@@ -892,6 +937,10 @@ app.post('/api/quotations/:id/approve-to-order', requireModule('Quotations'), (r
   // The PO number is what customers type into public tracking, so it carries
   // a random tail: a counted-up number let anyone walk through every order.
   const finalPo = po || `PO-${(quotation.customerName || 'HIJ').replace(/[^a-zA-Z0-9]/g, '').slice(0, 3).toUpperCase()}-${now.getFullYear()}-${String(orderNum).padStart(2, '0')}${poTail()}`;
+  const poClash = poTakenBy(finalPo);
+  if (poClash) {
+    return res.status(409).json({ error: `Nomor PO ${finalPo} sudah dipakai pesanan ${poClash.id}. Pakai nomor lain.` });
+  }
   const totalAmount = Number(quotation.totalPrice) || (Number(quotation.quantity) * Number(quotation.price));
   let schedule = Array.isArray(quotation.paymentSchedule) && quotation.paymentSchedule.length > 0
     ? withAmounts(quotation.paymentSchedule, totalAmount)
@@ -1025,6 +1074,17 @@ app.put('/api/quotations/:id/revise-deal', requireModule('Quotations'), (req: Re
     return res.status(409).json({
       error: `Penawaran ${quotation.id} sudah diganti revisi ${quotation.supersededBy}. Revisi dari dokumen terbaru.`
     });
+  }
+
+  const revisedOrder = readTable('orders').find((o: any) => o.quotationId === quotation.id || o.id === quotation.orderId);
+  if (revisedOrder) {
+    if (revisedOrder.status === 'Cancelled') {
+      return res.status(409).json({ error: `Pesanan ${revisedOrder.id} sudah dibatalkan; buat penawaran baru.` });
+    }
+    const started = productionStartedReason(revisedOrder.id);
+    if (started) {
+      return res.status(409).json({ error: `Kuantitas tidak bisa direvisi: produksi pesanan ${revisedOrder.id} sudah berjalan (${started}) Sepakati pesanan tambahan sebagai pesanan baru.` });
+    }
   }
 
   const { quantity, price, totalPrice, deadline, notes, paymentSchedule, user } = req.body;
@@ -1232,6 +1292,10 @@ app.post('/api/payments/record', requireModule('Finance'), (req: Request, res: R
   if (!amount || Number(amount) <= 0) {
     return res.status(400).json({ error: 'Nominal pembayaran harus lebih dari 0.' });
   }
+  const recOrder = orderId ? findById('orders', orderId) : (invoiceId ? findById('orders', activeInvoiceFor(invoiceId)?.orderId) : null);
+  if (recOrder?.status === 'Cancelled') {
+    return res.status(409).json({ error: `Pesanan ${recOrder.id} sudah dibatalkan; pembayaran tidak dicatat.` });
+  }
 
   const paymentId = nextId('payments', 'PAY');
 
@@ -1405,6 +1469,7 @@ function shipmentBlockReason(body: any, existing?: any): string | null {
   const order = findById('orders', orderId);
   if (!order) return `Pesanan ${orderId} tidak ditemukan.`;
   if (order.status === 'Cancelled') return `Pesanan ${orderId} sudah dibatalkan.`;
+  if (!existing && order.status === 'Completed') return `Pesanan ${orderId} sudah selesai; tidak ada yang dikirim lagi.`;
   if (body?.status !== undefined && !SHIPMENT_STATUSES.includes(String(body.status))) {
     return `Status pengiriman "${body.status}" tidak dikenal.`;
   }
@@ -2691,6 +2756,14 @@ function advanceOrderAfterWrite(tableName: string, item: any): any | null {
   if (item.orderId && ['spk_produksi', 'qc_reports', 'shipments', 'invoices'].includes(tableName)) {
     syncOrderStatus(item.orderId);
   }
+  // An approved sample is noted on its order and moves a "Sample" order on.
+  if (tableName === 'samples' && item.orderId) {
+    const order = findById('orders', item.orderId);
+    if (order && item.status === 'Approved' && order.sampleStatus !== 'Approved') {
+      updateItem('orders', order.id, { sampleStatus: 'Approved' });
+    }
+    if (order && sampleSettled(findById('orders', order.id))) syncOrderStatus(order.id);
+  }
   // An order re-pointed at another template hands its SPK the new chart.
   if (tableName === 'orders' && item.sizeChartId) {
     const spk = readTable('spk_produksi').find((s: any) => s.orderId === item.id);
@@ -2707,6 +2780,21 @@ function advanceOrderAfterWrite(tableName: string, item: any): any | null {
  * payments pointing at nothing, and the next order could inherit its id.
  */
 function deleteBlockReason(tableName: string, id: string): string | null {
+  if (tableName === 'spk_produksi') {
+    const spk = findById('spk_produksi', id);
+    if (spk) {
+      if (spk.status === 'QC Passed' || spk.status === 'Completed' || spkQcAccepted(spk.id)) {
+        return `SPK ${id} sudah lolos QC, jadi tidak bisa dihapus.`;
+      }
+      if (readTable('shipments').some((s: any) => s.orderId === spk.orderId)) {
+        return `SPK ${id} sudah punya surat jalan, jadi tidak bisa dihapus.`;
+      }
+      const wages = readTable('work_assignments').filter((w: any) => w.spkId === id).length;
+      if (wages > 0) {
+        return `SPK ${id} punya ${wages} catatan kerja (upah petugas). Hapus catatannya di Surat Perintah Kerja dulu bila memang salah.`;
+      }
+    }
+  }
   if (tableName === 'orders') {
     const spk = readTable('spk_produksi').find((s: any) => s.orderId === id);
     if (spk) {
@@ -2891,6 +2979,16 @@ app.post('/api/:resource', requireAuth, (req: Request, res: Response) => {
     const reason = spkBlockReason(req.body?.orderId);
     if (reason) return res.status(409).json({ error: reason });
   }
+  if (tableName === 'orders') {
+    const clash = poTakenBy(req.body?.po);
+    if (clash) return res.status(409).json({ error: `Nomor PO ${req.body.po} sudah dipakai pesanan ${clash.id}. Pakai nomor lain.` });
+  }
+  if (tableName === 'payments') {
+    const payOrder = req.body?.orderId ? findById('orders', req.body.orderId) : null;
+    if (payOrder?.status === 'Cancelled') {
+      return res.status(409).json({ error: `Pesanan ${payOrder.id} sudah dibatalkan; pembayaran tidak dicatat.` });
+    }
+  }
 
   // Strict validation for Customer portal security
   if (tableName === 'customers' && req.body?.username) {
@@ -2957,6 +3055,30 @@ app.put('/api/:resource/:id', requireAuth, (req: Request, res: Response) => {
 
   req.body = hashIncomingPassword(tableName, req.body);
 
+  /*
+   * An order's status is derived from its records; the one thing a person may
+   * set is "Cancelled", and only before production has started. A queued SPK
+   * goes with the cancellation so PPIC's list does not keep it.
+   */
+  let cancelOrderId: string | null = null;
+  if (tableName === 'orders' && req.body && typeof req.body === 'object') {
+    const existing = findById('orders', req.params.id);
+    if (!existing) return res.status(404).json({ error: 'Data tidak ditemukan.' });
+    const clash = poTakenBy(req.body.po, existing.id);
+    if (clash) return res.status(409).json({ error: `Nomor PO ${req.body.po} sudah dipakai pesanan ${clash.id}. Pakai nomor lain.` });
+    if (req.body.status === 'Cancelled' && existing.status !== 'Cancelled') {
+      if (existing.status === 'Completed' || existing.status === 'Shipping') {
+        return res.status(409).json({ error: `Pesanan ${existing.id} sudah ${existing.status === 'Completed' ? 'selesai' : 'dikirim'}; tidak bisa dibatalkan.` });
+      }
+      const started = productionStartedReason(existing.id);
+      if (started) return res.status(409).json({ error: `Pesanan ${existing.id} tidak bisa dibatalkan: produksi sudah berjalan (${started})` });
+      cancelOrderId = existing.id;
+    } else if (req.body.status !== undefined && req.body.status !== existing.status) {
+      const { status: _status, ...rest } = req.body;
+      req.body = rest;
+    }
+  }
+
   // Strict validation for Customer portal security on update
   if (tableName === 'customers' && req.body?.username) {
     const uname = String(req.body.username).trim().toLowerCase();
@@ -2986,6 +3108,12 @@ app.put('/api/:resource/:id', requireAuth, (req: Request, res: Response) => {
 
   const item = updateItem(tableName, req.params.id, req.body);
   if (!item) return res.status(404).json({ error: 'Data tidak ditemukan.' });
+  if (cancelOrderId) {
+    for (const spk of readTable('spk_produksi').filter((s: any) => s.orderId === cancelOrderId)) {
+      deleteItem('spk_produksi', spk.id);
+      cleanUpAfterDelete('spk_produksi', spk.id);
+    }
+  }
   const fresh = advanceOrderAfterWrite(tableName, item) || item;
   res.json(stripSensitive(fresh));
 });
@@ -3006,6 +3134,8 @@ app.delete('/api/:resource/:id', requireStaff, (req: Request, res: Response) => 
   if (!success) return res.status(404).json({ error: 'Data tidak ditemukan.' });
   cleanUpAfterDelete(tableName, req.params.id);
   if (SPK_SOURCE_TABLES.includes(tableName)) recomputeSpk(victim?.spkId);
+  // Without its SPK an order that only read "Diproduksi" returns to the queue.
+  if (tableName === 'spk_produksi' && victim?.orderId) syncOrderStatus(victim.orderId);
   res.json({ success: true });
 });
 
