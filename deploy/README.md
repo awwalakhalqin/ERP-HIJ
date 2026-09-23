@@ -55,7 +55,7 @@ Halaman lacak memanggil API di `erp.` — pastikan host itu sudah hidup dan
 | --- | --- |
 | Node version | **20** (Tailwind v4 butuh Node ≥ 20) |
 | Install command | `npm ci --omit=dev` |
-| Build command | `npm run build:all` |
+| Build command | `npm run build` (sudah mencakup tampilan **dan** server) |
 | Start command | `npm start` |
 | Environment | `NODE_ENV=production`, `AUTH_SECRET=<64 hex acak>`, `ALLOWED_ORIGINS=https://hasilintijualan.com,https://www.hasilintijualan.com,https://erp.hasilintijualan.com`, `STOREFRONT_ENABLED=0`, `DATA_DIR=/home/<user>/hij-data` |
 

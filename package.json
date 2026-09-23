@@ -13,11 +13,12 @@
     "seed:test": "node server/scripts/seed-test-data.mjs",
     "backup": "node server/scripts/backup.mjs",
     "dev:test": "node server/scripts/dev-test.mjs",
-    "build": "vite build",
+    "build": "npm run build:client && npm run build:server",
     "build:server": "esbuild server/index.ts --bundle --platform=node --format=esm --target=node18 --packages=external --outfile=dist-server/server.js",
-    "build:all": "npm run build && npm run build:server",
+    "build:all": "npm run build",
     "start": "node dist-server/server.js",
-    "lint": "tsc --noEmit && tsc --noEmit -p tsconfig.server.json"
+    "lint": "tsc --noEmit && tsc --noEmit -p tsconfig.server.json",
+    "build:client": "vite build"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.1.14",
