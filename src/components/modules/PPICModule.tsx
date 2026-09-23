@@ -842,12 +842,11 @@ export const PPICModule: React.FC = () => {
                       </TableCell>
 
                       <TableCell className="text-center whitespace-nowrap">
-                        {readiness.isSpkOptional ? (
-                          <Badge variant="done" size="sm" solid>
-                            {order.isRepeatOrder ? 'Repeat Order' : 'Qty < 50'}
-                          </Badge>
-                        ) : readiness.ready ? (
-                          <Badge variant="done" size="sm" solid>Siap</Badge>
+                        {/* One reading for every order: n/3 until ready, then Siap. The fast path is only a tooltip. */}
+                        {readiness.ready ? (
+                          <span title={readiness.isSpkOptional ? `Jalur cepat: ${order.isRepeatOrder ? 'repeat order' : 'di bawah 50 pcs'}` : undefined}>
+                            <Badge variant="done" size="sm" solid>Siap</Badge>
+                          </span>
                         ) : (
                           <Badge variant="warning" size="sm" solid>
                             {readiness.blockingMetCount}/{readiness.blockingTotal}

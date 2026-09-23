@@ -122,16 +122,8 @@ const SpkStatusTag: React.FC<{ spk?: SPK; readiness?: OrderReadiness; order?: Or
   }
 
   const isOptional = isSpkOptionalForOrder(order);
-  // The fast path skips DP and sample, never the approved design (readiness.ts).
-  if (isOptional && !readiness?.ready) {
-    return (
-      <Badge variant="warning" size="sm" solid={solid}>
-        <Clock size={12} className="shrink-0" aria-hidden="true" />
-        <span>Desain belum ACC</span>
-      </Badge>
-    );
-  }
-  if (isOptional) {
+  // A fast-path order that is not ready yet reads like any other: "Syarat n/3".
+  if (isOptional && readiness?.ready) {
     return (
       <Badge variant="amber" size="sm" solid={solid} className="bg-amber-100 text-amber-800 border-amber-300">
         <Sparkles size={12} className="shrink-0" aria-hidden="true" />
