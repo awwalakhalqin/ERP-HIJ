@@ -65,6 +65,9 @@ erp.hasilintijualan.com, portal.hasilintijualan.com {
 
 ## Menjalankan di produksi
 
+Panduan lengkap 3 host (situs di web hosting, ERP + portal di satu VPS) dan
+skrip pemasangan otomatis ada di [`deploy/README.md`](deploy/README.md).
+
 1. Isi `.env`: `AUTH_SECRET` (wajib — server menolak jalan tanpa ini saat
    `NODE_ENV=production`), `NODE_ENV=production`, `ALLOWED_ORIGINS` bila
    alamatnya bisa diakses dari internet, dan `DATA_DIR` di luar folder proyek.
@@ -79,12 +82,12 @@ erp.hasilintijualan.com, portal.hasilintijualan.com {
    **Memulihkan backup: hentikan server dulu**, salin berkas JSON-nya, lalu
    jalankan lagi. Server memegang tabel di memori; berkas yang diganti saat
    server hidup tidak terbaca dan akan tertimpa pada penulisan berikutnya.
-7. Saat pertama dijalankan dengan versi ini, server menyelaraskan status
+6. Saat pertama dijalankan dengan versi ini, server menyelaraskan status
    pesanan dengan catatannya (log `Status N pesanan disesuaikan`): pesanan
    "Diproduksi" tanpa SPK berjalan kembali ke antrean SPK. SPK lama tanpa
    catatan produksi dibiarkan apa adanya. Buat backup dulu sebelum start
    pertama, lalu periksa halaman Surat Perintah Kerja.
-6. Toko online, gateway pembayaran dan top-up mati (404) kecuali
+7. Toko online, gateway pembayaran dan top-up mati (404) kecuali
    `STOREFRONT_ENABLED=1`; endpoint itu menerima permintaan tanpa login.
 
 Yang dijaga server (bukan hanya tampilan): hak akses per menu dari

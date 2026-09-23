@@ -1,0 +1,16 @@
+# Dua host, satu proses Node (port 3001). Aplikasi membaca hostnya sendiri:
+# awalan "portal." = pintu pelanggan, selain itu = pintu staf.
+# Sertifikat HTTPS diurus Caddy otomatis (Let's Encrypt) begitu DNS mengarah ke sini.
+erp.hasilintijualan.com, portal.hasilintijualan.com {
+    encode gzip
+    reverse_proxy localhost:3001
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Content-Type-Options nosniff
+        Referrer-Policy strict-origin-when-cross-origin
+    }
+    # Unggahan bukti/mockup bisa besar; batasi selaras dengan server (50 MB).
+    request_body {
+        max_size 50MB
+    }
+}
