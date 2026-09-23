@@ -76,6 +76,9 @@ erp.hasilintijualan.com, portal.hasilintijualan.com {
    sebagai layanan (NSSM di Windows, atau pm2).
 5. `npm run backup` menyalin semua tabel dan unggahan ke `backups/<tanggal>/`.
    Jadwalkan tiap malam (Task Scheduler) dan simpan salinannya di mesin lain.
+   **Memulihkan backup: hentikan server dulu**, salin berkas JSON-nya, lalu
+   jalankan lagi. Server memegang tabel di memori; berkas yang diganti saat
+   server hidup tidak terbaca dan akan tertimpa pada penulisan berikutnya.
 6. Toko online, gateway pembayaran dan top-up mati (404) kecuali
    `STOREFRONT_ENABLED=1`; endpoint itu menerima permintaan tanpa login.
 
