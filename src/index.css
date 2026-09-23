@@ -1,7 +1,7 @@
 @import "tailwindcss";
 
 @theme {
-  /* Exact 5 brand colors from Color Palete.png with visual dominance */
+  /* Exact 5 brand colors from reference/Color Palete.png with visual dominance */
   /* 1. DOMINANT (>50% area): #2bb2b5 (Workshop Teal) */
   --color-brand-teal: #2bb2b5;
   /* 2. SECONDARY ACCENT (~10% area): #13707f (Teal Dark) */
@@ -234,7 +234,7 @@
 }
 
 :root {
-  /* Exact 5 colors pinned from Apps-HIJ/public/Color Palete.png */
+  /* Exact 5 colors pinned from reference/Color Palete.png */
   --brand-teal: #2bb2b5;       /* Dominant 55% */
   --brand-white: #ffffff;      /* 20% */
   --brand-red: #ee2f27;        /* 10% */

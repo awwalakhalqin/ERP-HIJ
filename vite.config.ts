@@ -12,8 +12,7 @@ export default defineConfig({
       injectRegister: 'auto',
       includeAssets: [
         'favicon.ico',
-        'logo.png',
-        'templates/*.png'
+        'logo.png'
       ],
       manifest: {
         name: 'HIJ Konveksi Management PWA',
@@ -42,7 +41,14 @@ export default defineConfig({
       },
       workbox: {
         maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
-        globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
+        globPatterns: ['**/*.{js,css,html,ico,svg,woff2}', 'logo.png'],
+        /*
+         * Template SPK/faktur berukuran megabyte dan hanya dibuka saat mencetak.
+         * Mem-precache-nya memaksa tiap ponsel di pabrik mengunduh semuanya di
+         * kunjungan pertama; aturan CacheFirst di bawah menyimpannya setelah
+         * benar-benar dipakai, jadi tetap tersedia offline sesudah itu.
+         */
+        globIgnores: ['**/templates/**'],
         runtimeCaching: [
           {
             urlPattern: /^\/api\/.*$/,
