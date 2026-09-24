@@ -45,6 +45,7 @@ import { requireModule, writeBlockReason, readBlockReason, usersWriteBlockReason
 import { recomputeSpk, recomputeAllSpks, completeSpkForOrder, spkQcAccepted, SPK_SOURCE_TABLES } from './spk.js';
 import { canApproveSpecialTerms } from '../../src/lib/readiness.js';
 import { COMPANY_CONTACT } from '../../src/config/contact.js';
+import { STANDARD_SIZE_CHARTS, SIZE_CHART_COMMON_NOTES } from '../../src/config/sizeChartTemplates.js';
 import dotenv from 'dotenv';
 dotenv.config();
 
@@ -739,7 +740,6 @@ function readinessForOrder(order: any) {
     payments: readTable('payments'),
     samples: readTable('samples'),
     procurements: readTable('procurements'),
-    patterns: readTable('patterns'),
     designs: readTable('designs')
   });
 }
@@ -3367,6 +3367,28 @@ process.on('unhandledRejection', reason => {
  * "Diproduksi" however far they had got. Forward-only, so a status someone set
  * by hand is never pulled back.
  */
+/*
+ * HIJ's standard size charts come with the app. A fresh install (a hosting
+ * panel with no terminal to run a seed script) would otherwise have none, and
+ * no order can pass the size chart requirement. Only missing charts are added:
+ * one already present, even edited, is left alone.
+ */
+{
+  const present = new Set(readTable('size_charts').map((c: any) => String(c.id)));
+  const missing = STANDARD_SIZE_CHARTS.filter(c => !present.has(c.id));
+  const now = new Date().toISOString();
+  for (const chart of missing) {
+    insertItem('size_charts', {
+      ...chart,
+      scope: 'standard',
+      notes: chart.notes || SIZE_CHART_COMMON_NOTES,
+      user: 'System',
+      timestamp: now
+    });
+  }
+  if (missing.length > 0) console.log(`   ${missing.length} size chart standar HIJ ditambahkan.`);
+}
+
 {
   const spks = recomputeAllSpks();
   if (spks > 0) console.log(`   Progres ${spks} SPK dihitung ulang dari catatan produksi.`);

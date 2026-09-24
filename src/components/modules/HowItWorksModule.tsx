@@ -83,13 +83,13 @@ const PHASES: FlowPhase[] = [
         note: 'Gerbang Anti-Skip: SPK terkunci sampai desain pesanan disetujui. Sampel fisik ikut menahan hanya bila penawaran memintanya; repeat order melewatinya.'
       },
       {
-        title: 'Pola & Grading Ukuran',
+        title: 'Size Chart',
         sop: 'SOP 06',
         module: 'PatternGrading',
         moduleLabel: 'Size Chart',
-        who: 'Pembuat Pola, QC Teknis, Kepala Produksi',
-        body: 'Buat pola dasar di satu ukuran, grading ke semua ukuran (S, M, L, XL, XXL), lalu hubungkan ke pesanan. Klik Tandai Final setelah pola diverifikasi.',
-        note: 'Hanya pola berstatus Final yang diizinkan untuk proses pemotongan kain.'
+        who: 'Admin Desain, Kepala Produksi',
+        body: 'Pakai size chart standar HIJ (Jersey, Kemeja, Kaos, Rompi, Jaket), atau buat size chart khusus pelanggan dari salah satunya lalu sesuaikan angkanya.',
+        note: 'Pesanan wajib memilih template size chart sebelum SPK bisa diterbitkan.'
       },
       {
         title: 'Pengadaan Bahan',
@@ -120,7 +120,7 @@ const PHASES: FlowPhase[] = [
         module: 'Cutting',
         moduleLabel: 'Pemotongan',
         who: 'Kepala Cutting, Operator Potong, QC Cutting',
-        body: 'Gelar kain sesuai lot, susun marker dari pola final, lalu potong presisi. Catat jumlah lapisan kain, konsumsi bahan per pcs, dan sisa perca.'
+        body: 'Gelar kain sesuai lot, susun marker sesuai size chart pesanan, lalu potong presisi. Catat jumlah lapisan kain, konsumsi bahan per pcs, dan sisa perca.'
       },
       {
         title: 'Bundel & Serah Terima (Barcode / QR)',
@@ -210,7 +210,7 @@ const SUPPORT: FlowStep[] = [
 const REQUIREMENT_ITEMS = [
   { icon: Banknote, label: REQUIREMENT_LABELS.dp, hint: 'DP 50% terverifikasi di Keuangan atau termin khusus Owner' },
   { icon: Ruler, label: REQUIREMENT_LABELS.sizeChart, hint: 'Pesanan memilih template dari halaman Size Chart (standar HIJ / khusus pelanggan) — detailnya dicetak di SPK' },
-  { icon: FileCheck, label: REQUIREMENT_LABELS.sample, hint: 'Desain/sampel disetujui — status pola final ikut tampil di baris ini, tapi tidak menahan' },
+  { icon: FileCheck, label: REQUIREMENT_LABELS.sample, hint: 'Desain/sampel disetujui, atau repeat order' },
   { icon: Layers, label: REQUIREMENT_LABELS.material, hint: 'Pembelian bahan tercatat untuk pesanan, atau stok dikonfirmasi PPIC — informasi, tidak menahan' }
 ];
 

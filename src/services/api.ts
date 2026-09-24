@@ -1,5 +1,5 @@
 import { db } from '../db/dexie';
-import type { Payment, Sample, Procurement, Pattern, Design, SPK, Order, AuthSession, User, CustomerSession } from '../types';
+import type { Payment, Sample, Procurement, Design, SPK, Order, AuthSession, User, CustomerSession } from '../types';
 import { STAFF_ROLE_MODULES } from '../types';
 import type { ReadinessData } from '../lib/readiness';
 
@@ -63,14 +63,13 @@ async function apiFetch(input: string, init: RequestInit = {}): Promise<Response
 
 /** Loads everything getOrderReadiness() needs, in one round of requests. */
 export async function fetchReadinessData(): Promise<ReadinessData> {
-  const [payments, samples, procurements, patterns, designs] = await Promise.all([
+  const [payments, samples, procurements, designs] = await Promise.all([
     fetchResource<Payment>('payments'),
     fetchResource<Sample>('samples'),
     fetchResource<Procurement>('procurements'),
-    fetchResource<Pattern>('patterns'),
     fetchResource<Design>('designs')
   ]);
-  return { payments, samples, procurements, patterns, designs };
+  return { payments, samples, procurements, designs };
 }
 
 export interface StaffDirectoryEntry {

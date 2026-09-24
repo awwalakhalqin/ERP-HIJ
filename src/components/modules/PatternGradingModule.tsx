@@ -1,76 +1,75 @@
 import React, { useState, useEffect } from 'react';
-import { Scissors, Ruler, Calculator, Download, Plus, CheckCircle2, Link2, RotateCcw, Copy, Image as ImageIcon, Trash2 } from 'lucide-react';
-import { Pattern, Order, SizeChart, SizeChartRow, Customer } from '../../types';
+import { Ruler, Calculator, Download, Plus, Copy, Image as ImageIcon, Trash2 } from 'lucide-react';
+import { SizeChart, SizeChartMeasurement, SizeChartRow, Customer } from '../../types';
 import { fetchResource, createResource, updateResource, deleteResource } from '../../services/api';
-import { calculateFabricYield, exportTableToExcel, formatDateTime } from '../../lib/utils';
+import { calculateFabricYield, exportTableToExcel } from '../../lib/utils';
 import { getCurrentUser } from '../../lib/session';
-import { Badge, StatusBadge } from '../ui/Badge';
 import { Modal } from '../ui/Modal';
 import { Card } from '../ui/Card';
 import { Button } from '../ui/Button';
 import { Input } from '../ui/Input';
 import { PageHeader } from '../ui/PageHeader';
-import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell, TableRowActions, RowActionButton, TableEmptyRow, TableSkeletonRows, useTablePage, TablePagination } from '../ui/Table';
-import { DetailDrawer, DetailSection, DetailField, DetailStats, DetailBlock, RowDetailButton } from '../ui/DetailDrawer';
-import { newestFirst } from '../../lib/ordering';
-import { FieldLabel, FieldHint, FieldError, FormError, Select } from '../ui/Field';
+import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell, TableEmptyRow } from '../ui/Table';
+import { FieldLabel, FieldHint, FormError, Select } from '../ui/Field';
 import { Toast, useToast } from '../ui/Toast';
 import { useConfirm } from '../ui/ConfirmDialog';
-
-const PATTERN_CATEGORIES = ['Kaos', 'Kemeja', 'Jaket', 'Celana', 'Baju Koko', 'Rompi', 'Lainnya'];
+import {
+  STANDARD_SIZE_CHARTS,
+  SIZE_CHART_COMMON_NOTES,
+  isChestMeasurement,
+  splitChest,
+  joinChest,
+  templateFor
+} from '../../config/sizeChartTemplates';
 
 type ChartScope = 'standard' | 'customer';
 
-const labelClass = 'block text-sm font-medium text-slate-700 mb-1.5';
-const fieldClass = 'w-full h-10 px-3 text-sm bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-600';
+/** Order sizes are added in, matching the printed charts. */
+const SIZE_SEQUENCE = ['XS', 'S', 'M', 'L', 'XL', '2XL', '3XL', '4XL', '5XL'];
 
-const orderLabel = (o: Order) => `${o.po || o.id} – ${o.customerName}`;
+const imageSrc = (path?: string) => (path ? encodeURI(path) : undefined);
 
-function nextPatternCode(category: string, patterns: Pattern[]): string {
-  const code = category.replace(/\s+/g, '').toUpperCase();
-  const prefix = `POL-${code}-`;
-  let num = patterns.filter(p => p.id.startsWith(prefix)).length + 1;
-  let id = `${prefix}${String(num).padStart(3, '0')}`;
-  while (patterns.some(p => p.id === id)) {
-    num += 1;
-    id = `${prefix}${String(num).padStart(3, '0')}`;
-  }
-  return id;
+/** The orange code chip printed on the diagram (LD, PB, PL, …). */
+const CodeChip: React.FC<{ code?: string; sup?: string }> = ({ code, sup }) =>
+  code ? (
+    <span className="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-amber-400 px-1.5 text-[10px] font-bold text-slate-900">
+      {code}
+      {sup ? <sup className="ml-px text-[8px]">{sup}</sup> : null}
+    </span>
+  ) : null;
+
+/** Chest printed as width over circumference, like the published chart. */
+const ChestValue: React.FC<{ value?: string }> = ({ value }) => {
+  const [width, around] = splitChest(value);
+  if (!width && !around) return <>—</>;
+  if (!around) return <>{width}</>;
+  return (
+    <span className="inline-flex flex-col items-end leading-tight">
+      <span>{width}</span>
+      <span className="border-t border-slate-300 text-muted-foreground">{around}</span>
+    </span>
+  );
+};
+
+interface ChartForm {
+  name: string;
+  garment: string;
+  customerId: string;
+  basedOn: string;
+  notes: string;
+  rows: SizeChartRow[];
+  measurements: SizeChartMeasurement[];
 }
+
+const EMPTY_FORM: ChartForm = { name: '', garment: '', customerId: '', basedOn: '', notes: '', rows: [], measurements: [] };
 
 export const PatternGradingModule: React.FC = () => {
   const { toast, showToast } = useToast();
   const { confirm, confirmDialog } = useConfirm();
 
-  // Pattern register (SOP-06)
-  const [patterns, setPatterns] = useState<Pattern[]>([]);
-  const [orders, setOrders] = useState<Order[]>([]);
-  const [loadingPatterns, setLoadingPatterns] = useState(true);
-  const [isAddOpen, setIsAddOpen] = useState(false);
-  /** Galat isian modal Tambah Pola; terpisah dari chartError milik editor size chart. */
-  const [patternError, setPatternError] = useState<string | null>(null);
-  const [codeTouched, setCodeTouched] = useState(false);
-  const [newPattern, setNewPattern] = useState({
-    id: '',
-    productName: '',
-    category: 'Kaos',
-    baseSize: 'M',
-    sizes: 'S, M, L, XL',
-    orderId: '',
-    notes: ''
-  });
-  const [linkPattern, setLinkPattern] = useState<Pattern | null>(null);
-  const [linkOrderId, setLinkOrderId] = useState('');
-  const [detailPatternId, setDetailPatternId] = useState<string | null>(null);
-
-  /*
-   * Size charts come from the server now. The old version kept a hardcoded
-   * table in component state, so nothing an operator saw could be corrected
-   * without a code change — and it did not match the charts the factory
-   * actually publishes.
-   */
   const [charts, setCharts] = useState<SizeChart[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
+  const [loading, setLoading] = useState(true);
   const [chartScope, setChartScope] = useState<ChartScope>('standard');
   const [selectedChartId, setSelectedChartId] = useState<string>('');
 
@@ -79,162 +78,45 @@ export const PatternGradingModule: React.FC = () => {
   const [editingChartId, setEditingChartId] = useState<string | null>(null);
   const [chartError, setChartError] = useState<string | null>(null);
   const [savingChart, setSavingChart] = useState(false);
-  const [chartForm, setChartForm] = useState<{
-    name: string;
-    garment: string;
-    customerId: string;
-    basedOn: string;
-    notes: string;
-    rows: SizeChartRow[];
-    measurements: SizeChart['measurements'];
-  }>({ name: '', garment: '', customerId: '', basedOn: '', notes: '', rows: [], measurements: [] });
+  const [chartForm, setChartForm] = useState<ChartForm>(EMPTY_FORM);
 
   // Calculator State
   const [calcPcs, setCalcPcs] = useState(100);
   const [calcConsumption, setCalcConsumption] = useState(0.65); // meters per piece
   const [calcEfficiency, setCalcEfficiency] = useState(86); // percentage marker efficiency
 
-  // Size charts are loaded from the server; see loadPatterns below.
-
-  const loadPatterns = async () => {
+  const loadCharts = async () => {
     try {
-      setLoadingPatterns(true);
-      const [patternRes, orderRes, chartRes, custRes] = await Promise.all([
-        fetchResource<Pattern>('patterns'),
-        fetchResource<Order>('orders'),
+      setLoading(true);
+      const [chartRes, custRes] = await Promise.all([
         fetchResource<SizeChart>('size-charts'),
         fetchResource<Customer>('customers')
       ]);
-      setPatterns(patternRes || []);
-      setOrders(orderRes || []);
       setCharts(chartRes || []);
       setCustomers(custRes || []);
     } catch (err) {
-      console.error('Failed to load patterns:', err);
+      console.error('Failed to load size charts:', err);
     } finally {
-      setLoadingPatterns(false);
+      setLoading(false);
     }
   };
 
   useEffect(() => {
-    loadPatterns();
+    loadCharts();
   }, []);
 
-  const handleOpenAdd = () => {
-    setCodeTouched(false);
-    setPatternError(null);
-    setNewPattern({
-      id: nextPatternCode('Kaos', patterns),
-      productName: '',
-      category: 'Kaos',
-      baseSize: 'M',
-      sizes: 'S, M, L, XL',
-      orderId: '',
-      notes: ''
-    });
-    setIsAddOpen(true);
-  };
-
-  const handleCreatePattern = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setPatternError(null);
-    const code = newPattern.id.trim().toUpperCase();
-    if (!code) {
-      setPatternError('Isi kode pola.');
-      return;
-    }
-    if (patterns.some(p => p.id.toUpperCase() === code)) {
-      setPatternError(`Kode pola ${code} sudah dipakai. Ganti dengan kode lain.`);
-      return;
-    }
-
-    const item: Pattern = {
-      id: code,
-      productName: newPattern.productName.trim(),
-      category: newPattern.category,
-      baseSize: newPattern.baseSize.trim() || 'M',
-      sizes: newPattern.sizes.trim(),
-      revision: 0,
-      orderIds: newPattern.orderId ? [newPattern.orderId] : [],
-      status: 'Draft',
-      notes: newPattern.notes.trim() || undefined,
-      user: getCurrentUser()?.name,
-      timestamp: new Date().toISOString()
-    };
-
-    try {
-      await createResource('patterns', item);
-      setIsAddOpen(false);
-      loadPatterns();
-    } catch (err) {
-      setPatternError('Gagal menyimpan pola. Coba lagi.');
-    }
-  };
-
-  const handleFinalize = async (pattern: Pattern) => {
-    const approved = await confirm({
-      title: `Tandai pola ${pattern.id} sebagai final?`,
-      message: 'Pola final menjadi acuan resmi pemotongan. Untuk mengubahnya lagi, pola harus dibuatkan revisi baru.',
-      confirmLabel: 'Tandai Final'
-    });
-    if (!approved) return;
-    try {
-      await updateResource('patterns', pattern.id, {
-        status: 'Final',
-        finalizedBy: getCurrentUser()?.name || 'Staf',
-        finalizedAt: new Date().toISOString()
-      });
-      loadPatterns();
-      showToast(`Pola ${pattern.id} ditandai final dan siap dipakai memotong.`);
-    } catch (err) {
-      showToast('Gagal memperbarui pola. Coba lagi.', 'error');
-    }
-  };
-
-  const handleRevise = async (pattern: Pattern) => {
-    const approved = await confirm({
-      title: `Buat revisi pola ${pattern.id}?`,
-      message: 'Nomor revisi naik satu dan status kembali ke draf, sehingga pola ini tidak boleh dipakai memotong sampai ditandai final lagi.',
-      confirmLabel: 'Buat Revisi'
-    });
-    if (!approved) return;
-    try {
-      await updateResource('patterns', pattern.id, {
-        revision: (Number(pattern.revision) || 0) + 1,
-        status: 'Draft',
-        finalizedBy: '',
-        finalizedAt: ''
-      });
-      loadPatterns();
-      showToast(`Pola ${pattern.id} kembali ke draf sebagai revisi ${(Number(pattern.revision) || 0) + 1}.`);
-    } catch (err) {
-      showToast('Gagal membuat revisi. Coba lagi.', 'error');
-    }
-  };
-
-  const handleOpenLink = (pattern: Pattern) => {
-    setLinkPattern(pattern);
-    setLinkOrderId('');
-  };
-
-  const handleLinkOrder = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!linkPattern || !linkOrderId) return;
-    try {
-      await updateResource('patterns', linkPattern.id, {
-        orderIds: [...(linkPattern.orderIds || []), linkOrderId]
-      });
-      setLinkPattern(null);
-      loadPatterns();
-    } catch (err) {
-      showToast('Gagal menghubungkan pesanan. Coba lagi.', 'error');
-    }
-  };
+  /*
+   * The templates a new chart can start from: the published HIJ charts, in the
+   * version stored on the server when it has one (it may have been corrected).
+   */
+  const templates: SizeChart[] = STANDARD_SIZE_CHARTS.map(
+    t => charts.find(c => c.id === t.id) || { ...t, scope: 'standard' as const }
+  );
 
   /*
    * A client's chart almost always starts as the factory standard with a few
-   * numbers changed, so every entry point here copies an existing chart's
-   * column structure rather than asking anyone to define measurements again.
+   * numbers changed, so every entry point copies an existing chart's columns
+   * and sizes rather than asking anyone to define measurements again.
    */
   const startChartForm = (base: SizeChart | null, customerId = '') => {
     setChartError(null);
@@ -242,8 +124,8 @@ export const PatternGradingModule: React.FC = () => {
       name: base ? base.name : '',
       garment: base ? base.garment : '',
       customerId,
-      basedOn: base ? base.id : '',
-      notes: base?.notes || '',
+      basedOn: base ? (base.scope === 'customer' ? base.basedOn || '' : base.id) : '',
+      notes: base?.notes || SIZE_CHART_COMMON_NOTES,
       measurements: base ? base.measurements.map(m => ({ ...m })) : [],
       rows: base ? base.rows.map(r => ({ size: r.size, values: { ...r.values } })) : []
     });
@@ -251,14 +133,13 @@ export const PatternGradingModule: React.FC = () => {
   };
 
   const handleOpenNewChart = () => {
-    const base = charts.find(c => (c.scope || 'standard') === 'standard') || null;
     setEditingChartId(null);
-    startChartForm(base);
+    const current = chartScope === 'standard' ? selectedChart : null;
+    startChartForm(current || templates[0] || null);
   };
 
   const handleCopyChartForCustomer = (chart: SizeChart) => {
     setEditingChartId(null);
-    setChartScope('customer');
     startChartForm(chart, chart.scope === 'customer' ? chart.customerId || '' : '');
   };
 
@@ -266,6 +147,20 @@ export const PatternGradingModule: React.FC = () => {
     setEditingChartId(chart.id);
     startChartForm(chart, chart.customerId || '');
   };
+
+  /** Switching garment swaps columns and sizes for that template's own. */
+  const handlePickTemplate = (template: SizeChart) => {
+    setChartForm(prev => ({
+      ...prev,
+      name: !prev.name || prev.name === templateName(prev.basedOn) ? template.name : prev.name,
+      garment: template.garment,
+      basedOn: template.id,
+      measurements: template.measurements.map(m => ({ ...m })),
+      rows: template.rows.map(r => ({ size: r.size, values: { ...r.values } }))
+    }));
+  };
+
+  const templateName = (id: string) => templates.find(t => t.id === id)?.name;
 
   const handleDeleteChart = async (chart: SizeChart) => {
     const approved = await confirm({
@@ -278,31 +173,55 @@ export const PatternGradingModule: React.FC = () => {
     try {
       await deleteResource('size-charts', chart.id);
       setSelectedChartId('');
-      loadPatterns();
+      loadCharts();
       showToast(`Size chart "${chart.name}" dihapus.`);
-    } catch {
-      showToast('Gagal menghapus size chart. Coba lagi.', 'error');
+    } catch (err: any) {
+      showToast(err?.message || 'Gagal menghapus size chart. Coba lagi.', 'error');
     }
   };
 
-  const updateChartValue = (rowIndex: number, key: string, value: string) => {
-    setChartForm(prev => ({
-      ...prev,
-      rows: prev.rows.map((r, i) => (i === rowIndex ? { ...r, values: { ...r.values, [key]: value } } : r))
-    }));
+  const updateRow = (rowIndex: number, update: (row: SizeChartRow) => SizeChartRow) => {
+    setChartForm(prev => ({ ...prev, rows: prev.rows.map((r, i) => (i === rowIndex ? update(r) : r)) }));
   };
 
-  const updateChartSize = (rowIndex: number, size: string) => {
-    setChartForm(prev => ({
-      ...prev,
-      rows: prev.rows.map((r, i) => (i === rowIndex ? { ...r, size } : r))
-    }));
-  };
+  const updateValue = (rowIndex: number, key: string, value: string) =>
+    updateRow(rowIndex, r => ({ ...r, values: { ...r.values, [key]: value } }));
+
+  /*
+   * Circumference is twice the width on every published chart, so it follows
+   * the width until someone types a different number into it.
+   */
+  const updateChestWidth = (rowIndex: number, key: string, width: string) =>
+    updateRow(rowIndex, r => {
+      const [oldWidth, oldAround] = splitChest(r.values[key]);
+      const followed = !oldAround || Number(oldAround) === Number(oldWidth) * 2;
+      const n = Number(width.replace(',', '.'));
+      const around = followed ? (width.trim() && Number.isFinite(n) ? String(n * 2) : '') : oldAround;
+      return { ...r, values: { ...r.values, [key]: joinChest(width, around) } };
+    });
+
+  const updateChestAround = (rowIndex: number, key: string, around: string) =>
+    updateRow(rowIndex, r => {
+      const [width] = splitChest(r.values[key]);
+      return { ...r, values: { ...r.values, [key]: joinChest(width, around) } };
+    });
+
+  const addSizeRow = () =>
+    setChartForm(prev => {
+      const last = prev.rows[prev.rows.length - 1]?.size.toUpperCase();
+      const at = last ? SIZE_SEQUENCE.indexOf(last) : -1;
+      const next = at >= 0 && at < SIZE_SEQUENCE.length - 1 ? SIZE_SEQUENCE[at + 1] : '';
+      return { ...prev, rows: [...prev.rows, { size: next, values: {} }] };
+    });
 
   const handleSaveChart = async (e: React.FormEvent) => {
     e.preventDefault();
     if (savingChart) return;
 
+    if (chartForm.measurements.length === 0) {
+      setChartError('Pilih jenis pakaian dulu.');
+      return;
+    }
     if (!chartForm.customerId) {
       setChartError('Pilih pelanggan pemilik size chart ini.');
       return;
@@ -316,6 +235,12 @@ export const PatternGradingModule: React.FC = () => {
       setChartError('Isi minimal satu baris ukuran.');
       return;
     }
+    const sizes = filled.map(r => r.size.trim().toUpperCase());
+    const duplicate = sizes.find((s, i) => sizes.indexOf(s) !== i);
+    if (duplicate) {
+      setChartError(`Ukuran ${duplicate} tertulis dua kali. Setiap ukuran cukup satu baris.`);
+      return;
+    }
 
     const customer = customers.find(c => c.id === chartForm.customerId);
     const payload: SizeChart = {
@@ -325,8 +250,9 @@ export const PatternGradingModule: React.FC = () => {
       scope: 'customer',
       customerId: chartForm.customerId,
       customerName: customer?.company || customer?.name,
+      basedOn: chartForm.basedOn || undefined,
       measurements: chartForm.measurements,
-      rows: filled,
+      rows: filled.map(r => ({ size: r.size.trim().toUpperCase(), values: r.values })),
       notes: chartForm.notes.trim() || undefined,
       user: getCurrentUser()?.name,
       timestamp: new Date().toISOString()
@@ -343,7 +269,8 @@ export const PatternGradingModule: React.FC = () => {
       setEditingChartId(null);
       setChartScope('customer');
       setSelectedChartId(payload.id);
-      loadPatterns();
+      loadCharts();
+      showToast(`Size chart "${payload.name}" disimpan.`);
     } catch (err: any) {
       setChartError(err?.message || 'Gagal menyimpan size chart. Coba lagi.');
     } finally {
@@ -353,35 +280,35 @@ export const PatternGradingModule: React.FC = () => {
 
   const yieldResult = calculateFabricYield(calcPcs, calcConsumption, calcEfficiency);
 
-  const sortedPatterns = newestFirst(patterns);
-
-  const { pageRows: pagedPatterns, pagination: patternPagination } = useTablePage(sortedPatterns);
-
   /*
    * Rows stay in stored order: S, M, L, XL reads as a chart, not a log — so the
    * newest-first rule that governs every other table deliberately does not
    * apply here.
    */
-  const scopedCharts = charts.filter(c => (c.scope || 'standard') === chartScope);
+  const scopedCharts = chartScope === 'standard'
+    ? templates.filter(t => charts.some(c => c.id === t.id))
+    : charts.filter(c => c.scope === 'customer');
   const selectedChart =
     scopedCharts.find(c => c.id === selectedChartId) || scopedCharts[0] || null;
+  const selectedImage = selectedChart
+    ? selectedChart.referenceImage || templateFor(selectedChart)?.referenceImage
+    : undefined;
+
+  const formTemplate = templateFor({ id: chartForm.basedOn, garment: chartForm.garment, name: chartForm.name, basedOn: chartForm.basedOn });
+  const formImage = formTemplate?.referenceImage;
 
   const calcFieldClass = 'w-full h-10 px-3 bg-white/10 border border-white/40 rounded-lg font-semibold font-mono text-white text-sm focus:outline-none focus:ring-2 focus:ring-brand-teal';
 
-  const unlinkedOrders = linkPattern
-    ? orders.filter(o => !(linkPattern.orderIds || []).includes(o.id))
-    : [];
-
-  const orderRefs = (p: Pattern) =>
-    (p.orderIds || []).map(id => orders.find(o => o.id === id)?.po || id);
-
-  const detailPattern = detailPatternId ? patterns.find(p => p.id === detailPatternId) ?? null : null;
+  const closeChartForm = () => {
+    setIsChartOpen(false);
+    setEditingChartId(null);
+  };
 
   return (
     <div className="space-y-6">
       <PageHeader
         title="Size Chart"
-        description="Size chart standar HIJ dan size chart khusus milik pelanggan, plus daftar pola dan kalkulator kebutuhan kain."
+        description="Size chart standar HIJ dan size chart khusus milik pelanggan, plus kalkulator kebutuhan kain."
         actions={
           <>
             <Button
@@ -403,35 +330,24 @@ export const PatternGradingModule: React.FC = () => {
             >
               <Download size={16} aria-hidden="true" /> Unduh Size Chart
             </Button>
-            <Button size="sm" onClick={handleOpenAdd}>
-              <Plus size={16} aria-hidden="true" /> Tambah Pola
+            <Button size="sm" onClick={handleOpenNewChart}>
+              <Plus size={16} aria-hidden="true" /> Buat Size Chart Pelanggan
             </Button>
           </>
         }
       />
 
-      {/* SIZE CHART */}
-      <section className="space-y-3" aria-labelledby="pg-size-heading">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <h2 id="pg-size-heading" className="text-base font-bold text-slate-900">Size Chart</h2>
-          {chartScope === 'customer' && (
-            <Button size="sm" onClick={handleOpenNewChart}>
-              <Plus size={16} aria-hidden="true" /> Size Chart Pelanggan
-            </Button>
-          )}
-        </div>
-
+      <section className="space-y-3" aria-label="Size chart">
         {/* Whose chart: the factory standard, or one client's own. */}
         <div className="flex flex-wrap gap-1 p-1 bg-slate-100 rounded-lg w-fit" role="tablist" aria-label="Pemilik size chart">
           {([
-            ['standard', `Standar HIJ (${charts.filter(c => (c.scope || 'standard') === 'standard').length})`],
+            ['standard', `Standar HIJ (${templates.filter(t => charts.some(c => c.id === t.id)).length})`],
             ['customer', `Khusus Pelanggan (${charts.filter(c => c.scope === 'customer').length})`]
-          ] as [ChartScope, string][]).map(([scope, label], index) => {
+          ] as [ChartScope, string][]).map(([scope, label]) => {
             const selected = chartScope === scope;
             return (
               <button
                 key={scope}
-                id={`pg-scope-tab-${index}`}
                 type="button"
                 role="tab"
                 aria-selected={selected}
@@ -446,7 +362,9 @@ export const PatternGradingModule: React.FC = () => {
           })}
         </div>
 
-        {scopedCharts.length === 0 ? (
+        {loading ? (
+          <Card className="p-8 text-center text-sm text-muted-foreground">Memuat size chart…</Card>
+        ) : scopedCharts.length === 0 ? (
           <Card className="p-8 text-center">
             <Ruler size={22} className="mx-auto mb-2 text-slate-400" aria-hidden="true" />
             <p className="text-sm font-semibold text-slate-900">
@@ -454,9 +372,14 @@ export const PatternGradingModule: React.FC = () => {
             </p>
             <p className="mt-1 text-xs text-slate-500">
               {chartScope === 'standard'
-                ? 'Jalankan: node server/scripts/seed-size-charts.mjs'
+                ? 'Size chart standar ditambahkan otomatis saat server dijalankan ulang.'
                 : 'Pelanggan yang punya ukuran sendiri bisa dibuatkan chart terpisah, disalin dari standar lalu disesuaikan.'}
             </p>
+            {chartScope === 'customer' && (
+              <Button size="sm" className="mt-4" onClick={handleOpenNewChart}>
+                <Plus size={16} aria-hidden="true" /> Buat Size Chart Pelanggan
+              </Button>
+            )}
           </Card>
         ) : (
           <>
@@ -495,9 +418,9 @@ export const PatternGradingModule: React.FC = () => {
                     </p>
                   </div>
                   <div className="flex flex-wrap items-center gap-1.5">
-                    {selectedChart.referenceImage && (
+                    {selectedImage && (
                       <a
-                        href={selectedChart.referenceImage}
+                        href={imageSrc(selectedImage)}
                         target="_blank"
                         rel="noopener noreferrer"
                         className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border bg-white px-2.5 text-xs font-semibold text-slate-700 hover:bg-muted"
@@ -540,11 +463,13 @@ export const PatternGradingModule: React.FC = () => {
                 <Table>
                   <TableHeader>
                     <TableRow>
-                      <TableHead className="cell-sticky-start">Ukuran</TableHead>
+                      <TableHead className="cell-sticky-start">Size</TableHead>
                       {selectedChart.measurements.map(m => (
-                        <TableHead key={m.key} className="text-right tabular-nums">
-                          {m.label}
-                          {m.code ? <span className="ml-1 font-normal text-muted-foreground">({m.code})</span> : null}
+                        <TableHead key={m.key} className="text-right">
+                          <span className="inline-flex items-center justify-end gap-1.5">
+                            <CodeChip code={m.code} />
+                            <span>{m.label}</span>
+                          </span>
                         </TableHead>
                       ))}
                     </TableRow>
@@ -568,7 +493,7 @@ export const PatternGradingModule: React.FC = () => {
                         </TableCell>
                         {selectedChart.measurements.map(m => (
                           <TableCell key={m.key} className="text-right font-semibold tabular-nums text-slate-800">
-                            {r.values[m.key] || '—'}
+                            {isChestMeasurement(m) ? <ChestValue value={r.values[m.key]} /> : r.values[m.key] || '—'}
                           </TableCell>
                         ))}
                       </TableRow>
@@ -586,95 +511,6 @@ export const PatternGradingModule: React.FC = () => {
           </>
         )}
       </section>
-
-      {/* PATTERN REGISTER */}
-      <Card className="overflow-hidden">
-        <div className="p-4 sm:p-5 border-b border-slate-100">
-          <h2 className="text-base font-bold text-slate-900">Daftar Pola</h2>
-          <p className="text-sm text-slate-500 mt-0.5">Hanya pola final yang boleh dipakai untuk pemotongan.</p>
-        </div>
-
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead className="cell-sticky-start">Kode Pola</TableHead>
-              <TableHead className="hidden md:table-cell">Produk</TableHead>
-              <TableHead className="hidden lg:table-cell">Pesanan</TableHead>
-              <TableHead className="hidden lg:table-cell">Ukuran Dasar</TableHead>
-              <TableHead className="hidden xl:table-cell">Daftar Ukuran</TableHead>
-              <TableHead className="text-center">Status</TableHead>
-              <TableHead className="cell-sticky-end text-right">Aksi</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {loadingPatterns ? (
-              <TableSkeletonRows columns={7} rows={3} />
-            ) : patterns.length === 0 ? (
-              <TableEmptyRow
-                colSpan={7}
-                icon={<Scissors size={20} />}
-                title="Belum ada pola"
-                description="Klik Tambah Pola untuk mendaftarkan pola pertama. Pola baru disimpan sebagai draf."
-                action={
-                  <Button size="sm" onClick={handleOpenAdd}>
-                    <Plus size={16} aria-hidden="true" /> Tambah Pola
-                  </Button>
-                }
-              />
-            ) : pagedPatterns.map(p => {
-              const refs = orderRefs(p);
-              return (
-                <TableRow key={p.id}>
-                  <TableCell className="cell-sticky-start font-mono font-bold text-slate-900">{p.id}</TableCell>
-                  <TableCell className="hidden md:table-cell">
-                    <span className="block max-w-[180px] truncate font-semibold text-slate-900" title={p.productName || undefined}>
-                      {p.productName || '—'}
-                    </span>
-                  </TableCell>
-                  <TableCell className="hidden lg:table-cell">
-                    {refs.length === 0 ? (
-                      <span className="text-slate-500">—</span>
-                    ) : (
-                      <span className="inline-flex items-center gap-1.5" title={refs.join(', ')}>
-                        <span className="font-mono">{refs[0]}</span>
-                        {refs.length > 1 && (
-                          <Badge variant="idle" size="sm">+{refs.length - 1}</Badge>
-                        )}
-                      </span>
-                    )}
-                  </TableCell>
-                  <TableCell className="hidden lg:table-cell">{p.baseSize || '—'}</TableCell>
-                  <TableCell className="hidden xl:table-cell">
-                    <span className="block max-w-[180px] truncate" title={p.sizes || undefined}>
-                      {p.sizes || '—'}
-                    </span>
-                  </TableCell>
-                  <TableCell className="text-center">
-                    <StatusBadge status={p.status} size="sm" solid />
-                  </TableCell>
-                  <TableCell className="cell-sticky-end text-right">
-                    <TableRowActions>
-                      {p.status === 'Draft' && (
-                        <RowActionButton
-                          label="Tandai Final"
-                          icon={CheckCircle2}
-                          display="labeled"
-                          tone="primary"
-                          onClick={() => handleFinalize(p)}
-                          ariaLabel={`Tandai Final ${p.id}`}
-                          title="Tandai pola ini final supaya boleh dipakai untuk pemotongan"
-                        />
-                      )}
-                      <RowDetailButton label={p.id} onClick={() => setDetailPatternId(p.id)} />
-                    </TableRowActions>
-                  </TableCell>
-                </TableRow>
-              );
-            })}
-          </TableBody>
-        </Table>
-        <TablePagination {...patternPagination} label="pola" />
-      </Card>
 
       {/* MARKER EFFICIENCY & FABRIC YIELD CALCULATOR */}
       <Card className="bg-teal-900 text-white p-5 border-teal-900 space-y-5">
@@ -739,121 +575,16 @@ export const PatternGradingModule: React.FC = () => {
         </dl>
       </Card>
 
-      {/* PATTERN DETAIL */}
-      <DetailDrawer
-        isOpen={!!detailPattern}
-        onClose={() => setDetailPatternId(null)}
-        title={detailPattern && (detailPattern.productName || detailPattern.id)}
-        subtitle={detailPattern && <span className="font-mono">{detailPattern.id} · Rev. {detailPattern.revision ?? 0}</span>}
-        status={detailPattern && <StatusBadge status={detailPattern.status} />}
-        footer={
-          detailPattern && detailPattern.status !== 'Inactive' ? (
-            detailPattern.status === 'Draft' ? (
-              <>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => {
-                    setDetailPatternId(null);
-                    handleOpenLink(detailPattern);
-                  }}
-                >
-                  <Link2 size={16} aria-hidden="true" /> Hubungkan Pesanan
-                </Button>
-                <Button size="sm" onClick={() => handleFinalize(detailPattern)}>
-                  <CheckCircle2 size={16} aria-hidden="true" /> Tandai Final
-                </Button>
-              </>
-            ) : (
-              <>
-                <Button variant="outline" size="sm" onClick={() => handleRevise(detailPattern)}>
-                  <RotateCcw size={16} aria-hidden="true" /> Buat Revisi
-                </Button>
-                <Button
-                  size="sm"
-                  onClick={() => {
-                    setDetailPatternId(null);
-                    handleOpenLink(detailPattern);
-                  }}
-                >
-                  <Link2 size={16} aria-hidden="true" /> Hubungkan Pesanan
-                </Button>
-              </>
-            )
-          ) : undefined
-        }
-      >
-        {detailPattern && (
-          <>
-            <DetailStats
-              items={[
-                { label: 'Revisi', value: detailPattern.revision ?? 0 },
-                { label: 'Ukuran dasar', value: detailPattern.baseSize || '—' },
-                { label: 'Pesanan', value: (detailPattern.orderIds || []).length, tone: 'accent' }
-              ]}
-            />
-            <DetailSection title="Pola">
-              <DetailField label="Kode pola" mono>{detailPattern.id}</DetailField>
-              <DetailField label="Status"><StatusBadge status={detailPattern.status} /></DetailField>
-              <DetailField label="Nama produk" full>{detailPattern.productName}</DetailField>
-              <DetailField label="Kategori">{detailPattern.category}</DetailField>
-              <DetailField label="Revisi">{String(detailPattern.revision ?? 0)}</DetailField>
-            </DetailSection>
-            <DetailSection title="Ukuran">
-              <DetailField label="Ukuran dasar">{detailPattern.baseSize}</DetailField>
-              <DetailField label="Daftar ukuran">{detailPattern.sizes}</DetailField>
-            </DetailSection>
-            <DetailBlock title="Pesanan">
-              {(detailPattern.orderIds || []).length === 0 ? (
-                <p className="text-sm text-muted-foreground">Belum terhubung ke pesanan.</p>
-              ) : (
-                <ul className="space-y-2">
-                  {(detailPattern.orderIds || []).map(id => {
-                    const o = orders.find(ord => ord.id === id);
-                    return (
-                      <li key={id} className="flex items-baseline justify-between gap-3 text-sm">
-                        <span className="font-mono font-semibold text-foreground whitespace-nowrap">{o?.po || id}</span>
-                        <span className="min-w-0 text-right text-muted-foreground break-words">{o?.customerName || '—'}</span>
-                      </li>
-                    );
-                  })}
-                </ul>
-              )}
-            </DetailBlock>
-            <DetailSection title="Finalisasi">
-              <DetailField label="Ditandai final oleh">{detailPattern.finalizedBy}</DetailField>
-              <DetailField label="Ditandai final pada">
-                {detailPattern.finalizedAt ? formatDateTime(detailPattern.finalizedAt) : ''}
-              </DetailField>
-            </DetailSection>
-            <DetailSection title="Catatan">
-              <DetailField label="Catatan pola" full>{detailPattern.notes}</DetailField>
-            </DetailSection>
-            {(detailPattern.user || detailPattern.timestamp || detailPattern.updatedAt) && (
-              <DetailSection title="Riwayat Data">
-                <DetailField label="Dicatat oleh">{detailPattern.user}</DetailField>
-                <DetailField label="Dicatat pada">
-                  {detailPattern.timestamp ? formatDateTime(detailPattern.timestamp) : ''}
-                </DetailField>
-                <DetailField label="Diperbarui pada">
-                  {detailPattern.updatedAt ? formatDateTime(detailPattern.updatedAt) : ''}
-                </DetailField>
-              </DetailSection>
-            )}
-          </>
-        )}
-      </DetailDrawer>
-
-      {/* CUSTOMER SIZE CHART EDITOR */}
+      {/* CUSTOMER SIZE CHART FORM — laid out like the published charts */}
       <Modal
         isOpen={isChartOpen}
-        onClose={() => { setIsChartOpen(false); setEditingChartId(null); }}
-        title={editingChartId ? 'Ubah Size Chart Pelanggan' : 'Size Chart Khusus Pelanggan'}
-        subtitle="Disalin dari size chart yang ada, lalu angkanya disesuaikan dengan permintaan pelanggan."
-        maxWidth="4xl"
+        onClose={closeChartForm}
+        title={editingChartId ? 'Ubah Size Chart Pelanggan' : 'Buat Size Chart Pelanggan'}
+        subtitle="Mulai dari size chart standar HIJ, lalu sesuaikan angkanya dengan permintaan pelanggan. Semua ukuran dalam cm."
+        maxWidth="6xl"
         footer={
           <div className="flex flex-wrap items-center justify-end gap-2">
-            <Button type="button" variant="outline" disabled={savingChart} onClick={() => { setIsChartOpen(false); setEditingChartId(null); }}>
+            <Button type="button" variant="outline" disabled={savingChart} onClick={closeChartForm}>
               Batal
             </Button>
             <Button type="submit" form="size-chart-form" disabled={savingChart}>
@@ -865,281 +596,236 @@ export const PatternGradingModule: React.FC = () => {
         <form id="size-chart-form" noValidate onSubmit={handleSaveChart} className="space-y-5">
           <FormError>{chartError}</FormError>
 
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            <div>
-              <FieldLabel htmlFor="szc-customer" required>Pelanggan</FieldLabel>
-              <Select
-                id="szc-customer"
-                value={chartForm.customerId}
-                onChange={e => setChartForm(prev => ({ ...prev, customerId: e.target.value }))}
-              >
-                <option value="">Pilih pelanggan</option>
-                {customers.map(c => (
-                  <option key={c.id} value={c.id}>
-                    {c.name}{c.company ? ` (${c.company})` : ''}
-                  </option>
-                ))}
-              </Select>
-              <FieldHint>Chart ini hanya berlaku untuk pelanggan tersebut.</FieldHint>
+          {/* 1. Garment — each one brings the columns printed on its chart. */}
+          <fieldset>
+            <legend className="mb-1.5 block text-sm font-semibold text-foreground">Jenis pakaian</legend>
+            <div className="grid grid-cols-3 gap-2 sm:grid-cols-6">
+              {templates.map(t => {
+                const active = chartForm.basedOn === t.id;
+                return (
+                  <button
+                    key={t.id}
+                    type="button"
+                    aria-pressed={active}
+                    onClick={() => handlePickTemplate(t)}
+                    className={`group flex flex-col overflow-hidden rounded-xl border text-left transition-colors cursor-pointer ${
+                      active
+                        ? 'border-brand-teal-dark ring-2 ring-brand-teal/30'
+                        : 'border-border hover:border-brand-teal/50'
+                    }`}
+                  >
+                    <img
+                      src={imageSrc(t.referenceImage)}
+                      alt=""
+                      loading="lazy"
+                      className="aspect-[4/3] w-full bg-muted object-cover object-[center_22%]"
+                    />
+                    <span className={`px-2 py-1.5 text-xs font-semibold ${active ? 'bg-brand-teal-dark text-white' : 'bg-white text-slate-700'}`}>
+                      {t.name}
+                    </span>
+                  </button>
+                );
+              })}
             </div>
+            <FieldHint>Kolom ukuran mengikuti size chart jenis pakaian yang dipilih. Mengganti jenis pakaian mengisi ulang tabel di bawah.</FieldHint>
+          </fieldset>
 
-            <div>
-              <FieldLabel htmlFor="szc-name" required>Nama size chart</FieldLabel>
-              <Input
-                id="szc-name"
-                type="text"
-                value={chartForm.name}
-                placeholder="Contoh: Kemeja PDL"
-                onChange={e => setChartForm(prev => ({ ...prev, name: e.target.value }))}
-              />
-            </div>
-          </div>
-
-          <div>
-            <span className="mb-1.5 block text-sm font-semibold text-foreground">Ukuran</span>
-            <div className="overflow-x-auto rounded-xl border border-border">
-              <table className="w-full text-sm">
-                <thead className="bg-muted/60 text-xs font-semibold text-muted-foreground">
-                  <tr>
-                    <th scope="col" className="px-3 py-2 text-left">Ukuran</th>
-                    {chartForm.measurements.map(m => (
-                      <th key={m.key} scope="col" className="px-3 py-2 text-right whitespace-nowrap">{m.label}</th>
-                    ))}
-                    <th scope="col" className="w-12 px-3 py-2"><span className="sr-only">Hapus</span></th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-border/60">
-                  {chartForm.rows.length === 0 ? (
-                    <tr>
-                      <td colSpan={chartForm.measurements.length + 2} className="px-3 py-4 text-center text-sm text-muted-foreground">
-                        Belum ada baris ukuran.
-                      </td>
-                    </tr>
-                  ) : (
-                    chartForm.rows.map((r, index) => (
-                      <tr key={index}>
-                        <td className="px-3 py-2">
-                          <Input
-                            aria-label={`Nama ukuran baris ${index + 1}`}
-                            value={r.size}
-                            placeholder="S / M / L"
-                            onChange={e => updateChartSize(index, e.target.value)}
-                            className="h-9 w-24"
-                          />
-                        </td>
-                        {chartForm.measurements.map(m => (
-                          <td key={m.key} className="px-3 py-2">
-                            <Input
-                              aria-label={`${m.label} ukuran ${r.size || index + 1}`}
-                              value={r.values[m.key] || ''}
-                              placeholder="cm"
-                              onChange={e => updateChartValue(index, m.key, e.target.value)}
-                              className="h-9 text-right"
-                            />
-                          </td>
-                        ))}
-                        <td className="px-3 py-2 text-right">
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="icon"
-                            aria-label={`Hapus baris ${r.size || index + 1}`}
-                            onClick={() => setChartForm(prev => ({ ...prev, rows: prev.rows.filter((_, i) => i !== index) }))}
-                            className="size-8 text-brand-red hover:bg-rose-50"
-                          >
-                            <Trash2 size={14} aria-hidden="true" />
-                          </Button>
-                        </td>
-                      </tr>
-                    ))
+          <div className="grid grid-cols-1 gap-5 lg:grid-cols-[260px_minmax(0,1fr)]">
+            {/* 2. The diagram the codes refer to. */}
+            <aside className="space-y-2">
+              {formImage ? (
+                <a href={imageSrc(formImage)} target="_blank" rel="noopener noreferrer" className="block overflow-hidden rounded-xl border border-border bg-muted">
+                  <img
+                    src={imageSrc(formImage)}
+                    alt={`Size chart acuan ${formTemplate?.name || ''}`}
+                    className="h-56 w-full object-cover object-[center_32%] sm:h-72 lg:h-auto"
+                  />
+                </a>
+              ) : (
+                <div className="flex aspect-[3/4] items-center justify-center rounded-xl border border-dashed border-border text-xs text-muted-foreground">
+                  Pilih jenis pakaian
+                </div>
+              )}
+              {chartForm.measurements.length > 0 && (
+                <ul className="space-y-1 text-xs text-muted-foreground">
+                  {chartForm.measurements.flatMap(m =>
+                    isChestMeasurement(m)
+                      ? [
+                          <li key={`${m.key}-1`} className="flex items-center gap-1.5"><CodeChip code={m.code} sup="1" /> Lebar dada (diukur datar)</li>,
+                          <li key={`${m.key}-2`} className="flex items-center gap-1.5"><CodeChip code={m.code} sup="2" /> Lingkar dada</li>
+                        ]
+                      : [<li key={m.key} className="flex items-center gap-1.5"><CodeChip code={m.code} /> {m.label}</li>]
                   )}
-                </tbody>
-              </table>
+                </ul>
+              )}
+            </aside>
+
+            <div className="min-w-0 space-y-4">
+              {/* 3. Owner and name */}
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                <div>
+                  <FieldLabel htmlFor="szc-customer" required>Pelanggan</FieldLabel>
+                  <Select
+                    id="szc-customer"
+                    value={chartForm.customerId}
+                    onChange={e => setChartForm(prev => ({ ...prev, customerId: e.target.value }))}
+                  >
+                    <option value="">Pilih pelanggan</option>
+                    {customers.map(c => (
+                      <option key={c.id} value={c.id}>
+                        {c.name}{c.company ? ` (${c.company})` : ''}
+                      </option>
+                    ))}
+                  </Select>
+                  <FieldHint>Chart ini hanya berlaku untuk pelanggan tersebut.</FieldHint>
+                </div>
+
+                <div>
+                  <FieldLabel htmlFor="szc-name" required>Nama size chart</FieldLabel>
+                  <Input
+                    id="szc-name"
+                    type="text"
+                    value={chartForm.name}
+                    placeholder="Contoh: Kemeja PDL"
+                    onChange={e => setChartForm(prev => ({ ...prev, name: e.target.value }))}
+                  />
+                </div>
+              </div>
+
+              {/* 4. The table, columns as printed */}
+              <div>
+                <span className="mb-1.5 block text-sm font-semibold text-foreground">Ukuran (cm)</span>
+                <div className="overflow-x-auto rounded-xl border border-border">
+                  <table className="w-full text-sm">
+                    <thead className="bg-muted/60 text-xs font-semibold text-muted-foreground">
+                      <tr>
+                        <th scope="col" className="px-2 py-2 text-left">
+                          <span className="inline-flex h-6 items-center rounded-md bg-brand-teal px-2 text-xs font-bold text-slate-900">Size</span>
+                        </th>
+                        {chartForm.measurements.flatMap(m =>
+                          isChestMeasurement(m)
+                            ? [
+                                <th key={`${m.key}-1`} scope="col" className="px-2 py-2 text-center whitespace-nowrap">
+                                  <span className="flex flex-col items-center gap-1"><CodeChip code={m.code} sup="1" /> Lebar Dada</span>
+                                </th>,
+                                <th key={`${m.key}-2`} scope="col" className="px-2 py-2 text-center whitespace-nowrap">
+                                  <span className="flex flex-col items-center gap-1"><CodeChip code={m.code} sup="2" /> Lingkar Dada</span>
+                                </th>
+                              ]
+                            : [
+                                <th key={m.key} scope="col" className="px-2 py-2 text-center whitespace-nowrap">
+                                  <span className="flex flex-col items-center gap-1"><CodeChip code={m.code} /> {m.label}</span>
+                                </th>
+                              ]
+                        )}
+                        <th scope="col" className="w-10 px-2 py-2"><span className="sr-only">Hapus</span></th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-border/60">
+                      {chartForm.rows.length === 0 ? (
+                        <tr>
+                          <td colSpan={chartForm.measurements.length + 3} className="px-3 py-4 text-center text-sm text-muted-foreground">
+                            {chartForm.measurements.length === 0 ? 'Pilih jenis pakaian di atas.' : 'Belum ada baris ukuran.'}
+                          </td>
+                        </tr>
+                      ) : (
+                        chartForm.rows.map((r, index) => {
+                          const sizeName = r.size || `baris ${index + 1}`;
+                          return (
+                            <tr key={index}>
+                              <td className="px-2 py-1.5">
+                                <Input
+                                  aria-label={`Nama ukuran baris ${index + 1}`}
+                                  value={r.size}
+                                  placeholder="S"
+                                  onChange={e => updateRow(index, row => ({ ...row, size: e.target.value.toUpperCase() }))}
+                                  className="h-9 w-16 text-center font-mono font-bold"
+                                />
+                              </td>
+                              {chartForm.measurements.flatMap(m => {
+                                if (!isChestMeasurement(m)) {
+                                  return [
+                                    <td key={m.key} className="px-2 py-1.5">
+                                      <Input
+                                        aria-label={`${m.label} ukuran ${sizeName}`}
+                                        inputMode="decimal"
+                                        value={r.values[m.key] || ''}
+                                        onChange={e => updateValue(index, m.key, e.target.value)}
+                                        className="h-9 min-w-16 text-center tabular-nums"
+                                      />
+                                    </td>
+                                  ];
+                                }
+                                const [width, around] = splitChest(r.values[m.key]);
+                                return [
+                                  <td key={`${m.key}-1`} className="px-2 py-1.5">
+                                    <Input
+                                      aria-label={`Lebar dada ukuran ${sizeName}`}
+                                      inputMode="decimal"
+                                      value={width}
+                                      onChange={e => updateChestWidth(index, m.key, e.target.value)}
+                                      className="h-9 min-w-16 text-center tabular-nums"
+                                    />
+                                  </td>,
+                                  <td key={`${m.key}-2`} className="px-2 py-1.5">
+                                    <Input
+                                      aria-label={`Lingkar dada ukuran ${sizeName}`}
+                                      inputMode="decimal"
+                                      value={around}
+                                      onChange={e => updateChestAround(index, m.key, e.target.value)}
+                                      className="h-9 min-w-16 text-center tabular-nums"
+                                    />
+                                  </td>
+                                ];
+                              })}
+                              <td className="px-2 py-1.5 text-right">
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="icon"
+                                  aria-label={`Hapus ukuran ${sizeName}`}
+                                  onClick={() => setChartForm(prev => ({ ...prev, rows: prev.rows.filter((_, i) => i !== index) }))}
+                                  className="size-8 text-brand-red hover:bg-rose-50"
+                                >
+                                  <Trash2 size={14} aria-hidden="true" />
+                                </Button>
+                              </td>
+                            </tr>
+                          );
+                        })
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={chartForm.measurements.length === 0}
+                    onClick={addSizeRow}
+                  >
+                    <Plus size={14} aria-hidden="true" /> Tambah Ukuran
+                  </Button>
+                  {chartForm.measurements.some(isChestMeasurement) && (
+                    <span className="text-xs text-muted-foreground">
+                      Lingkar dada terisi otomatis 2× lebar dada; ubah bila berbeda.
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              <div>
+                <FieldLabel htmlFor="szc-notes" aside="Opsional">Catatan</FieldLabel>
+                <textarea
+                  id="szc-notes"
+                  rows={2}
+                  value={chartForm.notes}
+                  onChange={e => setChartForm(prev => ({ ...prev, notes: e.target.value }))}
+                  className="w-full rounded-lg border border-border bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-teal"
+                />
+              </div>
             </div>
-            <div className="mt-2 flex flex-wrap items-center gap-2">
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() =>
-                  setChartForm(prev => ({ ...prev, rows: [...prev.rows, { size: '', values: {} }] }))
-                }
-              >
-                <Plus size={14} aria-hidden="true" /> Tambah Ukuran
-              </Button>
-              <span className="text-xs text-muted-foreground">
-                Lebar dada ditulis seperti di chart standar, misalnya <span className="font-mono">52/104</span>.
-              </span>
-            </div>
-          </div>
-
-          <div>
-            <FieldLabel htmlFor="szc-notes" aside="Opsional">Catatan</FieldLabel>
-            <Input
-              id="szc-notes"
-              type="text"
-              value={chartForm.notes}
-              placeholder="Contoh: toleransi jahit 1 cm, dada diukur datar."
-              onChange={e => setChartForm(prev => ({ ...prev, notes: e.target.value }))}
-            />
-          </div>
-        </form>
-      </Modal>
-
-      {/* ADD PATTERN MODAL */}
-      <Modal isOpen={isAddOpen} onClose={() => setIsAddOpen(false)} title="Tambah Pola" maxWidth="2xl">
-        <form onSubmit={handleCreatePattern} className="space-y-5">
-          <FormError>{patternError}</FormError>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div>
-              <label htmlFor="pg-category" className={labelClass}>Kategori</label>
-              <select
-                id="pg-category"
-                value={newPattern.category}
-                onChange={(e) => {
-                  const category = e.target.value;
-                  setNewPattern(prev => ({
-                    ...prev,
-                    category,
-                    id: codeTouched ? prev.id : nextPatternCode(category, patterns)
-                  }));
-                }}
-                className={fieldClass}
-              >
-                {PATTERN_CATEGORIES.map(c => (
-                  <option key={c} value={c}>{c}</option>
-                ))}
-              </select>
-            </div>
-
-            <div>
-              <label htmlFor="pg-code" className={labelClass}>Kode Pola</label>
-              <Input
-                id="pg-code"
-                type="text"
-                required
-                value={newPattern.id}
-                onChange={(e) => {
-                  setCodeTouched(true);
-                  setNewPattern({ ...newPattern, id: e.target.value });
-                }}
-                className="font-mono"
-              />
-            </div>
-          </div>
-
-          <div>
-            <label htmlFor="pg-product" className={labelClass}>Nama Produk</label>
-            <Input
-              id="pg-product"
-              type="text"
-              required
-              placeholder="Contoh: Kaos Cotton Combed 24s lengan pendek"
-              value={newPattern.productName}
-              onChange={(e) => setNewPattern({ ...newPattern, productName: e.target.value })}
-            />
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div>
-              <label htmlFor="pg-base-size" className={labelClass}>Ukuran Dasar</label>
-              <Input
-                id="pg-base-size"
-                type="text"
-                required
-                value={newPattern.baseSize}
-                onChange={(e) => setNewPattern({ ...newPattern, baseSize: e.target.value })}
-              />
-            </div>
-
-            <div>
-              <label htmlFor="pg-sizes" className={labelClass}>Daftar Ukuran</label>
-              <Input
-                id="pg-sizes"
-                type="text"
-                placeholder="Contoh: S, M, L, XL"
-                value={newPattern.sizes}
-                onChange={(e) => setNewPattern({ ...newPattern, sizes: e.target.value })}
-              />
-            </div>
-          </div>
-
-          <div>
-            <label htmlFor="pg-order" className={labelClass}>Untuk Pesanan</label>
-            <select
-              id="pg-order"
-              value={newPattern.orderId}
-              onChange={(e) => setNewPattern({ ...newPattern, orderId: e.target.value })}
-              className={fieldClass}
-            >
-              <option value="">Belum ada pesanan</option>
-              {orders.map(o => (
-                <option key={o.id} value={o.id}>{orderLabel(o)}</option>
-              ))}
-            </select>
-          </div>
-
-          <div>
-            <label htmlFor="pg-notes" className={labelClass}>Catatan</label>
-            <textarea
-              id="pg-notes"
-              rows={3}
-              value={newPattern.notes}
-              onChange={(e) => setNewPattern({ ...newPattern, notes: e.target.value })}
-              placeholder="Contoh: kerah rib 2 cm, lengan raglan"
-              className="w-full px-3 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-600"
-            />
-          </div>
-
-          <p className="text-sm text-slate-500">Pola baru disimpan sebagai draf.</p>
-
-          <div className="flex justify-end gap-2 pt-4 border-t border-slate-100">
-            <Button type="button" variant="outline" onClick={() => setIsAddOpen(false)}>
-              Batal
-            </Button>
-            <Button type="submit">
-              Simpan Pola
-            </Button>
-          </div>
-        </form>
-      </Modal>
-
-      {/* LINK ORDER MODAL */}
-      <Modal
-        isOpen={!!linkPattern}
-        onClose={() => setLinkPattern(null)}
-        title={`Hubungkan Pesanan ke ${linkPattern?.id ?? ''}`}
-        maxWidth="lg"
-      >
-        <form onSubmit={handleLinkOrder} className="space-y-5">
-          <div>
-            <label htmlFor="pg-link-order" className={labelClass}>Pesanan</label>
-            <select
-              id="pg-link-order"
-              required
-              value={linkOrderId}
-              onChange={(e) => setLinkOrderId(e.target.value)}
-              aria-describedby={linkPattern?.status !== 'Final' ? 'pg-link-order-hint' : undefined}
-              className={fieldClass}
-            >
-              <option value="">Pilih pesanan</option>
-              {unlinkedOrders.map(o => (
-                <option key={o.id} value={o.id}>{orderLabel(o)}</option>
-              ))}
-            </select>
-            {linkPattern?.status !== 'Final' && (
-              <p id="pg-link-order-hint" className="text-xs text-slate-500 mt-1.5">Syarat pola baru terpenuhi setelah pola ditandai final.</p>
-            )}
-          </div>
-
-          <div className="flex justify-end gap-2 pt-4 border-t border-slate-100">
-            <Button type="button" variant="outline" onClick={() => setLinkPattern(null)}>
-              Batal
-            </Button>
-            <Button type="submit" disabled={!linkOrderId}>
-              Hubungkan
-            </Button>
           </div>
         </form>
       </Modal>

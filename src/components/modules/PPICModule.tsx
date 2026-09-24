@@ -136,7 +136,6 @@ export const PPICModule: React.FC = () => {
     payments: [],
     samples: [],
     procurements: [],
-    patterns: [],
     designs: []
   });
   const [inventory, setInventory] = useState<InventoryItem[]>([]);
@@ -759,7 +758,7 @@ export const PPICModule: React.FC = () => {
                           )}
 
                           {req.key === 'sample' && (
-                            <span className="text-xs text-slate-500">Setujui desain di halaman Desain &amp; Sampel. Pola difinalkan di halaman Size Chart — statusnya ikut tampil, tapi tidak menahan SPK.</span>
+                            <span className="text-xs text-slate-500">Setujui desain di halaman Desain &amp; Sampel.</span>
                           )}
                         </div>
                       )}

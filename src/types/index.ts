@@ -457,6 +457,8 @@ export interface SizeChart {
   notes?: string;
   /** Path under public/ to the published artwork this was transcribed from. */
   referenceImage?: string;
+  /** Id of the standard chart a client's chart was copied from. */
+  basedOn?: string;
   user?: string;
   timestamp?: string;
 }

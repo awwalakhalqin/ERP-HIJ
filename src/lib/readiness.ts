@@ -1,18 +1,15 @@
 // Production requirements an order must meet before PPIC may issue its SPK.
 // Shared by the server (enforcement) and the UI (checklists), so keep it dependency-free.
 //
-// Only DP and design block the SPK. Production may start while fabric is still
-// on its way, so material and pattern are reported for awareness but never hold
-// the work order back.
+// Only DP, size chart and design block the SPK. Production may start while
+// fabric is still on its way, so material is reported for awareness but never
+// holds the work order back.
 //
 //   DP diterima         SOP-01 & SOP-20  blocking  verified payments >= agreed DP, or owner-approved special terms
 //   Template size chart SOP-03           blocking  the order names a template from the Size Chart page; the SPK prints it
-//   Desain & pola final SOP-02 & SOP-06  blocking  an approved design or sample, or a repeat order waiver.
-//                                                  The pattern is reported on the same line but never holds
-//                                                  the SPK back: cutting can start from an approved mockup.
+//   Desain disetujui    SOP-02           blocking  an approved design or sample, or a repeat order waiver
 //   Bahan baku tersedia SOP-03 & SOP-04  info      every PO for the order received, or PPIC confirmed warehouse stock
-//   Pola final          SOP-06           info      a Final pattern linked to the order
-import type { Order, Payment, Sample, Procurement, Pattern, Design, SPK } from '../types';
+import type { Order, Payment, Sample, Procurement, Design, SPK } from '../types';
 import { statusLabel } from './status';
 
 export type RequirementKey = 'dp' | 'sizeChart' | 'sample' | 'material';
@@ -42,14 +39,13 @@ export interface ReadinessData {
   payments: Payment[];
   samples: Sample[];
   procurements: Procurement[];
-  patterns: Pattern[];
   designs?: Design[];
 }
 
 export const REQUIREMENT_LABELS: Record<RequirementKey, string> = {
   dp: 'DP diterima',
   sizeChart: 'Template size chart',
-  sample: 'Desain & pola final',
+  sample: 'Desain disetujui',
   material: 'Bahan baku tersedia'
 };
 
@@ -128,9 +124,6 @@ export function designForOrder(order: Order, designs: Design[] = []): Design | u
 
 function checkSample(order: Order, data: ReadinessData): RequirementStatus {
   const base = { key: 'sample' as const, label: REQUIREMENT_LABELS.sample, blocking: true };
-  // Appended to whatever the design outcome is, so one line answers both.
-  const pattern = ` — ${patternNote(order, data)}`;
-
   /*
    * Nothing is cut from a description. The SPK sheet carries the artwork the
    * floor works from, so an order with no design attached cannot produce one —
@@ -138,42 +131,42 @@ function checkSample(order: Order, data: ReadinessData): RequirementStatus {
    */
   const design = designForOrder(order, data.designs || []);
   if (!design) {
-    return { ...base, met: false, detail: `Desain belum dilampirkan ke pesanan ini${pattern}` };
+    return { ...base, met: false, detail: `Desain belum dilampirkan ke pesanan ini` };
   }
   if (design.status !== 'Approved') {
     return {
       ...base,
       met: false,
-      detail: `Desain ${design.id} belum disetujui (${statusLabel(design.status)})${pattern}`
+      detail: `Desain ${design.id} belum disetujui (${statusLabel(design.status)})`
     };
   }
 
   // Approved artwork is enough to cut; a physical sample only matters when the
   // quotation asked for one.
   if (order.needsSample !== true) {
-    return { ...base, met: true, detail: `Desain ${design.id} disetujui${pattern}` };
+    return { ...base, met: true, detail: `Desain ${design.id} disetujui` };
   }
 
   // Jika status sampel pada pesanan sudah Approved
   if (order.sampleStatus === 'Approved') {
-    return { ...base, met: true, detail: `Sampel fisik telah disetujui (ACC)${pattern}` };
+    return { ...base, met: true, detail: `Sampel fisik telah disetujui (ACC)` };
   }
 
   const linked = data.samples.filter(s => s.orderId === order.id);
   const approved = linked.find(s => s.status === 'Approved');
 
   if (approved) {
-    return { ...base, met: true, detail: `Sampel ${approved.id} disetujui${pattern}` };
+    return { ...base, met: true, detail: `Sampel ${approved.id} disetujui` };
   }
   if (order.sampleWaivedBy) {
     const ref = order.sampleWaivedReferenceOrderId ? ` dari ${order.sampleWaivedReferenceOrderId}` : '';
-    return { ...base, met: true, detail: `Repeat order${ref}${pattern}` };
+    return { ...base, met: true, detail: `Repeat order${ref}` };
   }
   if (linked.length > 0) {
     const latest = linked[0];
-    return { ...base, met: false, detail: `Sampel ${latest.id}: ${statusLabel(latest.status)}${pattern}` };
+    return { ...base, met: false, detail: `Sampel ${latest.id}: ${statusLabel(latest.status)}` };
   }
-  return { ...base, met: false, detail: `Belum ada sampel untuk pesanan ini${pattern}` };
+  return { ...base, met: false, detail: `Belum ada sampel untuk pesanan ini` };
 }
 
 function checkMaterial(order: Order, data: ReadinessData): RequirementStatus {
@@ -203,20 +196,6 @@ function checkMaterial(order: Order, data: ReadinessData): RequirementStatus {
       ? 'Belum ada pembelian bahan untuk pesanan ini'
       : 'Stok gudang belum dikonfirmasi PPIC'
   };
-}
-
-/*
- * Reported alongside the design rather than as its own requirement. A final
- * pattern is what cutting works from, but production may start from an approved
- * mockup while the pattern is still being graded — so this never blocks.
- */
-function patternNote(order: Order, data: ReadinessData): string {
-  const linked = data.patterns.filter(p => (p.orderIds || []).includes(order.id));
-  const final = linked.find(p => p.status === 'Final');
-
-  if (final) return `pola ${final.id} rev. ${final.revision ?? 0} final`;
-  if (linked.length > 0) return `pola ${linked[0].id} masih ${statusLabel(linked[0].status).toLowerCase()}`;
-  return 'pola belum dibuat';
 }
 
 /**

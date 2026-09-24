@@ -165,7 +165,7 @@ export const OrdersModule: React.FC = () => {
   const [designs, setDesigns] = useState<Design[]>([]);
   const [samples, setSamples] = useState<Sample[]>([]);
   const [invoices, setInvoices] = useState<Invoice[]>([]);
-  const [readinessData, setReadinessData] = useState<ReadinessData>({ payments: [], samples: [], procurements: [], patterns: [] });
+  const [readinessData, setReadinessData] = useState<ReadinessData>({ payments: [], samples: [], procurements: [] });
   const [loading, setLoading] = useState(true);
 
   // Filters & Sorting
@@ -1799,7 +1799,7 @@ export const OrdersModule: React.FC = () => {
                 <p className="mt-3 text-xs text-muted-foreground">
                   {isSpkOptionalForOrder(selectedOrder)
                     ? 'Catatan: Pesanan ini jalur cepat — DP dan sampel tidak menahan SPK; SPK tetap wajib terbit dengan desain yang sudah disetujui dan template size chart.'
-                    : 'Hanya DP dan desain yang menahan penerbitan SPK. Bahan baku dan pola ditampilkan sebagai informasi — produksi boleh jalan sambil bahan menyusul. Terbitkan SPK di halaman Surat Perintah Kerja.'}
+                    : 'Hanya DP dan desain yang menahan penerbitan SPK. Bahan baku ditampilkan sebagai informasi — produksi boleh jalan sambil bahan menyusul. Terbitkan SPK di halaman Surat Perintah Kerja.'}
                 </p>
               </DetailBlock>
             )}
