@@ -5,8 +5,7 @@ import {
   AlertCircle,
   Loader2,
   ArrowRight,
-  MessageCircle,
-  Info
+  MessageCircle
 } from 'lucide-react';
 import { motion, useReducedMotion } from 'motion/react';
 import { AuthSession } from '../../types';
@@ -19,11 +18,10 @@ interface LoginModalProps {
 }
 
 /*
- * Where customers go to track orders. Set VITE_PORTAL_URL to the portal page on
- * the company website; without it the link points at this app, which accepts
- * customer logins too.
+ * The login page names no roles, no other door and no account types: anything
+ * shown here is shown to whoever finds the address. Help goes through WhatsApp.
  */
-const PORTAL_URL: string = import.meta.env.VITE_PORTAL_URL || COMPANY_CONTACT.portalUrl;
+const WRONG_DOOR = 'Akun ini tidak memiliki akses ke halaman ini.';
 
 export const LoginModal: React.FC<LoginModalProps> = ({ onLoginSuccess }) => {
   const [identifier, setIdentifier] = useState('');
@@ -61,13 +59,9 @@ export const LoginModal: React.FC<LoginModalProps> = ({ onLoginSuccess }) => {
        * Each door admits one kind of account. The token was already issued,
        * so it is dropped again here rather than left in storage.
        */
-      if (isPortalSite && session.type !== 'customer') {
+      if (session.type !== (isPortalSite ? 'customer' : 'internal')) {
         setAuthToken(undefined);
-        throw new Error('Ini portal pelanggan. Akun staf masuk lewat sistem ERP HIJ.');
-      }
-      if (!isPortalSite && session.type !== 'internal') {
-        setAuthToken(undefined);
-        throw new Error(`Akun pelanggan masuk lewat portal pelanggan: ${PORTAL_URL}`);
+        throw new Error(WRONG_DOOR);
       }
       onLoginSuccess(session);
     } catch (err: any) {
@@ -120,35 +114,13 @@ export const LoginModal: React.FC<LoginModalProps> = ({ onLoginSuccess }) => {
 
             <div className="pt-1">
               <h2 className="text-lg font-semibold text-slate-900 tracking-tight">
-                {isPortalSite ? 'Portal Pelanggan' : 'ERP Operasional Pabrik'}
+                Masuk
               </h2>
               <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">
-                {isPortalSite
-                  ? 'Pantau semua pesanan Anda, setujui desain & sampel, dan ajukan repeat order lewat WhatsApp.'
-                  : 'Khusus staf internal HIJ (Super Admin, Owner, Design, Pengadaan, Produksi).'}
+                Gunakan akun yang diberikan oleh HIJ.
               </p>
             </div>
           </div>
-
-          {/* The portal address is shared with customers directly, never advertised on the website. */}
-          {isPortalSite ? (
-            <div className="p-3 bg-muted border border-border rounded-xl flex items-start gap-2.5 text-xs leading-relaxed">
-              <Info size={15} className="shrink-0 text-brand-teal-dark mt-0.5" aria-hidden="true" />
-              <p className="text-[11px] text-muted-foreground">
-                Akun dibuatkan Admin HIJ untuk pelanggan tetap. Belum punya akun atau lupa kata sandi? Hubungi WhatsApp {COMPANY_CONTACT.whatsappFormatted}.
-              </p>
-            </div>
-          ) : (
-            <div className="p-3 bg-muted border border-border rounded-xl flex items-start gap-2.5 text-xs text-brand-teal-dark leading-relaxed">
-              <Info size={15} className="shrink-0 text-brand-teal-dark mt-0.5" aria-hidden="true" />
-              <div className="min-w-0">
-                <p className="font-semibold text-foreground">Pelanggan ingin melacak pesanan?</p>
-                <p className="text-[11px] text-muted-foreground mt-0.5">
-                  Akun pelanggan masuk lewat <span className="font-mono">{PORTAL_URL}</span>.
-                </p>
-              </div>
-            </div>
-          )}
 
           {/* Inline Error Alert */}
           {error && (

@@ -49,6 +49,21 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 const app = express();
+
+/*
+ * Hosting panels (Hostinger, pm2 behind Caddy) put a reverse proxy in front of
+ * Node, so req.ip is the proxy and every visitor would share one login
+ * throttle. Forwarded addresses are trusted only when the direct peer is a
+ * private or loopback address — a client on the internet cannot spoof them.
+ * TRUST_PROXY overrides this (e.g. "1" or "false").
+ */
+const trustProxy = process.env.TRUST_PROXY;
+app.set(
+  'trust proxy',
+  trustProxy === undefined || trustProxy === ''
+    ? 'loopback, linklocal, uniquelocal'
+    : trustProxy === 'false' ? false : /^\d+$/.test(trustProxy) ? Number(trustProxy) : trustProxy
+);
 const PORT = process.env.PORT ? parseInt(process.env.PORT) : 3001;
 
 /*
@@ -85,6 +100,10 @@ app.use((_req: Request, res: Response, next: NextFunction) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'SAMEORIGIN');
   res.setHeader('Referrer-Policy', 'same-origin');
+  res.setHeader('Permissions-Policy', 'geolocation=(), microphone=(), payment=()');
+  if (process.env.NODE_ENV === 'production') {
+    res.setHeader('Strict-Transport-Security', 'max-age=31536000');
+  }
   next();
 });
 // Only the workbook import and the offline replay carry big bodies; a 49 MB
@@ -308,31 +327,52 @@ function customerSession(customer: any) {
  */
 const LOGIN_WINDOW_MS = 15 * 60 * 1000;
 const LOGIN_MAX_FAILURES = 10;
+/*
+ * The per-account key alone let one address try a common password against
+ * every username in turn (spraying). This second key caps the address itself.
+ */
+const LOGIN_MAX_FAILURES_PER_IP = 30;
 const loginFailures = new Map<string, { count: number; first: number }>();
 
 function loginThrottleKey(req: Request) {
-  return `${req.ip || 'ip'}|${String(req.body?.identifier || req.body?.username || '').trim().toLowerCase()}`;
+  return `${req.ip || 'ip'}|${String(req.body?.identifier || req.body?.username || req.body?.customerId || '').trim().toLowerCase()}`;
 }
-function loginBlocked(req: Request): boolean {
-  const entry = loginFailures.get(loginThrottleKey(req));
+const loginIpKey = (req: Request) => `ip:${req.ip || 'ip'}`;
+
+function throttleHit(key: string, max: number): boolean {
+  const entry = loginFailures.get(key);
   if (!entry) return false;
   if (Date.now() - entry.first > LOGIN_WINDOW_MS) {
-    loginFailures.delete(loginThrottleKey(req));
+    loginFailures.delete(key);
     return false;
   }
-  return entry.count >= LOGIN_MAX_FAILURES;
+  return entry.count >= max;
 }
-function noteLoginFailure(req: Request) {
-  const key = loginThrottleKey(req);
+function loginBlocked(req: Request): boolean {
+  return throttleHit(loginThrottleKey(req), LOGIN_MAX_FAILURES) || throttleHit(loginIpKey(req), LOGIN_MAX_FAILURES_PER_IP);
+}
+function bumpFailure(key: string) {
   const entry = loginFailures.get(key);
   if (!entry || Date.now() - entry.first > LOGIN_WINDOW_MS) loginFailures.set(key, { count: 1, first: Date.now() });
   else entry.count += 1;
+}
+function noteLoginFailure(req: Request) {
+  bumpFailure(loginThrottleKey(req));
+  bumpFailure(loginIpKey(req));
   // Keep the map from growing without bound under a scan.
   if (loginFailures.size > 5000) {
     for (const [k, v] of loginFailures) if (Date.now() - v.first > LOGIN_WINDOW_MS) loginFailures.delete(k);
   }
 }
 const LOGIN_THROTTLED = 'Terlalu banyak percobaan masuk. Tunggu 15 menit lalu coba lagi.';
+
+/*
+ * An unknown username answered instantly while a known one paid for scrypt, so
+ * response time told an attacker which usernames exist. Unknown names now pay
+ * the same cost against a throwaway hash.
+ */
+const DUMMY_HASH = hashPassword(crypto.randomBytes(16).toString('hex'));
+const burnPasswordCheck = (password: string) => { verifyPassword(password, DUMMY_HASH); };
 
 app.post('/api/auth/unified-login', (req: Request, res: Response) => {
   const identifier = String(req.body.identifier || req.body.username || '').trim();
@@ -369,6 +409,7 @@ app.post('/api/auth/unified-login', (req: Request, res: Response) => {
     upgradeStoredPassword('customers', matchedCustomer.id, password, check.needsUpgrade);
     return res.json(customerSession(matchedCustomer));
   }
+  burnPasswordCheck(password);
   noteLoginFailure(req);
 
   /*
@@ -389,6 +430,7 @@ app.post('/api/login', (req: Request, res: Response) => {
   }
 
   const user = findStaff(readTable('users'), identifier);
+  if (!user) burnPasswordCheck(password);
   const check = user ? verifyPassword(password, user.password) : { ok: false, needsUpgrade: false };
   if (!user || !check.ok) {
     noteLoginFailure(req);
@@ -412,6 +454,7 @@ app.post('/api/customer-login', (req: Request, res: Response) => {
 
   if (loginBlocked(req)) return res.status(429).json({ success: false, error: LOGIN_THROTTLED });
   const matched = findCustomer(readTable('customers'), identifier, identifier.replace(/\D/g, ''));
+  if (!matched) burnPasswordCheck(password);
   const check = matched ? verifyPassword(password, matched.password) : { ok: false, needsUpgrade: false };
   if (!matched || !check.ok) {
     noteLoginFailure(req);
