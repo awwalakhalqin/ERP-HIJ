@@ -350,3 +350,31 @@ process.on('uncaughtException', (err) => {
     });
   }
 })();
+
+/*
+ * Recovering a lost Super Admin password on a host with no terminal (the
+ * Hostinger panel only offers environment variables and a restart). Set
+ * RESET_ADMIN_PASSWORD, restart once, log in, then REMOVE the variable: while
+ * it stays set, every restart puts this password back. The value is never
+ * logged, and changing it ends existing sessions of that account.
+ */
+(function resetAdminFromEnv() {
+  const plain = process.env.RESET_ADMIN_PASSWORD;
+  if (!plain) return;
+  if (plain.length < 12) {
+    console.warn('  RESET_ADMIN_PASSWORD diabaikan: minimal 12 karakter.');
+    return;
+  }
+  const username = (process.env.RESET_ADMIN_USERNAME || 'admin.rezza').toLowerCase();
+  const admin = readTable('users').find(u => String(u.username || '').toLowerCase() === username);
+  if (!admin) {
+    console.warn(`  RESET_ADMIN_PASSWORD: akun "${username}" tidak ditemukan, tidak ada yang diubah.`);
+    return;
+  }
+  const salt = crypto.randomBytes(16).toString('hex');
+  updateItem('users', admin.id, {
+    password: `scrypt$${salt}$${crypto.scryptSync(plain, salt, 64).toString('hex')}`,
+    status: 'Active'
+  });
+  console.warn(`  Kata sandi "${admin.username}" di-reset dari RESET_ADMIN_PASSWORD. Hapus variabel itu dari panel sekarang.`);
+})();

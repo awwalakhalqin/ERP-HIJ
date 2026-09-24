@@ -224,8 +224,11 @@ app.get('/api/health', (_req: Request, res: Response) => {
     time: new Date().toISOString(),
     version: '1.0.0',
     mode: HIJ_MODE,
-    // Forward slashes so the banner reads the same on Windows and Linux.
-    dataDir: (path.relative(process.cwd(), DATA_DIR) || 'server/data').split(path.sep).join('/')
+    // Forward slashes so the banner reads the same on Windows and Linux. Public
+    // route: the server's folder layout is nobody's business in production.
+    ...(process.env.NODE_ENV === 'production'
+      ? {}
+      : { dataDir: (path.relative(process.cwd(), DATA_DIR) || 'server/data').split(path.sep).join('/') })
   });
 });
 
