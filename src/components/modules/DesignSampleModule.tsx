@@ -2,9 +2,10 @@ import React, { useState, useEffect, useRef } from 'react';
 import {
   Palette, Plus, Download, CheckCircle2, FlaskConical,
   Link2, RefreshCw, Check, Ruler, UploadCloud, FolderOpen, Trash2, Loader2, Pencil,
-  Maximize2
+  Maximize2, ChevronLeft, ChevronRight
 } from 'lucide-react';
-import { Design, Sample, Order, Customer } from '../../types';
+import { Design, DesignMockup, Sample, Order, Customer } from '../../types';
+import { designMockups, legacyMockupFields, mockupTitle } from '../../lib/mockups';
 import { fetchResource, createResource, updateResource, uploadMedia } from '../../services/api';
 import { formatDate, formatDateTime, generateId, statusLabel } from '../../lib/utils';
 import { getCurrentUser } from '../../lib/session';
@@ -112,90 +113,84 @@ const SAMPLING_VENDORS = [
 const ACCEPTED_IMAGE_TYPES = 'image/png,image/jpeg,image/jpg,image/webp';
 const MAX_UPLOAD_MB = 25;
 
-interface MockupSlotProps {
-  /** "Tampak Depan" / "Tampak Belakang" */
-  label: string;
-  /** Marks the view the SPK sheet and the quotation both print. */
-  required?: boolean;
-  value?: string;
-  uploading: boolean;
-  dragOver: boolean;
-  onDragOverChange: (over: boolean) => void;
-  onFile: (file: File) => void;
-  onPick: () => void;
-  onClear: () => void;
+/** Offered while typing a title; any other title can be typed instead. */
+const MOCKUP_TITLE_SUGGESTIONS = [
+  'Tampak Depan',
+  'Tampak Belakang',
+  'Tampak Samping',
+  'Lengan Kiri',
+  'Lengan Kanan',
+  'Detail Logo Dada',
+  'Detail Bordir',
+  'Kerah',
+  'Label / Tag'
+];
+
+/** A picture in the form; `uploading` is set while its file is on the way. */
+interface MockupDraft extends DesignMockup {
+  uploading?: boolean;
+}
+
+interface MockupCardProps {
+  mockup: MockupDraft;
+  index: number;
+  count: number;
+  onTitleChange: (title: string) => void;
+  onReplace: () => void;
+  onRemove: () => void;
+  onMove: (delta: -1 | 1) => void;
   onPreview: () => void;
 }
 
-/** One mockup image: drop target when empty, preview with actions once filled. */
-const MockupSlot: React.FC<MockupSlotProps> = ({
-  label,
-  required,
-  value,
-  uploading,
-  dragOver,
-  onDragOverChange,
-  onFile,
-  onPick,
-  onClear,
+/** One uploaded picture: its title, a preview, and the actions on it. */
+const MockupCard: React.FC<MockupCardProps> = ({
+  mockup,
+  index,
+  count,
+  onTitleChange,
+  onReplace,
+  onRemove,
+  onMove,
   onPreview
 }) => {
-  const lower = label.toLowerCase();
+  const inputId = `dsn-mockup-title-${mockup.id}`;
+  const name = mockupTitle(mockup, index);
+  const busy = !!mockup.uploading;
 
-  const heading = (
-    <span className="flex items-center justify-between text-xs font-bold text-slate-700">
-      <span>
-        {label}
-        {required
-          ? <span className="ml-1 font-semibold text-brand-red">wajib</span>
-          : <span className="ml-1 font-medium text-muted-foreground">opsional</span>}
-      </span>
-      {value && !uploading && (
-        <span className="inline-flex items-center gap-1 font-semibold text-brand-teal-dark">
-          <Check size={13} aria-hidden="true" /> Siap
-        </span>
-      )}
-    </span>
-  );
+  return (
+    <div className="flex flex-col gap-2 rounded-xl border border-border bg-slate-50/60 p-2.5">
+      <div>
+        <FieldLabel htmlFor={inputId}>Judul gambar {index + 1}</FieldLabel>
+        <Input
+          id={inputId}
+          list="dsn-mockup-title-suggestions"
+          value={mockup.title}
+          maxLength={60}
+          placeholder="Mis. Tampak Depan"
+          onChange={(e) => onTitleChange(e.target.value)}
+        />
+      </div>
 
-  if (uploading) {
-    return (
-      <div className="space-y-2">
-        {heading}
+      {busy ? (
         <div
           role="status"
           aria-busy="true"
           className="flex h-44 w-full flex-col items-center justify-center rounded-xl border-2 border-dashed border-brand-teal bg-teal-50/60 p-3 text-center"
         >
           <Loader2 className="mb-2 size-7 animate-spin text-brand-teal-dark motion-reduce:animate-none" aria-hidden="true" />
-          <span className="text-xs font-semibold text-teal-950">Mengunggah {lower}…</span>
+          <span className="text-xs font-semibold text-teal-950">Mengunggah gambar…</span>
         </div>
-        <div className="flex items-center gap-1.5">
-          <Button type="button" variant="outline" size="sm" disabled className="h-8 flex-1 px-2 text-xs">
-            <FolderOpen size={13} aria-hidden="true" /> Ganti
-          </Button>
-          <Button type="button" variant="outline" size="sm" disabled className="h-8 flex-1 px-2 text-xs">
-            <Trash2 size={13} aria-hidden="true" /> Hapus
-          </Button>
-        </div>
-      </div>
-    );
-  }
-
-  if (value) {
-    return (
-      <div className="space-y-2">
-        {heading}
+      ) : (
         <button
           type="button"
           onClick={onPreview}
-          aria-label={`Perbesar mockup ${lower}`}
+          aria-label={`Perbesar ${name}`}
           title="Klik untuk memperbesar"
           className={`group relative flex h-44 w-full cursor-zoom-in items-center justify-center overflow-hidden rounded-xl border border-border bg-white ${focusRing}`}
         >
           <img
-            src={value}
-            alt={`Mockup ${lower}`}
+            src={mockup.url}
+            alt={name}
             loading="lazy"
             className="h-full w-full object-contain p-1.5"
             onError={(e) => {
@@ -211,66 +206,102 @@ const MockupSlot: React.FC<MockupSlotProps> = ({
             </span>
           </span>
         </button>
-        <div className="flex items-center gap-1.5">
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={onPick}
-            aria-label={`Ganti file mockup ${lower}`}
-            className="h-8 flex-1 px-2 text-xs"
-          >
-            <FolderOpen size={13} aria-hidden="true" /> Ganti
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={onClear}
-            aria-label={`Hapus mockup ${lower}`}
-            className="h-8 flex-1 px-2 text-xs text-brand-red hover:border-brand-red/40 hover:bg-rose-50 hover:text-brand-red"
-          >
-            <Trash2 size={13} aria-hidden="true" /> Hapus
-          </Button>
-        </div>
-      </div>
-    );
-  }
+      )}
 
-  return (
-    <div className="space-y-2">
-      {heading}
-      <button
-        type="button"
-        onClick={onPick}
-        onDragOver={(e) => {
-          e.preventDefault();
-          onDragOverChange(true);
-        }}
-        onDragLeave={() => onDragOverChange(false)}
-        onDrop={(e) => {
-          e.preventDefault();
-          onDragOverChange(false);
-          const file = e.dataTransfer.files?.[0];
-          if (file) onFile(file);
-        }}
-        aria-label={`Unggah mockup ${lower}`}
-        className={`flex h-44 w-full cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed p-3 text-center transition-colors ${focusRing} ${
-          dragOver
-            ? 'border-brand-teal-dark bg-teal-50/80'
-            : 'border-slate-300 bg-white hover:border-brand-teal hover:bg-teal-50/30'
-        }`}
-      >
-        <span className="mb-2 flex size-11 items-center justify-center rounded-full bg-teal-50 text-brand-teal-dark">
-          <UploadCloud size={22} aria-hidden="true" />
-        </span>
-        <span className="text-xs font-bold leading-tight text-slate-800">Unggah {lower}</span>
-        <span className="mt-1 text-[11px] leading-tight text-slate-500">Klik untuk memilih atau tarik file ke sini</span>
-        <span className="mt-1 text-[11px] leading-tight text-slate-400">PNG, JPG, WebP · maks. {MAX_UPLOAD_MB}MB</span>
-      </button>
+      <div className="flex items-center gap-1.5">
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          disabled={busy || index === 0}
+          onClick={() => onMove(-1)}
+          aria-label={`Geser ${name} ke depan`}
+          title="Geser ke depan"
+          className="h-8 px-2"
+        >
+          <ChevronLeft size={14} aria-hidden="true" />
+        </Button>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          disabled={busy}
+          onClick={onReplace}
+          aria-label={`Ganti file ${name}`}
+          className="h-8 flex-1 px-2 text-xs"
+        >
+          <FolderOpen size={13} aria-hidden="true" /> Ganti
+        </Button>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          disabled={busy}
+          onClick={onRemove}
+          aria-label={`Hapus ${name}`}
+          className="h-8 flex-1 px-2 text-xs text-brand-red hover:border-brand-red/40 hover:bg-rose-50 hover:text-brand-red"
+        >
+          <Trash2 size={13} aria-hidden="true" /> Hapus
+        </Button>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          disabled={busy || index === count - 1}
+          onClick={() => onMove(1)}
+          aria-label={`Geser ${name} ke belakang`}
+          title="Geser ke belakang"
+          className="h-8 px-2"
+        >
+          <ChevronRight size={14} aria-hidden="true" />
+        </Button>
+      </div>
     </div>
   );
 };
+
+interface AddMockupTileProps {
+  empty: boolean;
+  dragOver: boolean;
+  onDragOverChange: (over: boolean) => void;
+  onFiles: (files: File[]) => void;
+  onPick: () => void;
+}
+
+/** Drop target that adds one or more pictures to the design. */
+const AddMockupTile: React.FC<AddMockupTileProps> = ({ empty, dragOver, onDragOverChange, onFiles, onPick }) => (
+  <button
+    type="button"
+    onClick={onPick}
+    onDragOver={(e) => {
+      e.preventDefault();
+      onDragOverChange(true);
+    }}
+    onDragLeave={() => onDragOverChange(false)}
+    onDrop={(e) => {
+      e.preventDefault();
+      onDragOverChange(false);
+      const files = Array.from(e.dataTransfer.files || []);
+      if (files.length > 0) onFiles(files);
+    }}
+    className={`flex min-h-[15rem] w-full cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed p-3 text-center transition-colors ${focusRing} ${
+      dragOver
+        ? 'border-brand-teal-dark bg-teal-50/80'
+        : 'border-slate-300 bg-white hover:border-brand-teal hover:bg-teal-50/30'
+    }`}
+  >
+    <span className="mb-2 flex size-11 items-center justify-center rounded-full bg-teal-50 text-brand-teal-dark">
+      {empty ? <UploadCloud size={22} aria-hidden="true" /> : <Plus size={22} aria-hidden="true" />}
+    </span>
+    <span className="text-xs font-bold leading-tight text-slate-800">
+      {empty ? 'Unggah gambar mockup' : 'Tambah gambar'}
+    </span>
+    <span className="mt-1 text-[11px] leading-tight text-slate-500">
+      Klik untuk memilih atau tarik file ke sini. Boleh beberapa file sekaligus.
+    </span>
+    <span className="mt-1 text-[11px] leading-tight text-slate-400">PNG, JPG, WebP · maks. {MAX_UPLOAD_MB}MB per file</span>
+  </button>
+);
 
 export const DesignSampleModule: React.FC = () => {
   const [designs, setDesigns] = useState<Design[]>([]);
@@ -299,11 +330,10 @@ export const DesignSampleModule: React.FC = () => {
   const [editingDesignId, setEditingDesignId] = useState<string | null>(null);
   const [isSampleModalOpen, setIsSampleModalOpen] = useState(false);
 
-  // Design Image Upload & Drag-Drop States
-  const [frontUploading, setFrontUploading] = useState(false);
-  const [backUploading, setBackUploading] = useState(false);
-  const [dragOverFront, setDragOverFront] = useState(false);
-  const [dragOverBack, setDragOverBack] = useState(false);
+  // The design's pictures while the form is open, in print order.
+  const [mockupDrafts, setMockupDrafts] = useState<MockupDraft[]>([]);
+  const [mockupDragOver, setMockupDragOver] = useState(false);
+  const mockupUploading = mockupDrafts.some(m => m.uploading);
 
   // Form submit state and messages
   const [savingDesign, setSavingDesign] = useState(false);
@@ -313,8 +343,10 @@ export const DesignSampleModule: React.FC = () => {
   const [savingSample, setSavingSample] = useState(false);
   const [sampleError, setSampleError] = useState<string | null>(null);
   const [sampleFieldErrors, setSampleFieldErrors] = useState<Record<string, string>>({});
-  const frontFileInputRef = useRef<HTMLInputElement>(null);
-  const backFileInputRef = useRef<HTMLInputElement>(null);
+  const addMockupInputRef = useRef<HTMLInputElement>(null);
+  const replaceMockupInputRef = useRef<HTMLInputElement>(null);
+  /** The picture the replace-file picker was opened for. */
+  const replaceMockupIdRef = useRef<string | null>(null);
 
   const [newDesign, setNewDesign] = useState<Partial<Design>>({
     name: '',
@@ -322,9 +354,7 @@ export const DesignSampleModule: React.FC = () => {
     customerId: '',
     category: 'Kaos / Polo',
     status: 'Pending Review',
-    description: '',
-    mockupFront: '',
-    mockupBack: ''
+    description: ''
   });
 
   const SAMPLE_FORM_DEFAULTS: Partial<Sample> = {
@@ -353,49 +383,63 @@ export const DesignSampleModule: React.FC = () => {
   const [statusFeedback, setStatusFeedback] = useState('');
   const [statusError, setStatusError] = useState<string | null>(null);
 
-  const handleDesignImageUpload = async (file: File, side: 'front' | 'back') => {
-    if (!file) return;
+  /** Checks a picked file; returns the reason it cannot be used, if any. */
+  const mockupFileProblem = (file: File): string | null => {
     if (!file.type.startsWith('image/')) {
-      setUploadError('Format file tidak didukung. Pilih file gambar PNG, JPG, atau WebP.');
-      return;
+      return `${file.name}: format tidak didukung. Pilih file gambar PNG, JPG, atau WebP.`;
     }
     if (file.size > MAX_UPLOAD_MB * 1024 * 1024) {
-      setUploadError(`Ukuran file ${(file.size / 1024 / 1024).toFixed(1)}MB melebihi batas ${MAX_UPLOAD_MB}MB. Kompres gambar lalu unggah lagi.`);
-      return;
+      return `${file.name}: ${(file.size / 1024 / 1024).toFixed(1)}MB melebihi batas ${MAX_UPLOAD_MB}MB. Kompres gambar lalu unggah lagi.`;
     }
-    setUploadError(null);
+    return null;
+  };
 
-    if (side === 'front') setFrontUploading(true);
-    if (side === 'back') setBackUploading(true);
-
+  /*
+   * Uploads one picture, either as a new card at the end of the list or into
+   * an existing card (replacing its file, keeping its title). A new card shows
+   * up straight away so its title can be typed while the file is on the way.
+   */
+  const uploadMockup = async (file: File, targetId?: string) => {
+    const id = targetId || generateId('MCK');
+    setMockupDrafts(prev =>
+      targetId
+        ? prev.map(m => (m.id === id ? { ...m, uploading: true } : m))
+        : [...prev, { id, title: '', url: '', uploading: true }]
+    );
     try {
       const url = await uploadMedia(file);
-      setNewDesign(prev => ({
-        ...prev,
-        [side === 'front' ? 'mockupFront' : 'mockupBack']: url
-      }));
+      setMockupDrafts(prev => prev.map(m => (m.id === id ? { ...m, url, uploading: false } : m)));
     } catch (err: any) {
       /*
        * A failed upload is reported, not papered over. The old fallback stored
        * the whole image as a base64 data URL on the design record, which bloated
        * every list response and PDF export that carried it.
        */
-      setUploadError(
-        `Unggah gagal: ${err?.message || 'server tidak merespons'}. Periksa koneksi lalu coba lagi.`
+      setUploadError(`Unggah ${file.name} gagal: ${err?.message || 'server tidak merespons'}. Periksa koneksi lalu coba lagi.`);
+      setMockupDrafts(prev =>
+        targetId ? prev.map(m => (m.id === id ? { ...m, uploading: false } : m)) : prev.filter(m => m.id !== id)
       );
-    } finally {
-      if (side === 'front') setFrontUploading(false);
-      if (side === 'back') setBackUploading(false);
     }
   };
 
-  const handleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>, side: 'front' | 'back') => {
-    const file = e.target.files?.[0];
-    if (file) {
-      handleDesignImageUpload(file, side);
-    }
-    e.target.value = '';
+  const handleMockupFiles = (files: File[], targetId?: string) => {
+    const usable = targetId ? files.slice(0, 1) : files;
+    const problems = usable.map(mockupFileProblem).filter((p): p is string => !!p);
+    setUploadError(problems.length > 0 ? problems.join(' ') : null);
+    usable.filter(file => !mockupFileProblem(file)).forEach(file => uploadMockup(file, targetId));
   };
+
+  const updateMockupTitle = (id: string, title: string) =>
+    setMockupDrafts(prev => prev.map(m => (m.id === id ? { ...m, title } : m)));
+
+  const moveMockup = (index: number, delta: -1 | 1) =>
+    setMockupDrafts(prev => {
+      const target = index + delta;
+      if (target < 0 || target >= prev.length) return prev;
+      const next = [...prev];
+      [next[index], next[target]] = [next[target], next[index]];
+      return next;
+    });
 
   const loadData = async () => {
     try {
@@ -425,15 +469,15 @@ export const DesignSampleModule: React.FC = () => {
 
   const handleOpenNewDesign = () => {
     setEditingDesignId(null);
+    setMockupDrafts([]);
+    setUploadError(null);
     setNewDesign({
       name: '',
       orderId: '',
       customerId: '',
       category: 'Kaos / Polo',
       status: 'Pending Review',
-      description: '',
-      mockupFront: '',
-      mockupBack: ''
+      description: ''
     });
     setIsDesignModalOpen(true);
   };
@@ -447,11 +491,11 @@ export const DesignSampleModule: React.FC = () => {
       category: design.category || 'Kaos / Polo',
       status: design.status,
       description: design.description || '',
-      mockupFront: design.mockupFront || '',
-      mockupBack: design.mockupBack || '',
       approvedBy: design.approvedBy || '',
       approvedAt: design.approvedAt || ''
     });
+    setMockupDrafts(designMockups(design));
+    setUploadError(null);
     setIsDesignModalOpen(true);
   };
 
@@ -461,10 +505,11 @@ export const DesignSampleModule: React.FC = () => {
    * the order has an approved design. Failure here is reported, not fatal:
    * the design itself is already saved.
    */
-  const syncOrderDesign = async (orderId: string, design: Pick<Design, 'id' | 'name' | 'mockupFront' | 'mockupBack'>) => {
+  const syncOrderDesign = async (orderId: string, design: Pick<Design, 'id' | 'name' | 'mockups' | 'mockupFront' | 'mockupBack'>) => {
     const linked = orders.find(o => o.id === orderId);
     if (!linked) return;
-    const designUrl = design.mockupFront || design.mockupBack || '';
+    // The order keeps the first picture as its thumbnail; the full list is read from the design.
+    const designUrl = designMockups(design)[0]?.url || '';
     if (linked.designId === design.id && linked.designName === design.name && (linked.designUrl || '') === designUrl) return;
     try {
       await updateResource('orders', orderId, { designId: design.id, designName: design.name, designUrl });
@@ -488,14 +533,20 @@ export const DesignSampleModule: React.FC = () => {
     if (!newDesign.customerId) errors.customerId = 'Pilih klien pemilik desain ini.';
     if (!newDesign.name?.trim()) errors.name = 'Isi nama desain agar mudah dicari.';
     const status = (newDesign.status as Design['status']) || 'Pending Review';
+    const mockups: DesignMockup[] = mockupDrafts
+      .filter(m => m.url)
+      .map(({ id, title, url }) => ({ id, title: title.trim(), url }));
+    if (mockupUploading) {
+      errors.mockups = 'Tunggu sampai semua gambar selesai diunggah, lalu simpan lagi.';
+    }
     // Same rule as the list's Setujui: an approved design is one the SPK can print.
-    if (status === 'Approved' && !newDesign.mockupFront && !newDesign.mockupBack) {
+    if (status === 'Approved' && mockups.length === 0) {
       errors.status = 'Unggah gambar mockup dulu — desain tanpa gambar tidak bisa disetujui atau dicetak di SPK.';
     }
 
     if (Object.keys(errors).length > 0) {
       setDesignFieldErrors(errors);
-      setDesignError('Lengkapi isian yang ditandai merah, lalu simpan lagi.');
+      setDesignError(errors.mockups && Object.keys(errors).length === 1 ? errors.mockups : 'Lengkapi isian yang ditandai merah, lalu simpan lagi.');
       document.getElementById(errors.customerId ? 'dsn-customer' : errors.name ? 'dsn-name' : 'dsn-status')?.focus();
       return;
     }
@@ -518,7 +569,8 @@ export const DesignSampleModule: React.FC = () => {
           }
         : { approvedBy: '', approvedAt: '' };
 
-      let saved: Pick<Design, 'id' | 'name' | 'mockupFront' | 'mockupBack'>;
+      const mockupFields = { mockups, ...legacyMockupFields(mockups) };
+      let saved: Pick<Design, 'id' | 'name' | 'mockups' | 'mockupFront' | 'mockupBack'>;
       if (editingDesignId) {
         await updateResource('designs', editingDesignId, {
           name: newDesign.name.trim(),
@@ -527,16 +579,10 @@ export const DesignSampleModule: React.FC = () => {
           category: newDesign.category || 'Kaos / Polo',
           status,
           description: newDesign.description?.trim(),
-          mockupFront: newDesign.mockupFront || undefined,
-          mockupBack: newDesign.mockupBack || undefined,
+          ...mockupFields,
           ...approvalStamp
         });
-        saved = {
-          id: editingDesignId,
-          name: newDesign.name.trim(),
-          mockupFront: newDesign.mockupFront || undefined,
-          mockupBack: newDesign.mockupBack || undefined
-        };
+        saved = { id: editingDesignId, name: newDesign.name.trim(), ...mockupFields };
       } else {
         const item: Design = {
           id: generateId('DSN'),
@@ -546,8 +592,7 @@ export const DesignSampleModule: React.FC = () => {
           category: newDesign.category || 'Kaos / Polo',
           status,
           description: newDesign.description?.trim(),
-          mockupFront: newDesign.mockupFront || undefined,
-          mockupBack: newDesign.mockupBack || undefined,
+          ...mockupFields,
           ...approvalStamp,
           timestamp: new Date().toISOString()
         };
@@ -561,15 +606,14 @@ export const DesignSampleModule: React.FC = () => {
 
       setIsDesignModalOpen(false);
       setEditingDesignId(null);
+      setMockupDrafts([]);
       setNewDesign({
         name: '',
         orderId: '',
         customerId: '',
         category: 'Kaos / Polo',
         status: 'Pending Review',
-        description: '',
-        mockupFront: '',
-        mockupBack: ''
+        description: ''
       });
       showToast(editingDesignId ? `Desain ${editingDesignId} diperbarui.` : 'Desain baru tersimpan.');
       loadData();
@@ -661,7 +705,7 @@ export const DesignSampleModule: React.FC = () => {
    * it from here saves opening the whole edit form just to change one field.
    */
   const handleApproveDesign = async (design: Design) => {
-    if (!design.mockupFront && !design.mockupBack) {
+    if (designMockups(design).length === 0) {
       showToast('Unggah gambar mockup dulu — desain tanpa gambar tidak bisa dicetak di SPK.', 'error');
       return;
     }
@@ -781,7 +825,6 @@ export const DesignSampleModule: React.FC = () => {
   });
 
   const mockupButtonClass = `relative aspect-square bg-white rounded-lg p-1 border border-slate-200 flex items-center justify-center overflow-hidden cursor-pointer transition-colors hover:border-brand-teal/60 ${focusRing}`;
-  const mockupLabelClass = 'absolute bottom-1.5 left-1/2 -translate-x-1/2 px-2 py-0.5 bg-black/80 text-white text-xs rounded font-semibold';
 
   const sortedDesigns = sortRows(designs, designSort, (design, key) => (design as any)[key]);
   const sortedSamples = sortRows(samples, sampleSort, (sample, key) => (sample as any)[key]);
@@ -871,16 +914,24 @@ export const DesignSampleModule: React.FC = () => {
                   />
                 ) : pagedDesigns.map(design => {
                   const cust = customerOf(design.customerId);
+                  const pictures = designMockups(design);
                   return (
                     <TableRow key={design.id}>
                       <TableCell className="cell-sticky-start whitespace-nowrap font-mono font-bold text-slate-900">{design.id}</TableCell>
                       <TableCell className="hidden xl:table-cell">
-                        <img
-                          src={design.mockupFront || '/logo.png'}
-                          alt={`Mockup ${design.name}`}
-                          loading="lazy"
-                          className="size-9 rounded-md border border-slate-200 bg-white object-contain p-0.5"
-                        />
+                        <span className="flex items-center gap-1.5">
+                          <img
+                            src={pictures[0]?.url || '/logo.png'}
+                            alt={`Mockup ${design.name}`}
+                            loading="lazy"
+                            className="size-9 rounded-md border border-slate-200 bg-white object-contain p-0.5"
+                          />
+                          {pictures.length > 1 && (
+                            <span className="text-xs font-semibold text-muted-foreground" title={`${pictures.length} gambar`}>
+                              +{pictures.length - 1}
+                            </span>
+                          )}
+                        </span>
                       </TableCell>
                       <TableCell className="hidden md:table-cell">
                         <span className="block max-w-[180px] truncate font-semibold text-slate-900" title={design.name}>
@@ -1072,37 +1123,28 @@ export const DesignSampleModule: React.FC = () => {
           const cust = customerOf(detailDesign.customerId);
           return (
             <>
-              <DetailBlock title="Mockup">
-                <div className="grid grid-cols-2 gap-2 bg-slate-50 p-2 rounded-xl border border-slate-100">
-                  <button
-                    type="button"
-                    onClick={() => setPreviewImage({ title: `${detailDesign.name}, tampak depan`, path: detailDesign.mockupFront || '/logo.png' })}
-                    aria-label={`Perbesar tampak depan ${detailDesign.name}`}
-                    className={mockupButtonClass}
-                  >
-                    <img
-                      src={detailDesign.mockupFront || '/logo.png'}
-                      alt={`${detailDesign.name} tampak depan`}
-                      loading="lazy"
-                      className="w-full h-full object-contain"
-                    />
-                    <span aria-hidden="true" className={mockupLabelClass}>Depan</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setPreviewImage({ title: `${detailDesign.name}, tampak belakang`, path: detailDesign.mockupBack || '/logo.png' })}
-                    aria-label={`Perbesar tampak belakang ${detailDesign.name}`}
-                    className={mockupButtonClass}
-                  >
-                    <img
-                      src={detailDesign.mockupBack || '/logo.png'}
-                      alt={`${detailDesign.name} tampak belakang`}
-                      loading="lazy"
-                      className="w-full h-full object-contain"
-                    />
-                    <span aria-hidden="true" className={mockupLabelClass}>Belakang</span>
-                  </button>
-                </div>
+              <DetailBlock title={`Mockup (${designMockups(detailDesign).length} gambar)`}>
+                {designMockups(detailDesign).length > 0 ? (
+                  <div className="grid grid-cols-2 gap-2 rounded-xl border border-slate-100 bg-slate-50 p-2">
+                    {designMockups(detailDesign).map((mockup, index) => (
+                      <figure key={mockup.id} className="min-w-0">
+                        <button
+                          type="button"
+                          onClick={() => setPreviewImage({ title: `${detailDesign.name}, ${mockupTitle(mockup, index)}`, path: mockup.url })}
+                          aria-label={`Perbesar ${mockupTitle(mockup, index)} ${detailDesign.name}`}
+                          className={`${mockupButtonClass} w-full`}
+                        >
+                          <img src={mockup.url} alt="" loading="lazy" className="h-full w-full object-contain" />
+                        </button>
+                        <figcaption className="mt-1 truncate text-center text-xs font-semibold text-slate-700" title={mockupTitle(mockup, index)}>
+                          {mockupTitle(mockup, index)}
+                        </figcaption>
+                      </figure>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-sm text-muted-foreground">Belum ada gambar mockup.</p>
+                )}
               </DetailBlock>
               <DetailSection title="Desain">
                 <DetailField label="Kode desain" mono>{detailDesign.id}</DetailField>
@@ -1220,7 +1262,7 @@ export const DesignSampleModule: React.FC = () => {
             >
               Batal
             </Button>
-            <Button type="submit" form="design-form" disabled={savingDesign || frontUploading || backUploading}>
+            <Button type="submit" form="design-form" disabled={savingDesign || mockupUploading}>
               {savingDesign ? 'Menyimpan…' : editingDesignId ? 'Simpan Perubahan' : 'Simpan Desain'}
             </Button>
           </div>
@@ -1394,12 +1436,13 @@ export const DesignSampleModule: React.FC = () => {
             title="Mockup / gambar desain"
             description={
               <>
-                Gambar tampak depan inilah yang tercetak di <b>surat SPK</b> dan dipakai di surat
-                penawaran. Tanpa gambar, desain tidak bisa disetujui dan SPK tidak bisa terbit.
+                Unggah sebanyak gambar yang dibutuhkan dan beri judul masing-masing. Semua gambar
+                tercetak berurutan di <b>surat SPK</b> dan tampil di detail pesanan; gambar pertama
+                dipakai di surat penawaran.
               </>
             }
             aside={
-              frontUploading || backUploading ? (
+              mockupUploading ? (
                 <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-brand-teal-dark">
                   <Loader2 size={14} className="animate-spin motion-reduce:animate-none" aria-hidden="true" />
                   Mengunggah…
@@ -1411,55 +1454,70 @@ export const DesignSampleModule: React.FC = () => {
               {/* Hidden native file inputs; the tiles below open them. */}
               <input
                 type="file"
-                ref={frontFileInputRef}
+                multiple
+                ref={addMockupInputRef}
                 accept={ACCEPTED_IMAGE_TYPES}
                 className="hidden"
-                onChange={(e) => handleFileInputChange(e, 'front')}
+                onChange={(e) => {
+                  handleMockupFiles(Array.from(e.target.files || []));
+                  e.target.value = '';
+                }}
               />
               <input
                 type="file"
-                ref={backFileInputRef}
+                ref={replaceMockupInputRef}
                 accept={ACCEPTED_IMAGE_TYPES}
                 className="hidden"
-                onChange={(e) => handleFileInputChange(e, 'back')}
+                onChange={(e) => {
+                  const targetId = replaceMockupIdRef.current;
+                  if (targetId) handleMockupFiles(Array.from(e.target.files || []), targetId);
+                  replaceMockupIdRef.current = null;
+                  e.target.value = '';
+                }}
               />
+              <datalist id="dsn-mockup-title-suggestions">
+                {MOCKUP_TITLE_SUGGESTIONS.map(title => (
+                  <option key={title} value={title} />
+                ))}
+              </datalist>
 
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                <MockupSlot
-                  required
-                  label="Tampak Depan"
-                  value={newDesign.mockupFront}
-                  uploading={frontUploading}
-                  dragOver={dragOverFront}
-                  onDragOverChange={setDragOverFront}
-                  onFile={(file) => handleDesignImageUpload(file, 'front')}
-                  onPick={() => frontFileInputRef.current?.click()}
-                  onClear={() => setNewDesign({ ...newDesign, mockupFront: '' })}
-                  onPreview={() => setPreviewImage({ title: 'Mockup Tampak Depan', path: newDesign.mockupFront! })}
-                />
-                <MockupSlot
-                  label="Tampak Belakang"
-                  value={newDesign.mockupBack}
-                  uploading={backUploading}
-                  dragOver={dragOverBack}
-                  onDragOverChange={setDragOverBack}
-                  onFile={(file) => handleDesignImageUpload(file, 'back')}
-                  onPick={() => backFileInputRef.current?.click()}
-                  onClear={() => setNewDesign({ ...newDesign, mockupBack: '' })}
-                  onPreview={() => setPreviewImage({ title: 'Mockup Tampak Belakang', path: newDesign.mockupBack! })}
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                {mockupDrafts.map((mockup, index) => (
+                  <MockupCard
+                    key={mockup.id}
+                    mockup={mockup}
+                    index={index}
+                    count={mockupDrafts.length}
+                    onTitleChange={(title) => updateMockupTitle(mockup.id, title)}
+                    onReplace={() => {
+                      replaceMockupIdRef.current = mockup.id;
+                      replaceMockupInputRef.current?.click();
+                    }}
+                    onRemove={() => setMockupDrafts(prev => prev.filter(m => m.id !== mockup.id))}
+                    onMove={(delta) => moveMockup(index, delta)}
+                    onPreview={() => setPreviewImage({ title: mockupTitle(mockup, index), path: mockup.url })}
+                  />
+                ))}
+                <AddMockupTile
+                  empty={mockupDrafts.length === 0}
+                  dragOver={mockupDragOver}
+                  onDragOverChange={setMockupDragOver}
+                  onFiles={(files) => handleMockupFiles(files)}
+                  onPick={() => addMockupInputRef.current?.click()}
                 />
               </div>
 
               <FieldError>{uploadError}</FieldError>
 
-              {newDesign.status === 'Approved' && !newDesign.mockupFront && !newDesign.mockupBack ? (
+              {newDesign.status === 'Approved' && mockupDrafts.every(m => !m.url) ? (
                 <FieldHint className="text-amber-800">
                   Desain berstatus disetujui wajib punya minimal satu gambar mockup, kalau tidak SPK-nya
                   tidak bisa dicetak.
                 </FieldHint>
               ) : (
                 <FieldHint>
-                  Tampak belakang boleh dikosongkan kalau desainnya polos.
+                  Tidak ada batas jumlah gambar. Judul yang dikosongkan tercetak sebagai "Gambar 1",
+                  "Gambar 2", dan seterusnya. Urutan bisa diatur dengan tombol panah.
                 </FieldHint>
               )}
             </div>

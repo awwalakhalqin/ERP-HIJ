@@ -1,5 +1,6 @@
 import React from 'react';
-import { SPK, SizeChart } from '../../types';
+import { DesignMockup, SPK, SizeChart } from '../../types';
+import { mockupTitle, spkMockups } from '../../lib/mockups';
 import { formatDate } from '../../lib/utils';
 import { parseSizeRows } from '../../lib/pricing';
 import { DocumentPage } from './DocumentPage';
@@ -242,18 +243,24 @@ const SizeChartPanel: React.FC<{ table: SizeTable }> = ({ table }) => {
       return height <= PANEL_HEIGHT_PX && widestValue * font * 0.58 + 4 <= sizeColWidth;
     }) || SIZE_SCALE[SIZE_SCALE.length - 1];
 
+  /*
+   * Each cell draws only its right and bottom rule (the first column and the
+   * header row add the left and top), so every line is drawn once. Collapsed
+   * borders came out doubled in the PDF export.
+   */
+  const rule = '1px solid #64748b';
   const cell: React.CSSProperties = {
-    border: '1px solid #64748b',
+    borderRight: rule,
+    borderBottom: rule,
     padding: `${scale.padY}px 2px`,
     lineHeight: 1.2,
     textAlign: 'center',
     verticalAlign: 'middle',
-    whiteSpace: 'nowrap',
-    overflow: 'hidden'
+    whiteSpace: 'nowrap'
   };
-  const empty: React.CSSProperties = { ...cell, border: 'none' };
-  const labelCell: React.CSSProperties = { ...cell, textAlign: 'left', paddingLeft: '4px', fontWeight: 700, background: '#f1f5f9' };
-  const headCell: React.CSSProperties = { ...cell, fontWeight: 700, background: '#e2e8f0' };
+  const empty: React.CSSProperties = { ...cell, borderRight: 'none', borderBottom: 'none' };
+  const labelCell: React.CSSProperties = { ...cell, borderLeft: rule, textAlign: 'left', paddingLeft: '4px', fontWeight: 700, background: '#f1f5f9' };
+  const headCell: React.CSSProperties = { ...cell, borderTop: rule, fontWeight: 700, background: '#e2e8f0' };
 
   return (
     <div className="flex flex-col text-black" style={{ fontSize: `${scale.font}px` }}>
@@ -266,14 +273,14 @@ const SizeChartPanel: React.FC<{ table: SizeTable }> = ({ table }) => {
       )}
       <div className="mt-0.5 flex flex-col" style={{ gap: '3px' }}>
         {chunks.map((chunk, chunkIndex) => (
-          <table key={chunkIndex} className="w-full border-collapse" style={{ tableLayout: 'fixed', borderSpacing: 0 }}>
+          <table key={chunkIndex} className="w-full" style={{ tableLayout: 'fixed', borderCollapse: 'separate', borderSpacing: 0 }}>
             <colgroup>
               <col style={{ width: `${LABEL_COL_PX}px` }} />
               {Array.from({ length: perChunk }, (_, i) => <col key={i} />)}
             </colgroup>
             <thead>
               <tr>
-                <th style={{ ...headCell, textAlign: 'left', paddingLeft: '4px' }}>{sizeCol.label}</th>
+                <th style={{ ...headCell, borderLeft: rule, textAlign: 'left', paddingLeft: '4px' }}>{sizeCol.label}</th>
                 {Array.from({ length: perChunk }, (_, i) => (
                   <th key={i} style={chunk[i] ? headCell : empty}>{chunk[i]?.[sizeCol.key] || ''}</th>
                 ))}
@@ -301,10 +308,16 @@ const SizeChartPanel: React.FC<{ table: SizeTable }> = ({ table }) => {
   );
 };
 
-/** The two sides of the approved design, as printed on the SPK. */
-export interface SpkMockups {
-  front?: string;
-  back?: string;
+/*
+ * Columns for the MOCKUP / LAYOUT PRODUCT area (about 730 x 630 px): the
+ * pictures stay as large as the count allows, and a row is never left with a
+ * single straggler when an even split exists (4 → 2 x 2, not 3 + 1).
+ */
+function mockupColumns(count: number): number {
+  if (count <= 3) return Math.max(1, count);
+  if (count === 4) return 2;
+  if (count <= 6 || count === 9) return 3;
+  return 4;
 }
 
 interface SpkDocumentProps {
@@ -312,17 +325,15 @@ interface SpkDocumentProps {
   /** Ids the PDF exporter captures. */
   page1Id: string;
   page2Id: string;
-  /** Mockups resolved from the order's design; each side falls back to the SPK's own copy. */
-  mockups?: SpkMockups;
+  /** The order's design pictures, read live from the Design page. */
+  mockups?: DesignMockup[];
   /** The order's size breakdown, printed when the SPK carries no chart of its own. */
   sizeChart?: string;
   /** The live chart from the Size Chart page that the SPK's order names. */
   template?: SizeChart;
 }
 
-const isArtwork = (url?: string): url is string => !!url && !url.startsWith('/templates/');
-
-export const SpkDocumentPage1: React.FC<{ spk: SPK; id: string; mockups?: SpkMockups; sizeChart?: string; template?: SizeChart }> = ({
+export const SpkDocumentPage1: React.FC<{ spk: SPK; id: string; mockups?: DesignMockup[]; sizeChart?: string; template?: SizeChart }> = ({
   spk,
   id,
   mockups,
@@ -339,17 +350,13 @@ export const SpkDocumentPage1: React.FC<{ spk: SPK; id: string; mockups?: SpkMoc
     parseSizeChart(spk.sizeChart) ||
     parseSizeChart(sizeChart);
   /*
-   * The design page is the source of truth, so a side uploaded or replaced
-   * after the SPK was issued still prints. The copy taken at issue time only
-   * fills a side the design no longer has.
+   * The Design page is the source of truth, so pictures added, replaced or
+   * retitled after the SPK was issued still print. The copy taken at issue
+   * time is only used when the design can no longer be found.
    */
-  const sides = [
-    { label: 'Tampak Depan', url: [mockups?.front, spk.mockupDepan].find(isArtwork) },
-    { label: 'Tampak Belakang', url: [mockups?.back, spk.mockupBelakang].find(isArtwork) }
-  ].filter((side, index, all): side is { label: string; url: string } =>
-    // Older SPKs copied the back view into mockupDepan when the front was missing.
-    !!side.url && all.findIndex(other => other.url === side.url) === index
-  );
+  const pictures = mockups && mockups.length > 0 ? mockups : spkMockups(spk);
+  const columns = mockupColumns(pictures.length);
+  const rows = Math.max(1, Math.ceil(pictures.length / columns));
 
   return (
     <DocumentPage id={id} template="/templates/Halaman1.png" padded={false}>
@@ -375,29 +382,38 @@ export const SpkDocumentPage1: React.FC<{ spk: SPK; id: string; mockups?: SpkMoc
         )}
       </div>
 
-      {/* MOCKUP / LAYOUT PRODUCT: front and back side by side */}
-      <div
-        className="absolute flex overflow-hidden rounded-lg border border-dashed border-slate-300"
-        style={{ left: '4%', top: '35.2%', width: '92%', height: '56%' }}
-      >
-        {sides.length > 0 ? (
-          sides.map((side, index) => (
-            <figure
-              key={side.label}
-              className={`flex min-w-0 flex-1 flex-col ${index > 0 ? 'border-l border-dashed border-slate-300' : ''}`}
-            >
-              {sides.length > 1 && (
-                <figcaption className="pt-2 text-center text-[12px] font-bold uppercase tracking-wide text-slate-700">
-                  {side.label}
+      {/* MOCKUP / LAYOUT PRODUCT: every picture of the design, titled */}
+      <div className="absolute" style={{ left: '4%', top: '35.2%', width: '92%', height: '56%' }}>
+        {pictures.length > 0 ? (
+          <div
+            className="grid h-full w-full"
+            style={{
+              gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`,
+              gridTemplateRows: `repeat(${rows}, minmax(0, 1fr))`,
+              gap: '8px'
+            }}
+          >
+            {pictures.map((mockup, index) => (
+              <figure
+                key={`${mockup.id}-${index}`}
+                className="flex min-h-0 min-w-0 flex-col overflow-hidden rounded-lg border border-dashed border-slate-300"
+              >
+                <figcaption
+                  className="shrink-0 px-2 pb-0.5 pt-1.5 text-center font-bold uppercase text-slate-700"
+                  style={{ fontSize: rows > 2 ? '10px' : '12px', lineHeight: '14px', maxHeight: '36px', overflow: 'hidden' }}
+                >
+                  {mockupTitle(mockup, index)}
                 </figcaption>
-              )}
-              <div className="min-h-0 flex-1 p-2">
-                <img src={side.url} alt="" aria-hidden="true" className="h-full w-full object-contain" />
-              </div>
-            </figure>
-          ))
+                <div className="min-h-0 flex-1 p-2">
+                  <img src={mockup.url} alt="" aria-hidden="true" className="block h-full w-full object-contain" />
+                </div>
+              </figure>
+            ))}
+          </div>
         ) : (
-          <span className="m-auto text-[12px] italic text-slate-400">Mockup belum dilampirkan</span>
+          <div className="flex h-full w-full items-center justify-center rounded-lg border border-dashed border-slate-300">
+            <span className="text-[12px] italic text-slate-400">Mockup belum dilampirkan</span>
+          </div>
         )}
       </div>
     </DocumentPage>

@@ -275,6 +275,13 @@ export interface Order {
 }
 
 // 2. SOP-02: Designs & Samples
+/** One picture of a design, titled by whoever uploaded it. */
+export interface DesignMockup {
+  id: string;
+  title: string;
+  url: string;
+}
+
 export interface Design {
   id: string;
   orderId?: string;
@@ -283,6 +290,9 @@ export interface Design {
   category?: string;
   status: 'Draft' | 'Pending Review' | 'Approved' | 'Revision Requested' | 'Rejected';
   description?: string;
+  /** Every picture of the design, in print order. Read through designMockups(). */
+  mockups?: DesignMockup[];
+  /** Mirrors of mockups[0] and mockups[1] for older readers. */
   mockupFront?: string;
   mockupBack?: string;
   mockupDetail?: string;
@@ -331,6 +341,8 @@ export interface SPK {
   pjFinishing?: string;
   pjCutting?: string;
   pjKepalaProduksi?: string;
+  /** The design's pictures as they were when the SPK was issued. */
+  mockups?: DesignMockup[];
   mockupDepan?: string;
   mockupBelakang?: string;
   cutting: number;

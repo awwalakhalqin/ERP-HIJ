@@ -17,6 +17,7 @@ import { Quotation, Customer, Design, Order, Invoice, PaymentTerm, SizeChart } f
 import { fetchResource, createResource, updateResource, deleteResource, authFetch, fetchStaffDirectory, StaffDirectoryEntry } from '../../services/api';
 import { getCurrentUser } from '../../lib/session';
 import { cn, formatCurrency, formatDate, formatDateTime, generateId } from '../../lib/utils';
+import { designMockups } from '../../lib/mockups';
 import { exportElementToPdf } from '../../services/pdfGenerator';
 import {
   DetailDrawer,
@@ -284,7 +285,7 @@ export const QuotationsModule: React.FC = () => {
     const design = designs.find(d => d.id === designId);
     if (design) {
       const matchingCust = customers.find(c => c.id === design.customerId);
-      const mockupUrl = design.mockupFront || design.mockupBack || '/templates/Halaman1.png';
+      const mockupUrl = designMockups(design)[0]?.url || '/templates/Halaman1.png';
       setQuoFormData(prev => ({
         ...prev,
         designId: design.id,

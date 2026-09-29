@@ -44,6 +44,7 @@ import {
 import { requireModule, writeBlockReason, readBlockReason, usersWriteBlockReason, STAFF_ROLE_MODULES, canOpen, isFullAdmin } from './access.js';
 import { recomputeSpk, recomputeAllSpks, completeSpkForOrder, spkQcAccepted, SPK_SOURCE_TABLES } from './spk.js';
 import { canApproveSpecialTerms } from '../../src/lib/readiness.js';
+import { designMockups, isArtwork } from '../../src/lib/mockups.js';
 import { COMPANY_CONTACT } from '../../src/config/contact.js';
 import { STANDARD_SIZE_CHARTS, SIZE_CHART_COMMON_NOTES } from '../../src/config/sizeChartTemplates.js';
 import dotenv from 'dotenv';
@@ -873,12 +874,14 @@ app.post('/api/orders/:id/issue-spk', requireModule('PPIC', 'Orders'), (req: Req
   // Same lookup the gate used, so the SPK prints the design that was approved —
   // never another customer's design that happens to share a name.
   const matchedDesign: any = designForOrder(order, readTable('designs') as any);
-  const isArtwork = (url?: string) => !!url && !String(url).startsWith('/templates/');
 
-  // order.designUrl is a single picture (front, or back when there is no front),
-  // so it only stands in for the front when no design record is linked.
-  const mockupDepan = [matchedDesign ? matchedDesign.mockupFront : order.designUrl].find(isArtwork) || '';
-  const mockupBelakang = isArtwork(matchedDesign?.mockupBack) ? matchedDesign.mockupBack : '';
+  // Every picture of the design, titled as on the Design page. order.designUrl
+  // is a single picture, so it only stands in when no design record is linked.
+  const mockups = matchedDesign
+    ? designMockups(matchedDesign)
+    : isArtwork(order.designUrl) ? [{ id: 'front', title: 'Tampak Depan', url: order.designUrl }] : [];
+  const mockupDepan = mockups[0]?.url || '';
+  const mockupBelakang = mockups[1]?.url || '';
 
   const spkPayload = {
     id: `SPK-${order.id}`,
@@ -897,6 +900,7 @@ app.post('/api/orders/:id/issue-spk', requireModule('PPIC', 'Orders'), (req: Req
     // Quotation orders carry the breakdown in `size`; without it the SPK printed no sizes.
     sizeChart: order.sizeChart || order.size,
     ...sizeChartSnapshot(order.sizeChartId),
+    mockups,
     mockupDepan,
     mockupBelakang,
     cutting: 0,

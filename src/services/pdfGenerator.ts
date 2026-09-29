@@ -79,20 +79,90 @@ async function waitForImages(element: HTMLElement): Promise<void> {
 }
 
 /*
+ * html2canvas finds where text sits on its line with a 1px probe image it adds
+ * to the live page (its SMALL_IMAGE). Tailwind's base styles make every <img>
+ * a block, which pushes the probe onto a line of its own; html2canvas then
+ * draws all text several pixels too low, so it slips out of table cells and
+ * boxes. The probe is kept inline while an export runs.
+ */
+const FONT_PROBE_IMAGE = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+
+async function withInlineFontProbe<T>(run: () => Promise<T>): Promise<T> {
+  const style = document.createElement('style');
+  style.textContent = `img[src="${FONT_PROBE_IMAGE}"] { display: inline !important; }`;
+  document.head.appendChild(style);
+  try {
+    return await run();
+  } finally {
+    style.remove();
+  }
+}
+
+/*
+ * html2canvas ignores object-fit and stretches every <img> over its whole box,
+ * so a mockup came out squashed to the shape of its slot. In the clone that
+ * gets painted, each contain-fitted image is given padding that shrinks its
+ * content box to the picture's own proportions, centred in the same slot —
+ * the PDF then matches the preview.
+ */
+function fitContainedImages(original: HTMLElement, clone: HTMLElement) {
+  const originals = Array.from(original.querySelectorAll('img'));
+  const clones = Array.from(clone.querySelectorAll('img'));
+  if (originals.length !== clones.length) return;
+
+  originals.forEach((img, index) => {
+    const style = window.getComputedStyle(img);
+    const fit = style.objectFit;
+    if (fit !== 'contain' && fit !== 'scale-down') return;
+    const naturalWidth = img.naturalWidth;
+    const naturalHeight = img.naturalHeight;
+    if (!naturalWidth || !naturalHeight) return;
+
+    const px = (value: string) => parseFloat(value) || 0;
+    const pad = {
+      top: px(style.paddingTop),
+      right: px(style.paddingRight),
+      bottom: px(style.paddingBottom),
+      left: px(style.paddingLeft)
+    };
+    const boxWidth = img.clientWidth - pad.left - pad.right;
+    const boxHeight = img.clientHeight - pad.top - pad.bottom;
+    if (boxWidth <= 0 || boxHeight <= 0) return;
+
+    let scale = Math.min(boxWidth / naturalWidth, boxHeight / naturalHeight);
+    if (fit === 'scale-down') scale = Math.min(scale, 1);
+    const dx = (boxWidth - naturalWidth * scale) / 2;
+    const dy = (boxHeight - naturalHeight * scale) / 2;
+
+    const target = clones[index];
+    target.style.boxSizing = 'border-box';
+    target.style.width = `${img.offsetWidth}px`;
+    target.style.height = `${img.offsetHeight}px`;
+    target.style.padding = `${pad.top + dy}px ${pad.right + dx}px ${pad.bottom + dy}px ${pad.left + dx}px`;
+    target.style.objectFit = 'fill';
+  });
+}
+
+/*
  * allowTaint stays off: a tainted canvas renders fine but throws on
  * toDataURL, which is the one call every export needs. Cross-origin images
  * are fetched with CORS instead; one that refuses is skipped, not fatal.
  */
-async function renderToCanvas(element: HTMLElement): Promise<HTMLCanvasElement> {
+export async function renderToCanvas(element: HTMLElement): Promise<HTMLCanvasElement> {
   await waitForImages(element);
-  return html2canvas(element, {
-    scale: RENDER_SCALE,
-    useCORS: true,
-    allowTaint: false,
-    backgroundColor: '#ffffff',
-    logging: false,
-    onclone: (clonedDoc) => sanitizeColorsForCanvas(clonedDoc)
-  });
+  return withInlineFontProbe(() =>
+    html2canvas(element, {
+      scale: RENDER_SCALE,
+      useCORS: true,
+      allowTaint: false,
+      backgroundColor: '#ffffff',
+      logging: false,
+      onclone: (clonedDoc, clonedElement) => {
+        sanitizeColorsForCanvas(clonedDoc);
+        fitContainedImages(element, clonedElement);
+      }
+    })
+  );
 }
 
 async function renderPage(element: HTMLElement): Promise<string> {

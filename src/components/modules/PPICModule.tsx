@@ -15,7 +15,7 @@ import {
   Plus,
   FilePlus2
 } from 'lucide-react';
-import { SPK, Order, InventoryItem, Operator, WorkAssignment, ProductionTask, PRODUCTION_TASKS, SizeChart } from '../../types';
+import { SPK, Order, InventoryItem, Operator, WorkAssignment, ProductionTask, PRODUCTION_TASKS, SizeChart, DesignMockup } from '../../types';
 import { fetchResource, createResource, updateResource, deleteResource, fetchReadinessData, issueSpkApi } from '../../services/api';
 import { formatDate, formatCurrency, exportTableToExcel, statusLabel, todayLocal } from '../../lib/utils';
 import {
@@ -31,7 +31,8 @@ import { getCurrentUser } from '../../lib/session';
 import { Badge, StatusBadge, DeadlineBadge } from '../ui/Badge';
 import { Modal } from '../ui/Modal';
 import { exportTwoPageSPK } from '../../services/pdfGenerator';
-import { SpkDocument, type SpkMockups } from '../documents/SpkDocument';
+import { SpkDocument } from '../documents/SpkDocument';
+import { designMockups, isArtwork } from '../../lib/mockups';
 import { Card } from '../ui/Card';
 import { Button } from '../ui/Button';
 import { Input } from '../ui/Input';
@@ -574,11 +575,11 @@ export const PPICModule: React.FC = () => {
   };
 
   /*
-   * The picture the factory actually needs on the SPK sheet. An SPK stores no
-   * artwork of its own, so it is resolved from the order's approved design at
-   * print time — which also fixes every SPK issued before this existed.
+   * The pictures the factory actually needs on the SPK sheet, resolved from
+   * the order's design at print time so every picture and title on the
+   * Design page prints — including on SPKs issued before a picture was added.
    */
-  const mockupsForSpk = (spk: SPK | null): SpkMockups | undefined => {
+  const mockupsForSpk = (spk: SPK | null): DesignMockup[] | undefined => {
     if (!spk) return undefined;
     const order = orders.find(o => o.id === spk.orderId);
     const designs = readinessData.designs || [];
@@ -588,8 +589,8 @@ export const PPICModule: React.FC = () => {
       designs.find(d => d.orderId === spk.orderId);
 
     // order.designUrl holds a single picture, so it only stands in when no design record is found.
-    if (!design) return { front: order?.designUrl };
-    return { front: design.mockupFront, back: design.mockupBack };
+    if (design) return designMockups(design);
+    return isArtwork(order?.designUrl) ? [{ id: 'front', title: 'Tampak Depan', url: order.designUrl }] : undefined;
   };
 
   /** SPKs issued before the chart was copied over print the order's breakdown instead. */

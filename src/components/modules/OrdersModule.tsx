@@ -29,6 +29,7 @@ import { getCurrentUser } from '../../lib/session';
 import { parseWorkbookData, type ImportPlan } from '../../lib/excelImport';
 import { db } from '../../db/dexie';
 import { cn, formatCurrency, formatDate, formatDateTime, generateId, statusLabel } from '../../lib/utils';
+import { designMockups, isArtwork, mockupTitle, spkMockups } from '../../lib/mockups';
 import { designForOrder, getOrderReadiness, ordersAwaitingSpk, isSpkOptionalForOrder, type ReadinessData, type OrderReadiness } from '../../lib/readiness';
 import { nextSequence } from '../../lib/ordering';
 import { SizeRowsEditor } from '../ui/SizeRowsEditor';
@@ -281,22 +282,17 @@ export const OrdersModule: React.FC = () => {
   }, [selectedOrder, spks]);
 
   /*
-   * Both sides of the order's design, read from the design record so a side
-   * added later shows up. order.designUrl holds a single picture, so it only
-   * stands in when no design is linked; the SPK's copies fill the gaps.
+   * Every picture of the order's design, with the titles typed on the Design
+   * page, read from the design record so pictures added later show up.
+   * Without a linked design the SPK's copy is used, then order.designUrl.
    */
   const selectedMockups = useMemo(() => {
     if (!selectedOrder) return [];
-    const isArtwork = (url?: string): url is string => !!url && !url.startsWith('/templates/');
     const design = designForOrder(selectedOrder, designs);
-    const front = [design ? design.mockupFront : selectedOrder.designUrl, selectedSpk?.mockupDepan].find(isArtwork);
-    const back = [design?.mockupBack, selectedSpk?.mockupBelakang].find(isArtwork);
-    return [
-      { label: 'Tampak Depan', url: front },
-      { label: 'Tampak Belakang', url: back }
-    ].filter((side, index, all): side is { label: string; url: string } =>
-      !!side.url && all.findIndex(other => other.url === side.url) === index
-    );
+    if (design) return designMockups(design);
+    const fromSpk = spkMockups(selectedSpk);
+    if (fromSpk.length > 0) return fromSpk;
+    return isArtwork(selectedOrder.designUrl) ? [{ id: 'front', title: 'Tampak Depan', url: selectedOrder.designUrl }] : [];
   }, [selectedOrder, designs, selectedSpk]);
 
   const selectedReadiness = useMemo(() => {
@@ -1744,7 +1740,7 @@ export const OrdersModule: React.FC = () => {
             </DetailSection>
 
             {selectedMockups.length > 0 && (
-              <DetailBlock title="Mockup Produksi">
+              <DetailBlock title={`Mockup Produksi (${selectedMockups.length} gambar)`}>
                 <div className="min-w-0 text-sm">
                   <span className="block font-semibold text-foreground">
                     {selectedOrder.designName || selectedOrder.productType}
@@ -1756,18 +1752,18 @@ export const OrdersModule: React.FC = () => {
                   )}
                 </div>
                 <div className="mt-3 flex flex-wrap gap-3">
-                  {selectedMockups.map(side => (
-                    <figure key={side.label} className="w-32">
+                  {selectedMockups.map((mockup, index) => (
+                    <figure key={`${mockup.id}-${index}`} className="w-32">
                       <img
-                        src={side.url}
-                        alt={`${selectedOrder.designName || selectedOrder.productType}, ${side.label.toLowerCase()}`}
+                        src={mockup.url}
+                        alt={`${selectedOrder.designName || selectedOrder.productType}, ${mockupTitle(mockup, index)}`}
                         className="aspect-square w-full rounded-xl border border-border bg-white object-contain p-1"
                         onError={(e) => {
                           (e.target as HTMLImageElement).src = '/templates/Halaman1.png';
                         }}
                       />
-                      <figcaption className="mt-1 text-center text-xs font-medium text-muted-foreground">
-                        {side.label}
+                      <figcaption className="mt-1 line-clamp-2 text-center text-xs font-medium text-muted-foreground">
+                        {mockupTitle(mockup, index)}
                       </figcaption>
                     </figure>
                   ))}
@@ -2062,9 +2058,7 @@ export const OrdersModule: React.FC = () => {
                         designId: picked?.id || '',
                         designName: picked?.name || '',
                         // The blank SPK template is not artwork; never carry it over.
-                        designUrl: [picked?.mockupFront, picked?.mockupBack].find(
-                          url => !!url && !url.startsWith('/templates/')
-                        ) || ''
+                        designUrl: designMockups(picked)[0]?.url || ''
                       }));
                     }}
                   >

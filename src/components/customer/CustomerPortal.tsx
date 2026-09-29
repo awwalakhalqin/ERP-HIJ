@@ -48,6 +48,7 @@ import {
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { COMPANY_CONTACT, getWhatsAppUrl } from '../../config/contact';
+import { designMockups, mockupTitle, spkMockups } from '../../lib/mockups';
 
 interface CustomerPortalProps {
   customer: CustomerSession;
@@ -137,6 +138,8 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({ customer, onLogo
     data.designs.find(d => !!activeOrder?.designId && d.id === activeOrder.designId) ||
     data.designs.find(d => d.orderId === activeOrder?.id);
   const activeSample = data.samples.find(s => s.orderId === activeOrder?.id);
+  // Every picture of the design, titled as on the Design page.
+  const activeMockups = activeDesign ? designMockups(activeDesign) : spkMockups(activeSpk);
 
   // A complaint is always about one of this customer's own orders; the one on screen unless they pick another.
   const complaintOrder =
@@ -806,33 +809,28 @@ Mohon informasi ketersediaan slot antrean produksi dan penawaran invoice terbaru
                 )}
 
                 {/* MOCKUP VIEWER */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
-                  <figure className="border border-slate-200 rounded-2xl p-4 flex flex-col items-center bg-slate-50">
-                    <figcaption className="text-sm font-medium text-slate-600 mb-3">Tampak Depan</figcaption>
-                    <div className="w-full h-72 bg-white rounded-xl border border-slate-200 flex items-center justify-center overflow-hidden">
-                      <img
-                        src={activeDesign?.mockupFront || activeSpk?.mockupDepan || '/logo.png'}
-                        alt={activeDesign?.mockupFront || activeSpk?.mockupDepan ? 'Desain tampak depan' : 'Desain tampak depan belum tersedia'}
-                        loading="lazy"
-                        decoding="async"
-                        className="max-h-full max-w-full object-contain p-4"
-                      />
-                    </div>
-                  </figure>
-
-                  <figure className="border border-slate-200 rounded-2xl p-4 flex flex-col items-center bg-slate-50">
-                    <figcaption className="text-sm font-medium text-slate-600 mb-3">Tampak Belakang</figcaption>
-                    <div className="w-full h-72 bg-white rounded-xl border border-slate-200 flex items-center justify-center overflow-hidden">
-                      <img
-                        src={activeDesign?.mockupBack || activeSpk?.mockupBelakang || '/logo.png'}
-                        alt={activeDesign?.mockupBack || activeSpk?.mockupBelakang ? 'Desain tampak belakang' : 'Desain tampak belakang belum tersedia'}
-                        loading="lazy"
-                        decoding="async"
-                        className="max-h-full max-w-full object-contain p-4"
-                      />
-                    </div>
-                  </figure>
-                </div>
+                {activeMockups.length > 0 ? (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+                    {activeMockups.map((mockup, index) => (
+                      <figure key={`${mockup.id}-${index}`} className="border border-slate-200 rounded-2xl p-4 flex flex-col items-center bg-slate-50">
+                        <figcaption className="text-sm font-medium text-slate-600 mb-3 text-center">{mockupTitle(mockup, index)}</figcaption>
+                        <div className="w-full h-72 bg-white rounded-xl border border-slate-200 flex items-center justify-center overflow-hidden">
+                          <img
+                            src={mockup.url}
+                            alt={`Desain, ${mockupTitle(mockup, index)}`}
+                            loading="lazy"
+                            decoding="async"
+                            className="max-h-full max-w-full object-contain p-4"
+                          />
+                        </div>
+                      </figure>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="rounded-2xl border border-slate-200 bg-slate-50 p-6 text-center text-sm text-slate-600">
+                    Gambar desain belum tersedia.
+                  </p>
+                )}
               </div>
             )}
 
