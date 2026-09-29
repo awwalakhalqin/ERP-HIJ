@@ -31,7 +31,7 @@ import { getCurrentUser } from '../../lib/session';
 import { Badge, StatusBadge, DeadlineBadge } from '../ui/Badge';
 import { Modal } from '../ui/Modal';
 import { exportTwoPageSPK } from '../../services/pdfGenerator';
-import { SpkDocument } from '../documents/SpkDocument';
+import { SpkDocument, type SpkMockups } from '../documents/SpkDocument';
 import { Card } from '../ui/Card';
 import { Button } from '../ui/Button';
 import { Input } from '../ui/Input';
@@ -578,7 +578,7 @@ export const PPICModule: React.FC = () => {
    * artwork of its own, so it is resolved from the order's approved design at
    * print time — which also fixes every SPK issued before this existed.
    */
-  const mockupForSpk = (spk: SPK | null): string | undefined => {
+  const mockupsForSpk = (spk: SPK | null): SpkMockups | undefined => {
     if (!spk) return undefined;
     const order = orders.find(o => o.id === spk.orderId);
     const designs = readinessData.designs || [];
@@ -587,12 +587,9 @@ export const PPICModule: React.FC = () => {
       designs.find(d => d.orderId === spk.orderId && d.status === 'Approved') ||
       designs.find(d => d.orderId === spk.orderId);
 
-    const candidates = [
-      design?.mockupFront,
-      design?.mockupBack,
-      order?.designUrl
-    ];
-    return candidates.find(url => !!url && !url.startsWith('/templates/')) || undefined;
+    // order.designUrl holds a single picture, so it only stands in when no design record is found.
+    if (!design) return { front: order?.designUrl };
+    return { front: design.mockupFront, back: design.mockupBack };
   };
 
   /** SPKs issued before the chart was copied over print the order's breakdown instead. */
@@ -1626,7 +1623,7 @@ export const PPICModule: React.FC = () => {
                   spk={printSpk}
                   page1Id="spk-pdf-page1"
                   page2Id="spk-pdf-page2"
-                  mockupUrl={mockupForSpk(printSpk)}
+                  mockups={mockupsForSpk(printSpk)}
                   sizeChart={sizeChartForSpk(printSpk)}
                   template={sizeCharts.find(c => c.id === printSpk.sizeChartId)}
                 />

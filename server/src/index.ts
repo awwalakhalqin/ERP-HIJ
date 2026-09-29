@@ -875,7 +875,9 @@ app.post('/api/orders/:id/issue-spk', requireModule('PPIC', 'Orders'), (req: Req
   const matchedDesign: any = designForOrder(order, readTable('designs') as any);
   const isArtwork = (url?: string) => !!url && !String(url).startsWith('/templates/');
 
-  const mockupDepan = [matchedDesign?.mockupFront, order.designUrl].find(isArtwork) || '';
+  // order.designUrl is a single picture (front, or back when there is no front),
+  // so it only stands in for the front when no design record is linked.
+  const mockupDepan = [matchedDesign ? matchedDesign.mockupFront : order.designUrl].find(isArtwork) || '';
   const mockupBelakang = isArtwork(matchedDesign?.mockupBack) ? matchedDesign.mockupBack : '';
 
   const spkPayload = {
