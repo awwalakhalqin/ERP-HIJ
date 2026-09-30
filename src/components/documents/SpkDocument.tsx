@@ -314,6 +314,8 @@ const SizeChartPanel: React.FC<{ table: SizeTable }> = ({ table }) => {
  * 2 x 2) so the area is used in full; more than four go three per row, and
  * any beyond that continue on the rows below.
  */
+const MOCKUP_GAP_PX = 8;
+
 function mockupsPerRow(count: number): number {
   if (count <= 1) return 1;
   return count <= 4 ? 2 : 3;
@@ -384,18 +386,16 @@ export const SpkDocumentPage1: React.FC<{ spk: SPK; id: string; mockups?: Design
       {/* MOCKUP / LAYOUT PRODUCT: every picture of the design, titled */}
       <div className="absolute" style={{ left: '4%', top: '35.2%', width: '92%', height: '56%' }}>
         {pictures.length > 0 ? (
-          <div
-            className="grid h-full w-full"
-            style={{
-              gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`,
-              gridTemplateRows: `repeat(${rows}, minmax(0, 1fr))`,
-              gap: '8px'
-            }}
-          >
+          // Wrapped flex rather than a grid, so an odd last row sits centred.
+          <div className="flex h-full w-full flex-wrap content-start justify-center" style={{ gap: `${MOCKUP_GAP_PX}px` }}>
             {pictures.map((mockup, index) => (
               <figure
                 key={`${mockup.id}-${index}`}
                 className="flex min-h-0 min-w-0 flex-col overflow-hidden"
+                style={{
+                  width: `calc((100% - ${(columns - 1) * MOCKUP_GAP_PX}px) / ${columns})`,
+                  height: `calc((100% - ${(rows - 1) * MOCKUP_GAP_PX}px) / ${rows})`
+                }}
               >
                 <figcaption
                   className="shrink-0 px-2 pb-0.5 pt-1.5 text-center font-bold uppercase text-slate-700"
