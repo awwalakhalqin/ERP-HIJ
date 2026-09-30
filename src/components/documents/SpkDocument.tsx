@@ -309,16 +309,11 @@ const SizeChartPanel: React.FC<{ table: SizeTable }> = ({ table }) => {
 };
 
 /*
- * Columns for the MOCKUP / LAYOUT PRODUCT area (about 730 x 630 px): the
- * pictures stay as large as the count allows, and a row is never left with a
- * single straggler when an even split exists (4 → 2 x 2, not 3 + 1).
+ * The MOCKUP / LAYOUT PRODUCT area (about 730 x 630 px) holds at most three
+ * pictures side by side; any more continue on the rows below, so pictures are
+ * never squeezed narrower than a third of the page.
  */
-function mockupColumns(count: number): number {
-  if (count <= 3) return Math.max(1, count);
-  if (count === 4) return 2;
-  if (count <= 6 || count === 9) return 3;
-  return 4;
-}
+const MOCKUPS_PER_ROW = 3;
 
 interface SpkDocumentProps {
   spk: SPK;
@@ -355,8 +350,8 @@ export const SpkDocumentPage1: React.FC<{ spk: SPK; id: string; mockups?: Design
    * time is only used when the design can no longer be found.
    */
   const pictures = mockups && mockups.length > 0 ? mockups : spkMockups(spk);
-  const columns = mockupColumns(pictures.length);
-  const rows = Math.max(1, Math.ceil(pictures.length / columns));
+  const columns = Math.min(Math.max(1, pictures.length), MOCKUPS_PER_ROW);
+  const rows = Math.max(1, Math.ceil(pictures.length / MOCKUPS_PER_ROW));
 
   return (
     <DocumentPage id={id} template="/templates/Halaman1.png" padded={false}>
@@ -396,7 +391,7 @@ export const SpkDocumentPage1: React.FC<{ spk: SPK; id: string; mockups?: Design
             {pictures.map((mockup, index) => (
               <figure
                 key={`${mockup.id}-${index}`}
-                className="flex min-h-0 min-w-0 flex-col overflow-hidden rounded-lg border border-dashed border-slate-300"
+                className="flex min-h-0 min-w-0 flex-col overflow-hidden"
               >
                 <figcaption
                   className="shrink-0 px-2 pb-0.5 pt-1.5 text-center font-bold uppercase text-slate-700"
@@ -411,7 +406,7 @@ export const SpkDocumentPage1: React.FC<{ spk: SPK; id: string; mockups?: Design
             ))}
           </div>
         ) : (
-          <div className="flex h-full w-full items-center justify-center rounded-lg border border-dashed border-slate-300">
+          <div className="flex h-full w-full items-center justify-center">
             <span className="text-[12px] italic text-slate-400">Mockup belum dilampirkan</span>
           </div>
         )}
