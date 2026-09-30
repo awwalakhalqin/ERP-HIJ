@@ -309,11 +309,15 @@ const SizeChartPanel: React.FC<{ table: SizeTable }> = ({ table }) => {
 };
 
 /*
- * The MOCKUP / LAYOUT PRODUCT area (about 730 x 630 px) holds at most three
- * pictures side by side; any more continue on the rows below, so pictures are
- * never squeezed narrower than a third of the page.
+ * Pictures per row in the MOCKUP / LAYOUT PRODUCT area (about 730 x 630 px).
+ * Up to four pictures sit two per row (2 side by side, 3 as 2 + 1, 4 as
+ * 2 x 2) so the area is used in full; more than four go three per row, and
+ * any beyond that continue on the rows below.
  */
-const MOCKUPS_PER_ROW = 3;
+function mockupsPerRow(count: number): number {
+  if (count <= 1) return 1;
+  return count <= 4 ? 2 : 3;
+}
 
 interface SpkDocumentProps {
   spk: SPK;
@@ -350,8 +354,8 @@ export const SpkDocumentPage1: React.FC<{ spk: SPK; id: string; mockups?: Design
    * time is only used when the design can no longer be found.
    */
   const pictures = mockups && mockups.length > 0 ? mockups : spkMockups(spk);
-  const columns = Math.min(Math.max(1, pictures.length), MOCKUPS_PER_ROW);
-  const rows = Math.max(1, Math.ceil(pictures.length / MOCKUPS_PER_ROW));
+  const columns = mockupsPerRow(pictures.length);
+  const rows = Math.max(1, Math.ceil(pictures.length / columns));
 
   return (
     <DocumentPage id={id} template="/templates/Halaman1.png" padded={false}>
