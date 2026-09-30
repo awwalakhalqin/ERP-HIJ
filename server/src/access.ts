@@ -25,11 +25,18 @@ export function modulesFor(user: any): string[] {
   return own.length > 0 ? own : STAFF_ROLE_MODULES[user.role] || [];
 }
 
+/** Open to every staff account. Catatan Harian is read by all, written by its PJ only. */
+export const ALWAYS_OPEN_MODULES = ['Dashboard', 'HowItWorks', 'DailyCash'];
+
 export function canOpen(user: any, module: string): boolean {
   if (!user) return false;
   if (user.role === 'Super Admin') return true;
   const modules = modulesFor(user);
-  return modules.includes('*') || module === 'Dashboard' || module === 'HowItWorks' || modules.includes(module);
+  return (
+    modules.includes('*') ||
+    ALWAYS_OPEN_MODULES.includes(module) ||
+    modules.includes(module)
+  );
 }
 
 export const isFullAdmin = (user: any) => !!user && (user.role === 'Super Admin' || modulesFor(user).includes('*'));
@@ -85,7 +92,17 @@ const ADMIN_ONLY_PREFIXES = ['store_', 'digiflazz_'];
 
 const isAdminOnlyTable = (table: string) => ADMIN_ONLY_PREFIXES.some(prefix => table.startsWith(prefix));
 
+/*
+ * Tables written only through their own routes, whoever is asking: the daily
+ * cash book is the PJ's alone, and its stock-in lines follow its entries.
+ */
+const DEDICATED_TABLES: Record<string, string> = {
+  daily_cash_entries: 'Catatan harian hanya bisa diubah PJ lewat menu Catatan Keuangan Harian.',
+  stock_receipts: 'Riwayat stok masuk dibuat otomatis dari Catatan Keuangan Harian.'
+};
+
 export function writeBlockReason(user: any, table: string): string | null {
+  if (DEDICATED_TABLES[table]) return DEDICATED_TABLES[table];
   if (isFullAdmin(user)) return null;
   if (isAdminOnlyTable(table)) return 'Data ini hanya boleh diubah Super Admin.';
   const modules = WRITE_MODULES[table];

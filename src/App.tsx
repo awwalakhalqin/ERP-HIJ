@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { logoutApi, getAuthToken, AUTH_EXPIRED_EVENT } from './services/api';
 import { setAuthToken } from './services/api';
-import { MODULE_SECTIONS } from './config/modules';
+import { MODULE_SECTIONS, OPEN_TO_ALL_MODULES } from './config/modules';
 import { 
   LayoutDashboard, 
   Users, 
@@ -33,6 +33,7 @@ import {
   FileSpreadsheet,
   Clock,
   BookOpen,
+  NotebookPen,
   FileText
 } from 'lucide-react';
 import { SOPModule, AuthSession, User } from './types';
@@ -69,6 +70,7 @@ const ShippingModule = React.lazy(() => import('./components/modules/ShippingMod
 const HRPayrollModule = React.lazy(() => import('./components/modules/HRPayrollModule').then(m => ({ default: m.HRPayrollModule })));
 const FinanceModule = React.lazy(() => import('./components/modules/FinanceModule').then(m => ({ default: m.FinanceModule })));
 const AccountsModule = React.lazy(() => import('./components/modules/AccountsModule').then(m => ({ default: m.AccountsModule })));
+const DailyCashModule = React.lazy(() => import('./components/modules/DailyCashModule').then(m => ({ default: m.DailyCashModule })));
 const HowItWorksModule = React.lazy(() => import('./components/modules/HowItWorksModule').then(m => ({ default: m.HowItWorksModule })));
 
 // Lightweight Skeleton for smooth transitions between modules
@@ -127,6 +129,7 @@ const MODULE_ICONS: Record<string, MenuItem['icon']> = {
   Finance: CreditCard,
   HRPayroll: Coins,
   Accounts: UserCog,
+  DailyCash: NotebookPen,
   HowItWorks: BookOpen
 };
 
@@ -149,6 +152,7 @@ const canUserOpenModule = (user: User | undefined, id: SOPModule) =>
     !!user.allowedModules?.includes('*') ||
     id === 'Dashboard' ||
     id === 'HowItWorks' ||
+    OPEN_TO_ALL_MODULES.includes(id) ||
     !!user.allowedModules?.includes(id)
   );
 
@@ -549,6 +553,8 @@ export const App: React.FC = () => {
         return <FinanceModule />;
       case 'Accounts':
         return <AccountsModule />;
+      case 'DailyCash':
+        return <DailyCashModule />;
       case 'HowItWorks':
         return (
           <HowItWorksModule

@@ -19,6 +19,8 @@ export interface ModuleInfo {
   label: string;
   /** The SOP this module implements, shown as a badge. */
   sop?: string;
+  /** Every staff account may open it, so it has no switch on the permissions screen. */
+  openToAll?: boolean;
 }
 
 export interface ModuleSection {
@@ -72,6 +74,7 @@ export const MODULE_SECTIONS: ModuleSection[] = [
     title: 'Keuangan & Manajemen',
     items: [
       { id: 'Finance', label: 'Keuangan', sop: 'SOP-20' },
+      { id: 'DailyCash', label: 'Catatan Keuangan Harian', sop: 'Kas', openToAll: true },
       { id: 'HRPayroll', label: 'Penggajian', sop: 'SOP-19' },
       { id: 'Accounts', label: 'Akun & Hak Akses', sop: 'Admin' },
       { id: 'HowItWorks', label: 'Panduan Alur', sop: 'SOP' }
@@ -80,6 +83,9 @@ export const MODULE_SECTIONS: ModuleSection[] = [
 ];
 
 export const ALL_MODULES: ModuleInfo[] = MODULE_SECTIONS.flatMap(section => section.items);
+
+/** Modules every staff account may open, whatever its permissions list says. */
+export const OPEN_TO_ALL_MODULES: string[] = ALL_MODULES.filter(m => m.openToAll).map(m => m.id);
 
 export const moduleLabel = (id: string) => ALL_MODULES.find(m => m.id === id)?.label ?? id;
 export const moduleSop = (id: string) => ALL_MODULES.find(m => m.id === id)?.sop ?? '';

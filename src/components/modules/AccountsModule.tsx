@@ -628,7 +628,7 @@ export const AccountsModule: React.FC = () => {
                 editingSelf ? 'opacity-70' : ''
               }`}
             >
-              {ALL_MODULES.map((m) => {
+              {ALL_MODULES.filter(m => !m.openToAll).map((m) => {
                 const isSelected = !!(
                   formData.allowedModules?.includes('*') ||
                   formData.allowedModules?.includes(m.id)

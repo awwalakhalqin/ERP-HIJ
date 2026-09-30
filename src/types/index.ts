@@ -22,6 +22,7 @@ export type SOPModule =
   | 'HRPayroll'
   | 'Finance'
   | 'Accounts'
+  | 'DailyCash'
   | 'HowItWorks';
 
 export type StaffRole = 
@@ -829,6 +830,77 @@ export interface Payment {
   notes?: string;
   user?: string;
   timestamp?: string;
+}
+
+// Catatan Keuangan Harian: pengeluaran harian dan talangan personil.
+export type DailyCashType = 'Pengiriman' | 'Stok Gudang' | 'Lainnya';
+export type DailyCashPaidWith = 'Kas Kantor' | 'Ditalangi';
+export type DailyCashStatus = 'Belum Diganti' | 'Lunas' | 'Dibatalkan';
+
+export interface DailyCashHistoryItem {
+  at: string;
+  by: string;
+  action: string;
+  note?: string;
+}
+
+export interface DailyCashEntry {
+  id: string; // CKH-001
+  /** The day the money went out. The age of a talangan counts from `timestamp`. */
+  date: string;
+  type: DailyCashType;
+  /** What was bought: typed for Lainnya, derived for Pengiriman and Stok Gudang. */
+  itemName: string;
+  category: string;
+  /** Pengiriman: the surat jalan whose ongkir this is. */
+  shipmentId?: string;
+  /** Stok Gudang: the warehouse item that was restocked, and how much. */
+  stockItemId?: string;
+  qty?: number;
+  unit?: string;
+  /** The receipt written to the warehouse's stock-in history. */
+  stockReceiptId?: string;
+  orderId?: string;
+  amount: number;
+  paidWith: DailyCashPaidWith;
+  /** Who fronted the money; a free name, kept unique by the form's suggestions. */
+  payerName?: string;
+  status: DailyCashStatus;
+  settledAt?: string;
+  settleMethod?: 'Transfer' | 'Tunai' | 'Kas Kantor';
+  settledBy?: string;
+  cancelReason?: string;
+  notes?: string;
+  history: DailyCashHistoryItem[];
+  createdBy?: string;
+  timestamp?: string;
+  updatedAt?: string;
+}
+
+/** One restock of a warehouse item, written by a Stok Gudang daily-cash entry. */
+export interface StockReceipt {
+  id: string; // STM-001
+  itemId: string;
+  itemName: string;
+  category?: string;
+  qty: number;
+  unit: string;
+  unitPrice: number;
+  total: number;
+  date: string;
+  entryId: string;
+  status: 'Aktif' | 'Dibatalkan';
+  user?: string;
+  timestamp?: string;
+}
+
+export interface DailyCashSettings {
+  pjUserId: string;
+  pjName: string;
+  /** The signed-in user is the PJ. */
+  isPj: boolean;
+  /** The signed-in user may appoint another PJ. */
+  canChangePj: boolean;
 }
 
 // Offline IndexedDB sync tracking

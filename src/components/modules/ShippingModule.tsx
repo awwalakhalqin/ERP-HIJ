@@ -1,9 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { Truck, Search, Plus, Download, Printer, ExternalLink, CheckCircle2, ArrowRight } from 'lucide-react';
-import { Shipment, Order, QCReport } from '../../types';
+import { Shipment, Order, QCReport, DailyCashEntry } from '../../types';
 import { fetchResource, createResource, updateResource } from '../../services/api';
 import { formatDate, formatDateTime, exportTableToExcel, generateId, formatCurrency, statusLabel } from '../../lib/utils';
-import { StatusBadge } from '../ui/Badge';
+import { Badge, StatusBadge } from '../ui/Badge';
 import { Modal } from '../ui/Modal';
 import { exportElementToPdf } from '../../services/pdfGenerator';
 import { Card } from '../ui/Card';
@@ -37,6 +37,13 @@ export const ShippingModule: React.FC = () => {
   const [saving, setSaving] = useState(false);
   const [orders, setOrders] = useState<Order[]>([]);
   const [qcReports, setQcReports] = useState<QCReport[]>([]);
+  /** Catatan Keuangan Harian entries, to show whether each ongkir paid by HIJ was written down. */
+  const [cashEntries, setCashEntries] = useState<DailyCashEntry[]>([]);
+
+  /** The daily-cash entry recording this surat jalan's ongkir, cancelled ones aside. */
+  const cashEntryFor = (shipmentId: string) =>
+    cashEntries.find(e => e.shipmentId === shipmentId && e.status !== 'Dibatalkan');
+  const ongkirUnrecorded = (s: Shipment) => s.paidBy === 'Pengirim' && !cashEntryFor(s.id);
 
   /** The latest report for the order decides, the same reading the server's gate uses. */
   const latestQcAccepted = (orderId: string) => {
@@ -72,15 +79,18 @@ export const ShippingModule: React.FC = () => {
   const loadData = async () => {
     try {
       setLoading(true);
-      const [shipRes, orderRes, qcRes] = await Promise.all([
+      const [shipRes, orderRes, qcRes, cashRes] = await Promise.all([
         fetchResource<Shipment>('shipments'),
         fetchResource<Order>('orders'),
-        fetchResource<QCReport>('qc-reports')
+        fetchResource<QCReport>('qc-reports'),
+        // A failure here only hides the ongkir label; the shipments still load.
+        fetchResource<DailyCashEntry>('daily-cash').catch(() => [] as DailyCashEntry[])
       ]);
       // Show what is really there; an empty table is the honest state.
       setShipments(shipRes);
       setOrders(orderRes);
       setQcReports(qcRes || []);
+      setCashEntries(cashRes || []);
     } catch (err) {
       console.error(err);
     } finally {
@@ -286,6 +296,11 @@ export const ShippingModule: React.FC = () => {
                 <TableRow key={s.id}>
                   <TableCell className="cell-sticky-start whitespace-nowrap">
                     <span className="font-mono font-bold text-slate-900">{s.id}</span>
+                    {ongkirUnrecorded(s) && (
+                      <span className="mt-1 block">
+                        <Badge variant="warning" size="sm">Ongkir belum dicatat keuangan</Badge>
+                      </span>
+                    )}
                   </TableCell>
                   <TableCell className="hidden md:table-cell whitespace-nowrap font-mono text-teal-700">
                     {s.orderId}
@@ -416,6 +431,20 @@ export const ShippingModule: React.FC = () => {
                   <span className="whitespace-nowrap">{formatCurrency(detailShipment.shippingCost)}</span>
                 </DetailField>
                 <DetailField label="Ongkir dibayar">{detailShipment.paidBy}</DetailField>
+                {detailShipment.paidBy === 'Pengirim' && (
+                  <DetailField label="Catatan keuangan" full>
+                    {(() => {
+                      const entry = cashEntryFor(detailShipment.id);
+                      if (!entry) return <Badge variant="warning" size="sm">Belum dicatat di Catatan Keuangan Harian</Badge>;
+                      return (
+                        <span>
+                          <span className="font-mono">{entry.id}</span> · {formatCurrency(entry.amount)} · {entry.paidWith}
+                          {entry.payerName ? ` (${entry.payerName})` : ''} · {entry.status}
+                        </span>
+                      );
+                    })()}
+                  </DetailField>
+                )}
               </DetailSection>
               <DetailSection title="Riwayat Data">
                 <DetailField label="Dicatat oleh">{detailShipment.user}</DetailField>

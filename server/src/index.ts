@@ -45,6 +45,7 @@ import { requireModule, writeBlockReason, readBlockReason, usersWriteBlockReason
 import { recomputeSpk, recomputeAllSpks, completeSpkForOrder, spkQcAccepted, SPK_SOURCE_TABLES } from './spk.js';
 import { canApproveSpecialTerms } from '../../src/lib/readiness.js';
 import { designMockups, isArtwork } from '../../src/lib/mockups.js';
+import { dailyCashRouter } from './dailyCash.js';
 import { COMPANY_CONTACT } from '../../src/config/contact.js';
 import { STANDARD_SIZE_CHARTS, SIZE_CHART_COMMON_NOTES } from '../../src/config/sizeChartTemplates.js';
 import dotenv from 'dotenv';
@@ -689,6 +690,9 @@ app.get('/api/staff-directory', requireModule(), (_req: Request, res: Response) 
 // ---------------------------------------------------------
 // DOMAIN-SPECIFIC ENDPOINTS
 // ---------------------------------------------------------
+
+// Catatan Keuangan Harian: must sit before the generic /api/:resource/:id routes.
+app.use('/api', dailyCashRouter);
 
 // SOP-08: Scan WIP Bundle Handover & Stage Transition
 app.post('/api/wip-bundles/scan', requireModule('BundleTracking', 'Cutting', 'Sewing', 'QC', 'Packaging'), (req: Request, res: Response) => {
@@ -2743,6 +2747,10 @@ const TABLE_MAP: Record<string, string> = {
   payroll: 'borongan_salary_slips',
   invoices: 'invoices',
   payments: 'payments',
+  'daily-cash': 'daily_cash_entries',
+  daily_cash_entries: 'daily_cash_entries',
+  'stock-receipts': 'stock_receipts',
+  stock_receipts: 'stock_receipts',
   users: 'users',
   'store-products': 'store_products',
   store_products: 'store_products',

@@ -15,5 +15,5 @@
     "allowJs": false,
     "noEmit": true
   },
-  "include": ["server/**/*.ts", "src/lib/readiness.ts", "src/lib/mockups.ts", "src/lib/status.ts", "src/types/**/*.ts"]
+  "include": ["server/**/*.ts", "src/lib/readiness.ts", "src/lib/mockups.ts", "src/lib/dailyCash.ts", "src/lib/status.ts", "src/types/**/*.ts"]
 }

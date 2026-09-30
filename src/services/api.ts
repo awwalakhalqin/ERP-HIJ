@@ -1,5 +1,5 @@
 import { db } from '../db/dexie';
-import type { Payment, Sample, Procurement, Design, SPK, Order, AuthSession, User, CustomerSession } from '../types';
+import type { Payment, Sample, Procurement, Design, SPK, Order, AuthSession, User, CustomerSession, DailyCashEntry, DailyCashSettings } from '../types';
 import { STAFF_ROLE_MODULES } from '../types';
 import type { ReadinessData } from '../lib/readiness';
 
@@ -620,3 +620,44 @@ export async function createDigiflazzTopupApi(payload: { customer_no: string; bu
   return data;
 }
 
+
+// ---------------------------------------------------------
+// Catatan Keuangan Harian (writes are the PJ's only; the server checks)
+// ---------------------------------------------------------
+
+async function dailyCashCall<T>(path: string, method: string, body?: unknown, fallback = 'Catatan gagal disimpan. Coba lagi.'): Promise<T> {
+  const res = await apiFetch(`${API_BASE}/daily-cash${path}`, {
+    method,
+    headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body)
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || fallback);
+  return data as T;
+}
+
+export const fetchDailyCashSettingsApi = () =>
+  dailyCashCall<DailyCashSettings>('/settings', 'GET', undefined, 'Pengaturan PJ gagal dimuat.');
+
+export const saveDailyCashPjApi = (pjUserId: string) =>
+  dailyCashCall<{ pjUserId: string; pjName: string }>('/settings', 'PUT', { pjUserId }, 'PJ gagal diganti.');
+
+export type DailyCashInput = Pick<
+  DailyCashEntry,
+  'type' | 'date' | 'amount' | 'paidWith' | 'payerName' | 'orderId' | 'itemName' | 'category' | 'shipmentId' | 'stockItemId' | 'qty' | 'notes'
+>;
+
+export const createDailyCashEntryApi = (input: DailyCashInput) =>
+  dailyCashCall<DailyCashEntry>('/entries', 'POST', input);
+
+export const updateDailyCashEntryApi = (id: string, input: DailyCashInput) =>
+  dailyCashCall<DailyCashEntry>(`/entries/${encodeURIComponent(id)}`, 'PUT', input);
+
+export const cancelDailyCashEntryApi = (id: string, reason: string) =>
+  dailyCashCall<DailyCashEntry>(`/entries/${encodeURIComponent(id)}/cancel`, 'POST', { reason }, 'Catatan gagal dibatalkan.');
+
+export const reopenDailyCashEntryApi = (id: string, reason: string) =>
+  dailyCashCall<DailyCashEntry>(`/entries/${encodeURIComponent(id)}/reopen`, 'POST', { reason }, 'Status gagal dikembalikan.');
+
+export const settleDailyCashApi = (ids: string[], method: 'Transfer' | 'Tunai', date: string) =>
+  dailyCashCall<DailyCashEntry[]>('/settle', 'POST', { ids, method, date }, 'Pelunasan gagal disimpan.');

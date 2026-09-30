@@ -10,16 +10,18 @@ import {
   Component,
   ShieldCheck,
   ClipboardList,
-  AlertTriangle
+  AlertTriangle,
+  HandCoins
 } from 'lucide-react';
 import { fetchDashboardStatsApi, fetchResource } from '../../services/api';
-import { cn, formatCurrency } from '../../lib/utils';
+import { cn, formatCurrency, todayLocal } from '../../lib/utils';
+import { ageInDays, isCounted, isOpenTalangan, payerKey, DAILY_CASH_TYPES } from '../../lib/dailyCash';
 import { ordersAwaitingSpk } from '../../lib/readiness';
 import { Badge, DeadlineBadge, StatusBadge } from '../ui/Badge';
 import { Card } from '../ui/Card';
 import { Button } from '../ui/Button';
 import { PageHeader } from '../ui/PageHeader';
-import { SOPModule, SPK, Order } from '../../types';
+import { SOPModule, SPK, Order, DailyCashEntry } from '../../types';
 
 interface KpiCardProps {
   label: string;
@@ -90,6 +92,7 @@ export const DashboardModule: React.FC<DashboardProps> = ({ onNavigate, onOpenSc
   const [activeSpks, setActiveSpks] = useState<SPK[]>([]);
   const [recentOrders, setRecentOrders] = useState<Order[]>([]);
   const [rawMaterials, setRawMaterials] = useState<any[]>([]);
+  const [cashEntries, setCashEntries] = useState<DailyCashEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [lastUpdated, setLastUpdated] = useState<string>('');
@@ -101,11 +104,12 @@ export const DashboardModule: React.FC<DashboardProps> = ({ onNavigate, onOpenSc
        * Each request stands on its own: the stats endpoint failing used to
        * blank the whole page although the SPK and order lists had loaded fine.
        */
-      const [statsRes, spkRes, orderRes, materialRes] = await Promise.allSettled([
+      const [statsRes, spkRes, orderRes, materialRes, cashRes] = await Promise.allSettled([
         fetchDashboardStatsApi(),
         fetchResource<SPK>('spk_produksi'),
         fetchResource<Order>('orders'),
-        fetchResource<any>('raw-materials')
+        fetchResource<any>('raw-materials'),
+        fetchResource<DailyCashEntry>('daily-cash')
       ]);
       if (statsRes.status === 'fulfilled') {
         setStats(statsRes.value || {});
@@ -120,6 +124,8 @@ export const DashboardModule: React.FC<DashboardProps> = ({ onNavigate, onOpenSc
       else console.error('Failed to load orders:', orderRes.reason);
       if (materialRes.status === 'fulfilled') setRawMaterials(materialRes.value || []);
       else console.error('Failed to load raw materials:', materialRes.reason);
+      if (cashRes.status === 'fulfilled') setCashEntries(cashRes.value || []);
+      else console.error('Failed to load daily cash entries:', cashRes.reason);
       const now = new Date();
       setLastUpdated(now.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }));
     } finally {
@@ -174,6 +180,33 @@ export const DashboardModule: React.FC<DashboardProps> = ({ onNavigate, onOpenSc
     () => (metrics.inProgress.length > 0 ? metrics.inProgress : activeSpks),
     [metrics.inProgress, activeSpks]
   );
+
+  /* Spending from Catatan Keuangan Harian; cancelled entries are not money spent. */
+  const spending = useMemo(() => {
+    const today = todayLocal();
+    const month = cashEntries.filter(e => isCounted(e) && String(e.date).startsWith(today.slice(0, 7)));
+    const sum = (rows: DailyCashEntry[]) => rows.reduce((s, e) => s + (Number(e.amount) || 0), 0);
+    const byCategory = new Map<string, { label: string; total: number }>();
+    for (const e of month) {
+      const key = payerKey(e.category);
+      const row = byCategory.get(key) || { label: e.category, total: 0 };
+      row.total += Number(e.amount) || 0;
+      byCategory.set(key, row);
+    }
+    const open = cashEntries.filter(isOpenTalangan);
+    return {
+      monthTotal: sum(month),
+      todayTotal: sum(month.filter(e => e.date === today)),
+      officeTotal: sum(month.filter(e => e.paidWith === 'Kas Kantor')),
+      talanganTotal: sum(month.filter(e => e.paidWith === 'Ditalangi')),
+      byType: DAILY_CASH_TYPES.map(type => ({ label: type, total: sum(month.filter(e => e.type === type)) })),
+      topCategories: [...byCategory.values()].sort((a, b) => b.total - a.total).slice(0, 3),
+      openTotal: sum(open),
+      openCount: open.length,
+      openPeople: new Set(open.map(e => payerKey(e.payerName))).size,
+      oldestDays: open.reduce((max, e) => Math.max(max, ageInDays(e.timestamp)), 0)
+    };
+  }, [cashEntries]);
 
   // Attention items (SOP-03 & SOP-04/05)
   const awaitingSpkCount = useMemo(() => ordersAwaitingSpk(recentOrders, activeSpks).length, [recentOrders, activeSpks]);
@@ -376,6 +409,71 @@ export const DashboardModule: React.FC<DashboardProps> = ({ onNavigate, onOpenSc
           onClick={() => onNavigate('Finance')}
         />
       </div>
+
+      {/* SPENDING (Catatan Keuangan Harian) */}
+      <Card className="p-5 space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h2 className="text-base font-bold text-slate-900">Pengeluaran Bulan Ini</h2>
+          <Button variant="outline" size="sm" onClick={() => onNavigate('DailyCash')}>
+            Buka Catatan Harian <ArrowRight size={16} aria-hidden="true" />
+          </Button>
+        </div>
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+          <div className="rounded-xl border border-border p-4">
+            <div className="text-sm text-slate-500">Total bulan ini</div>
+            <div className="mt-1 text-xl font-bold tabular-nums text-slate-900 truncate" title={formatCurrency(spending.monthTotal)}>
+              {formatCurrency(spending.monthTotal)}
+            </div>
+            <div className="mt-1 text-sm text-slate-600">
+              Hari ini {formatCurrency(spending.todayTotal)}
+            </div>
+            <div className="mt-1 text-sm text-slate-600">
+              Kas kantor {formatCurrency(spending.officeTotal)} · talangan {formatCurrency(spending.talanganTotal)}
+            </div>
+          </div>
+          <div className="rounded-xl border border-border p-4">
+            <div className="text-sm text-slate-500">Per jenis</div>
+            <ul className="mt-2 space-y-1 text-sm">
+              {spending.byType.map(row => (
+                <li key={row.label} className="flex justify-between gap-2">
+                  <span className="text-slate-700">{row.label}</span>
+                  <span className="font-semibold tabular-nums text-slate-900">{formatCurrency(row.total)}</span>
+                </li>
+              ))}
+            </ul>
+            {spending.topCategories.length > 0 && (
+              <>
+                <div className="mt-3 text-sm text-slate-500">Kategori terbesar</div>
+                <ul className="mt-1 space-y-1 text-sm">
+                  {spending.topCategories.map(row => (
+                    <li key={row.label} className="flex justify-between gap-2">
+                      <span className="truncate text-slate-700">{row.label}</span>
+                      <span className="font-semibold tabular-nums text-slate-900">{formatCurrency(row.total)}</span>
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )}
+          </div>
+          <button
+            type="button"
+            onClick={() => onNavigate('DailyCash')}
+            className="rounded-xl border border-status-warning-border bg-status-warning-bg p-4 text-left transition-colors hover:bg-status-warning-border/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-teal focus-visible:ring-offset-2"
+          >
+            <div className="flex items-center gap-2 text-sm font-medium text-status-warning">
+              <HandCoins size={16} aria-hidden="true" /> Talangan belum diganti
+            </div>
+            <div className="mt-1 text-xl font-bold tabular-nums text-slate-900 truncate" title={formatCurrency(spending.openTotal)}>
+              {formatCurrency(spending.openTotal)}
+            </div>
+            <div className="mt-1 text-sm text-slate-700">
+              {spending.openPeople === 0
+                ? 'Semua talangan sudah diganti.'
+                : `${spending.openPeople} orang · ${spending.openCount} catatan · tertua ${spending.oldestDays} hari`}
+            </div>
+          </button>
+        </div>
+      </Card>
 
       {/* PROGRES PER TAHAP */}
       <Card className="p-5 space-y-4">

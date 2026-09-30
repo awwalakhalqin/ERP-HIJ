@@ -16,9 +16,10 @@ import {
   Warehouse,
   Boxes,
   MapPin,
-  Calendar
+  Calendar,
+  PackagePlus
 } from 'lucide-react';
-import { FabricRoll, InventoryItem, StockOpnameRecord } from '../../types';
+import { FabricRoll, InventoryItem, StockOpnameRecord, StockReceipt } from '../../types';
 import { fetchResource, createResource, updateResource, deleteResource } from '../../services/api';
 import { exportTableToExcel, formatCurrency, formatDate, formatDateTime, generateId } from '../../lib/utils';
 import { Badge, StatusBadge } from '../ui/Badge';
@@ -74,9 +75,11 @@ export const RawMaterialModule: React.FC = () => {
   const [itemError, setItemError] = useState<string | null>(null);
   const [opnameError, setOpnameError] = useState<string | null>(null);
   const [rollError, setRollError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'inventory' | 'opname' | 'fabric'>('inventory');
+  const [activeTab, setActiveTab] = useState<'inventory' | 'receipts' | 'opname' | 'fabric'>('inventory');
   const [records, setRecords] = useState<any[]>([]);
   const [opnameRecords, setOpnameRecords] = useState<StockOpnameRecord[]>([]);
+  /** Restocks written from Catatan Keuangan Harian (Stok Gudang entries). */
+  const [stockReceipts, setStockReceipts] = useState<StockReceipt[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('ALL');
@@ -146,14 +149,16 @@ export const RawMaterialModule: React.FC = () => {
   const loadData = async () => {
     try {
       setLoading(true);
-      const [matRes, opRes] = await Promise.all([
+      const [matRes, opRes, receiptRes] = await Promise.all([
         fetchResource<any>('raw-materials'),
-        fetchResource<StockOpnameRecord>('stock-opname')
+        fetchResource<StockOpnameRecord>('stock-opname'),
+        fetchResource<StockReceipt>('stock-receipts').catch(() => [] as StockReceipt[])
       ]);
 
       // An empty warehouse is shown as empty; demo rows are never written to the server.
       setRecords(matRes || []);
       setOpnameRecords(opRes || []);
+      setStockReceipts(receiptRes || []);
     } catch (err) {
       console.error('Error loading raw material & opname data:', err);
     } finally {
@@ -217,6 +222,17 @@ export const RawMaterialModule: React.FC = () => {
 
   const { pageRows: pagedStockItems, pagination: stockPagination } = useTablePage(filteredStockItems);
   const { pageRows: pagedOpnames, pagination: opnamePagination } = useTablePage(filteredOpnames);
+
+  const filteredReceipts = newestFirst(stockReceipts.filter(r => {
+    const q = searchQuery.toLowerCase();
+    return (
+      String(r.itemName || '').toLowerCase().includes(q) ||
+      String(r.category || '').toLowerCase().includes(q) ||
+      String(r.id || '').toLowerCase().includes(q) ||
+      String(r.entryId || '').toLowerCase().includes(q)
+    );
+  }));
+  const { pageRows: pagedReceipts, pagination: receiptPagination } = useTablePage(filteredReceipts);
   const { pageRows: pagedRolls, pagination: rollPagination } = useTablePage(filteredRolls);
 
   // --- Handlers: Accessories CRUD ---
@@ -675,6 +691,18 @@ export const RawMaterialModule: React.FC = () => {
         </button>
 
         <button
+          onClick={() => setActiveTab('receipts')}
+          className={`pb-3 text-sm font-bold border-b-2 transition-colors flex items-center gap-2 ${
+            activeTab === 'receipts'
+              ? 'border-teal-600 text-teal-700'
+              : 'border-transparent text-slate-500 hover:text-slate-700'
+          }`}
+        >
+          <PackagePlus size={18} />
+          <span>Riwayat Stok Masuk ({stockReceipts.filter(r => r.status !== 'Dibatalkan').length})</span>
+        </button>
+
+        <button
           onClick={() => setActiveTab('opname')}
           className={`pb-3 text-sm font-bold border-b-2 transition-colors flex items-center gap-2 ${
             activeTab === 'opname'
@@ -947,6 +975,87 @@ export const RawMaterialModule: React.FC = () => {
               </TableBody>
             </Table>
             <TablePagination {...opnamePagination} label="audit" />
+          </Card>
+        </div>
+      )}
+
+      {/* STOCK-IN HISTORY: written by Catatan Keuangan Harian, read-only here */}
+      {activeTab === 'receipts' && (
+        <div className="space-y-4">
+          <Card className="p-4 flex flex-col md:flex-row gap-3 md:items-center justify-between">
+            <div className="relative w-full md:w-80">
+              <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" aria-hidden="true" />
+              <Input
+                type="search"
+                aria-label="Cari riwayat stok masuk"
+                placeholder="Cari barang, kategori, atau no. catatan…"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="pl-9"
+              />
+            </div>
+            <p className="text-sm text-slate-500 md:text-right">
+              Tercatat otomatis dari Catatan Keuangan Harian jenis Stok Gudang.
+            </p>
+          </Card>
+
+          <Card className="overflow-hidden">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="cell-sticky-start">No. Stok Masuk</TableHead>
+                  <TableHead>Barang</TableHead>
+                  <TableHead className="hidden md:table-cell">Kategori</TableHead>
+                  <TableHead className="text-right tabular-nums">Jumlah</TableHead>
+                  <TableHead className="hidden sm:table-cell text-right tabular-nums">Harga Satuan</TableHead>
+                  <TableHead className="hidden sm:table-cell text-right tabular-nums">Total</TableHead>
+                  <TableHead className="hidden lg:table-cell">Tanggal</TableHead>
+                  <TableHead className="hidden lg:table-cell">Catatan Harian</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {loading ? (
+                  <TableSkeletonRows columns={8} rows={3} />
+                ) : filteredReceipts.length === 0 ? (
+                  <TableEmptyRow
+                    colSpan={8}
+                    icon={<PackagePlus size={20} />}
+                    title="Belum ada stok masuk"
+                    description="Belanja stok gudang yang dicatat PJ di Catatan Keuangan Harian muncul di sini."
+                  />
+                ) : (
+                  pagedReceipts.map(r => {
+                    const cancelled = r.status === 'Dibatalkan';
+                    return (
+                      <TableRow key={r.id} className={cancelled ? 'opacity-60' : undefined}>
+                        <TableCell className="cell-sticky-start whitespace-nowrap">
+                          <span className="block font-mono font-bold text-slate-900">{r.id}</span>
+                          {cancelled && <Badge variant="idle" size="sm">Dibatalkan</Badge>}
+                        </TableCell>
+                        <TableCell>
+                          <span className={`block max-w-[200px] truncate font-semibold text-slate-900 ${cancelled ? 'line-through' : ''}`} title={r.itemName}>
+                            {r.itemName}
+                          </span>
+                        </TableCell>
+                        <TableCell className="hidden md:table-cell text-slate-700">{r.category || '—'}</TableCell>
+                        <TableCell className="text-right tabular-nums font-bold text-slate-900 whitespace-nowrap">
+                          {formatQty(r.qty)} {r.unit}
+                        </TableCell>
+                        <TableCell className="hidden sm:table-cell text-right tabular-nums text-slate-700 whitespace-nowrap">
+                          {formatCurrency(r.unitPrice)}
+                        </TableCell>
+                        <TableCell className="hidden sm:table-cell text-right tabular-nums font-semibold text-slate-900 whitespace-nowrap">
+                          {formatCurrency(r.total)}
+                        </TableCell>
+                        <TableCell className="hidden lg:table-cell text-slate-600 whitespace-nowrap">{formatDate(r.date)}</TableCell>
+                        <TableCell className="hidden lg:table-cell font-mono text-slate-600">{r.entryId}</TableCell>
+                      </TableRow>
+                    );
+                  })
+                )}
+              </TableBody>
+            </Table>
+            <TablePagination {...receiptPagination} label="stok masuk" />
           </Card>
         </div>
       )}
