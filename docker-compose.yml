@@ -1,0 +1,64 @@
+# ERP HIJ di Docker.
+#
+#   docker compose up api                 backend uji di :3001, lalu `npm run dev:client`
+#   docker compose --profile prod up -d   aplikasi produksi lengkap (tampilan + API) di :3001
+#
+# Keduanya memakai port host 3001, jadi jalankan salah satu saja.
+# Data tinggal di volume bernama; `docker compose down` tidak menghapusnya,
+# `docker compose down -v` menghapusnya.
+
+services:
+  # Backend untuk pengembangan: kode server dan src/ (dipakai bersama oleh API)
+  # di-bind, jadi perubahan langsung dimuat ulang. Mode uji: banner kuning muncul
+  # di tampilan dan data produksi tidak pernah dibuka.
+  api:
+    build:
+      context: .
+      target: dev
+    image: hij-erp:dev
+    environment:
+      HIJ_MODE: test
+      DATA_DIR: /data
+      PORT: "3001"
+      AUTH_SECRET: hij-docker-dev-secret-local-only
+      ALLOWED_ORIGINS: http://localhost:5173,http://localhost:5174
+    ports:
+      - "3001:3001"
+    volumes:
+      - ./server:/app/server
+      - ./src:/app/src
+      - ./public:/app/public
+      - ./server/data-test:/seed:ro
+      - hij-data-test:/data
+      - hij-uploads-test:/app/uploads
+
+  # Produksi: satu proses melayani erp.* dan portal.*. AUTH_SECRET wajib —
+  # isi di .env di folder ini (lihat .env.example). Tanpanya server berhenti
+  # dengan "FATAL: AUTH_SECRET belum disetel" (lihat `docker compose logs erp`).
+  erp:
+    profiles: ["prod"]
+    build:
+      context: .
+      target: runtime
+    image: hij-erp:latest
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      DATA_DIR: /data
+      PORT: "3001"
+      AUTH_SECRET: ${AUTH_SECRET:-}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-}
+      # Kosong = percaya proxy di alamat privat, termasuk jaringan bridge Docker.
+      TRUST_PROXY: ${TRUST_PROXY:-}
+      STOREFRONT_ENABLED: ${STOREFRONT_ENABLED:-0}
+    ports:
+      - "${ERP_PORT:-3001}:3001"
+    volumes:
+      - hij-data:/data
+      - hij-uploads:/app/uploads
+
+volumes:
+  hij-data-test:
+  hij-uploads-test:
+  hij-data:
+  hij-uploads:

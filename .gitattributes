@@ -1,0 +1,3 @@
+# Skrip yang dijalankan di dalam container Linux harus tetap LF di setiap clone.
+*.sh text eol=lf
+Dockerfile text eol=lf

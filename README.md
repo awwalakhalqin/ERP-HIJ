@@ -38,6 +38,58 @@ npm run dev:server            # API di :3001, dataset server/data
 npm run dev:client            # tampilan di :5173
 ```
 
+## Menjalankan dengan Docker
+
+Backend dan basis data berjalan di container; datanya tinggal di volume Docker,
+tidak pernah di dalam image (lihat `.dockerignore`). Penyimpanan tetap satu
+berkas SQLite — Docker tidak menambah server basis data.
+
+**Pengembangan** — API uji di container, tampilan di komputer sendiri:
+
+```bash
+npm run seed:test             # sekali: menyiapkan server/data-test/hij.db
+docker compose up -d api      # API di :3001, mode uji, kode server dimuat ulang otomatis
+npm run dev:client            # tampilan di http://localhost:5173 (proxy ke :3001)
+```
+
+Saat volume masih kosong, `hij.db` disalin sekali dari `server/data-test/` ke
+volume `hij-data-test`; setelah itu container memakai salinannya sendiri, jadi
+berkas di komputer tidak berubah. Mulai ulang dari salinan baru:
+`docker compose down -v && docker compose up -d api`.
+
+Lupa sandi admin di dataset uji? Reset di salinan volume saja:
+
+```bash
+docker compose stop api
+docker compose run --rm -T -e RESET_ADMIN_PASSWORD='minimal-12-karakter' api \
+  timeout 25 node node_modules/tsx/dist/cli.mjs server/index.ts
+docker compose up -d api
+```
+
+**Produksi** — tampilan dan API dalam satu image:
+
+```bash
+# .env di folder ini: AUTH_SECRET (wajib), ALLOWED_ORIGINS, opsional ERP_PORT
+docker compose --profile prod up -d --build
+docker compose logs -f erp
+```
+
+Data produksi ada di volume `apps-hij_hij-data` (`hij.db`) dan
+`apps-hij_hij-uploads` (foto desain). Server di container berjalan sebagai user
+`node` (uid 1000), jadi berkas yang dimasukkan ke volume harus milik uid itu.
+
+```bash
+# Memindahkan hij.db yang sudah ada, sekali, sebelum start pertama
+docker compose --profile prod stop erp
+docker run --rm -v apps-hij_hij-data:/data -v "$PWD":/in alpine \
+  sh -c "cp /in/hij.db /data/hij.db && chown 1000:1000 /data/hij.db"
+
+# Backup: salin keluar saat container berhenti, supaya salinannya pasti utuh
+docker run --rm -v apps-hij_hij-data:/data -v "$PWD":/out alpine cp /data/hij.db /out/
+```
+
+Jalankan hanya **satu** container `erp`: SQLite tidak dirancang untuk banyak proses.
+
 ## Tiga alamat, dua proyek
 
 | Alamat | Isi | Sumber |

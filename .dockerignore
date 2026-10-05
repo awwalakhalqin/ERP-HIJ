@@ -1,0 +1,31 @@
+# Isi konteks build. Yang tertulis di sini tidak pernah masuk ke image.
+
+# Data bisnis: nama pelanggan, harga, tagihan, hash sandi. Data hidup di volume,
+# bukan di image — image bisa dibagikan tanpa membawa data siapa pun.
+server/data/
+server/data-test/
+uploads/
+backups/
+*.db
+*.db-wal
+*.db-shm
+json-backup-*/
+KREDENSIAL-AWAL.md
+.env
+.env.*
+!.env.example
+
+# Dibuat ulang di dalam container
+node_modules/
+dist/
+dist-server/
+dev-dist/
+.vite/
+
+# Tidak dibutuhkan untuk menjalankan aplikasi
+.git/
+reference/
+deploy/
+*.log
+.DS_Store
+Thumbs.db
