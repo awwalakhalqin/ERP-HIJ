@@ -21,7 +21,8 @@ services:
       DATA_DIR: /data
       PORT: "3001"
       AUTH_SECRET: hij-docker-dev-secret-local-only
-      ALLOWED_ORIGINS: http://localhost:5173,http://localhost:5174
+      # Tampilan ERP (5173/5174) dan situs profil Compro-HIJ (3000, lacak pesanan).
+      ALLOWED_ORIGINS: http://localhost:5173,http://localhost:5174,http://localhost:3000
     ports:
       - "3001:3001"
     volumes:
