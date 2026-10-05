@@ -829,8 +829,8 @@ export const DesignSampleModule: React.FC = () => {
   const sortedDesigns = sortRows(designs, designSort, (design, key) => (design as any)[key]);
   const sortedSamples = sortRows(samples, sampleSort, (sample, key) => (sample as any)[key]);
 
-  const { pageRows: pagedDesigns, pagination: designPagination } = useTablePage(sortedDesigns);
-  const { pageRows: pagedSamples, pagination: samplePagination } = useTablePage(sortedSamples);
+  const { pageRows: pagedDesigns, pagination: designPagination } = useTablePage(sortedDesigns, 'designs');
+  const { pageRows: pagedSamples, pagination: samplePagination } = useTablePage(sortedSamples, 'designs.samples');
 
   const detailDesign = detailDesignId ? designs.find(d => d.id === detailDesignId) ?? null : null;
   const detailSample = detailSampleId ? samples.find(s => s.id === detailSampleId) ?? null : null;

@@ -301,7 +301,7 @@ export const CustomersModule: React.FC<CustomersModuleProps> = ({ onPreviewCusto
     }));
   }, [customers, searchQuery, statusFilter]);
 
-  const { pageRows: pagedCustomers, pagination } = useTablePage(filteredCustomers);
+  const { pageRows: pagedCustomers, pagination } = useTablePage(filteredCustomers, 'customers');
 
   const activeCount = useMemo(() => customers.filter(c => c.status === 'Active').length, [customers]);
   const totalLtv = useMemo(() => orders.reduce((sum, o) => sum + (Number(o.totalPrice) || 0), 0), [orders]);

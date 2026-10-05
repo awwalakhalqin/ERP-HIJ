@@ -97,7 +97,7 @@ export const ReturnsModule: React.FC = () => {
     String(c.defectCategory || '').toLowerCase().includes(query)
   ));
 
-  const { pageRows: pagedComplaints, pagination } = useTablePage(filteredComplaints);
+  const { pageRows: pagedComplaints, pagination } = useTablePage(filteredComplaints, 'returns');
 
   const openInvestigateFromDetail = (complaint: CustomerReturnComplaint) => {
     setDetailComplaint(null);

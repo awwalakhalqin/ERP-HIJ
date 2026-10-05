@@ -203,7 +203,7 @@ export const ShippingModule: React.FC = () => {
     (s.trackingNumber || '').toLowerCase().includes(query)
   ));
 
-  const { pageRows: pagedShipments, pagination } = useTablePage(filteredShipments);
+  const { pageRows: pagedShipments, pagination } = useTablePage(filteredShipments, 'shipping');
 
   const detailShipment = detailId ? shipments.find(s => s.id === detailId) ?? null : null;
   const detailStep = detailShipment ? NEXT_STEP[detailShipment.status] : undefined;

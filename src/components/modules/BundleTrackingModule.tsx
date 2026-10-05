@@ -334,7 +334,7 @@ export const BundleTrackingModule: React.FC = () => {
     return key === 'lastScan' ? lastScanAt(bundle) : (bundle as any)[key];
   });
 
-  const { pageRows: pagedBundles, pagination } = useTablePage(sortedBundles);
+  const { pageRows: pagedBundles, pagination } = useTablePage(sortedBundles, 'bundles');
 
   const isFiltering = searchQuery.trim() !== '' || stageFilter !== 'ALL';
 

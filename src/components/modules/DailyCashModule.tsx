@@ -256,7 +256,7 @@ export const DailyCashModule: React.FC = () => {
   const isFiltered =
     !!query || typeFilter !== 'ALL' || categoryFilter !== 'ALL' || statusFilter !== 'ALL' || payerFilter !== 'ALL' || !!dateFrom || !!dateTo;
 
-  const { pageRows, pagination } = useTablePage(filteredEntries);
+  const { pageRows, pagination } = useTablePage(filteredEntries, 'dailyCash.entries');
   const detailEntry = detailId ? entries.find(e => e.id === detailId) ?? null : null;
 
   // ------------------------------------------------------------ form

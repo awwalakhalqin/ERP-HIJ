@@ -350,7 +350,7 @@ export const HRPayrollModule: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [assignments, weekRange, spkById]);
 
-  const { pageRows: pagedRecap, pagination: recapPagination } = useTablePage(weeklyRecap.list);
+  const { pageRows: pagedRecap, pagination: recapPagination } = useTablePage(weeklyRecap.list, 'payroll.weeklyRecap');
 
   /** "SPK-ORD-019 · 45%" — id first, because that is what people track by. */
   const spkLabel = (spkId: string) => {
@@ -451,7 +451,7 @@ export const HRPayrollModule: React.FC = () => {
 
   const sortedOperators = newestFirst(operators);
 
-  const { pageRows: pagedOperators, pagination: operatorPagination } = useTablePage(sortedOperators);
+  const { pageRows: pagedOperators, pagination: operatorPagination } = useTablePage(sortedOperators, 'payroll.operators');
 
   return (
     <div className="space-y-6">

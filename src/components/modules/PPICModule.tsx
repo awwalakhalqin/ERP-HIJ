@@ -655,8 +655,8 @@ export const PPICModule: React.FC = () => {
     [filteredSpks, spkSort]
   );
 
-  const { pageRows: pagedAwaitingOrders, pagination: awaitingPagination } = useTablePage(awaitingOrders);
-  const { pageRows: pagedSpks, pagination: spkPagination } = useTablePage(sortedSpks);
+  const { pageRows: pagedAwaitingOrders, pagination: awaitingPagination } = useTablePage(awaitingOrders, 'ppic.awaitingOrders');
+  const { pageRows: pagedSpks, pagination: spkPagination } = useTablePage(sortedSpks, 'ppic.spk');
 
 
   /*

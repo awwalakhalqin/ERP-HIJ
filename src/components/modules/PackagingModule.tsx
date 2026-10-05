@@ -215,7 +215,7 @@ export const PackagingModule: React.FC = () => {
   // Every sortable column maps straight onto a stored field.
   const sortedSlips = sortRows(filteredSlips, sort, (slip, key) => (slip as any)[key]);
 
-  const { pageRows: pagedSlips, pagination } = useTablePage(sortedSlips);
+  const { pageRows: pagedSlips, pagination } = useTablePage(sortedSlips, 'packaging.slips');
 
   const isSearching = searchQuery.trim() !== '';
 

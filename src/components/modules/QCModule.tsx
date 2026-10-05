@@ -173,7 +173,7 @@ export const QCModule: React.FC = () => {
   );
   const reinspectCount = awaitingQc.filter(spk => !!latestReportFor(spk)).length;
 
-  const { pageRows: pagedAwaitingQc, pagination: awaitingPagination } = useTablePage(awaitingQc);
+  const { pageRows: pagedAwaitingQc, pagination: awaitingPagination } = useTablePage(awaitingQc, 'qc.awaiting');
 
   /** Opens the inspection form already pointed at this SPK. */
   const handleInspectSpk = (spkId: string) => {
@@ -281,7 +281,7 @@ export const QCModule: React.FC = () => {
     return matchesSearch && r.status === statusFilter;
   }));
 
-  const { pageRows: pagedReports, pagination: reportPagination } = useTablePage(filteredReports);
+  const { pageRows: pagedReports, pagination: reportPagination } = useTablePage(filteredReports, 'qc.reports');
 
   return (
     <div className="space-y-6">

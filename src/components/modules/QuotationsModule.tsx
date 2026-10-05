@@ -795,7 +795,7 @@ export const QuotationsModule: React.FC = () => {
     });
   }, [quotations, searchQuery, quoStageFilter, quotationSort]);
 
-  const { pageRows: pagedQuotations, pagination } = useTablePage(filteredQuotations);
+  const { pageRows: pagedQuotations, pagination } = useTablePage(filteredQuotations, 'quotations');
 
   /*
    * One number for the whole form. The summary card, the instalment editor, and

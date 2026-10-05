@@ -168,7 +168,7 @@ export const SewingModule: React.FC = () => {
     l.lineId.toLowerCase().includes(searchQuery.toLowerCase())
   ));
 
-  const { pageRows: pagedLogs, pagination } = useTablePage(filteredLogs);
+  const { pageRows: pagedLogs, pagination } = useTablePage(filteredLogs, 'sewing.logs');
 
   const isQualityOk = (log: SewingDailyLog) => log.spiCompliant && log.seamStrengthOk;
 

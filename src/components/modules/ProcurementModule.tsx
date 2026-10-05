@@ -234,7 +234,7 @@ export const ProcurementModule: React.FC = () => {
     return matchesSearch && matchesCategory && matchesProject;
   }));
 
-  const { pageRows: pagedItems, pagination } = useTablePage(filteredItems);
+  const { pageRows: pagedItems, pagination } = useTablePage(filteredItems, 'procurement');
 
   const isFiltered = searchQuery !== '' || categoryFilter !== 'ALL' || projectFilter !== 'ALL';
 

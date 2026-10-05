@@ -1040,7 +1040,7 @@ export const OrdersModule: React.FC = () => {
     });
   }, [orders, spkOrderIds, searchQuery, orderStageFilter, orderSort]);
 
-  const { pageRows: pagedOrders, pagination } = useTablePage(filteredOrders);
+  const { pageRows: pagedOrders, pagination } = useTablePage(filteredOrders, 'orders');
 
   // Order Counts
   const orderCounts = useMemo(() => {

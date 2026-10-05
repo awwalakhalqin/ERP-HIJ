@@ -480,8 +480,8 @@ export const FinanceModule: React.FC = () => {
     }));
   }, [payments, searchQuery, paymentMethodFilter]);
 
-  const { pageRows: pagedInvoices, pagination: invoicePagination } = useTablePage(filteredInvoices);
-  const { pageRows: pagedPayments, pagination: paymentPagination } = useTablePage(filteredPayments);
+  const { pageRows: pagedInvoices, pagination: invoicePagination } = useTablePage(filteredInvoices, 'finance.invoices');
+  const { pageRows: pagedPayments, pagination: paymentPagination } = useTablePage(filteredPayments, 'finance.payments');
 
   // Row detail records
   const detailInvoice = detailInvoiceId ? invoices.find(i => i.id === detailInvoiceId) ?? null : null;

@@ -220,8 +220,8 @@ export const RawMaterialModule: React.FC = () => {
     );
   }));
 
-  const { pageRows: pagedStockItems, pagination: stockPagination } = useTablePage(filteredStockItems);
-  const { pageRows: pagedOpnames, pagination: opnamePagination } = useTablePage(filteredOpnames);
+  const { pageRows: pagedStockItems, pagination: stockPagination } = useTablePage(filteredStockItems, 'warehouse.stock');
+  const { pageRows: pagedOpnames, pagination: opnamePagination } = useTablePage(filteredOpnames, 'warehouse.opname');
 
   const filteredReceipts = newestFirst(stockReceipts.filter(r => {
     const q = searchQuery.toLowerCase();
@@ -232,8 +232,8 @@ export const RawMaterialModule: React.FC = () => {
       String(r.entryId || '').toLowerCase().includes(q)
     );
   }));
-  const { pageRows: pagedReceipts, pagination: receiptPagination } = useTablePage(filteredReceipts);
-  const { pageRows: pagedRolls, pagination: rollPagination } = useTablePage(filteredRolls);
+  const { pageRows: pagedReceipts, pagination: receiptPagination } = useTablePage(filteredReceipts, 'warehouse.receipts');
+  const { pageRows: pagedRolls, pagination: rollPagination } = useTablePage(filteredRolls, 'warehouse.rolls');
 
   // --- Handlers: Accessories CRUD ---
   const handleOpenAdd = () => {

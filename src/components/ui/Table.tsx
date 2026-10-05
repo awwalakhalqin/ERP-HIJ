@@ -411,8 +411,13 @@ export const TableSkeletonRows: React.FC<{ columns: number; rows?: number }> = (
  *   const { pageRows, pagination } = useTablePage(filteredOrders);
  *   {pageRows.map(...)}
  *   <TablePagination {...pagination} />
+ *
+ * Jumlah baris per halaman dipilih sendiri oleh pengguna di bawah tabel:
+ * 10 (bawaan, supaya halaman tidak menumpuk), 50, atau 100 (batas atas —
+ * lebih dari itu tabel kembali lambat seperti sebelum ada paginasi).
  */
-export const TABLE_PAGE_SIZE = 50;
+export const TABLE_PAGE_SIZE_OPTIONS = [10, 50, 100] as const;
+export const TABLE_PAGE_SIZE = TABLE_PAGE_SIZE_OPTIONS[0];
 
 export interface TablePageInfo {
   page: number;
@@ -420,11 +425,32 @@ export interface TablePageInfo {
   total: number;
   from: number;
   to: number;
+  pageSize: number;
   onPageChange: (page: number) => void;
+  onPageSizeChange: (size: number) => void;
 }
 
-export function useTablePage<T>(rows: T[], pageSize = TABLE_PAGE_SIZE) {
+const PAGE_SIZE_STORAGE_PREFIX = 'hij_table_page_size:';
+
+/** The size this table was last left at on this device, or the default. */
+function readStoredPageSize(storageKey?: string): number {
+  if (!storageKey) return TABLE_PAGE_SIZE;
+  try {
+    const saved = Number(localStorage.getItem(PAGE_SIZE_STORAGE_PREFIX + storageKey));
+    return (TABLE_PAGE_SIZE_OPTIONS as readonly number[]).includes(saved) ? saved : TABLE_PAGE_SIZE;
+  } catch {
+    return TABLE_PAGE_SIZE;
+  }
+}
+
+/**
+ * @param storageKey Unique name for the table, e.g. "orders" or "ppic.spk". With
+ * it, the rows-per-page choice is remembered on this device per table; two
+ * tables on one page need two keys.
+ */
+export function useTablePage<T>(rows: T[], storageKey?: string) {
   const [page, setPage] = React.useState(1);
+  const [pageSize, setPageSize] = React.useState(() => readStoredPageSize(storageKey));
   const total = rows.length;
   const pageCount = Math.max(1, Math.ceil(total / pageSize));
 
@@ -441,6 +467,22 @@ export function useTablePage<T>(rows: T[], pageSize = TABLE_PAGE_SIZE) {
   const start = (current - 1) * pageSize;
   const pageRows = React.useMemo(() => rows.slice(start, start + pageSize), [rows, start, pageSize]);
 
+  /*
+   * Changing the size keeps the first row on screen in view: someone reading
+   * rows 41–50 who switches to 50 per page lands on 1–50, not on an unrelated
+   * page 5.
+   */
+  const changePageSize = React.useCallback((size: number) => {
+    setPageSize(size);
+    setPage(Math.floor(start / size) + 1);
+    if (!storageKey) return;
+    try {
+      localStorage.setItem(PAGE_SIZE_STORAGE_PREFIX + storageKey, String(size));
+    } catch {
+      // Storage refused (private mode): the choice holds until the page closes.
+    }
+  }, [start, storageKey]);
+
   return {
     pageRows,
     pagination: {
@@ -449,32 +491,65 @@ export function useTablePage<T>(rows: T[], pageSize = TABLE_PAGE_SIZE) {
       total,
       from: total === 0 ? 0 : start + 1,
       to: Math.min(start + pageSize, total),
-      onPageChange: setPage
+      pageSize,
+      onPageChange: setPage,
+      onPageSizeChange: changePageSize
     } as TablePageInfo
   };
 }
 
-/** Baris navigasi di bawah tabel. Tidak tampil kalau semuanya muat dalam satu halaman. */
+/*
+ * Baris navigasi di bawah tabel. Tidak tampil kalau isinya muat dalam ukuran
+ * terkecil (10 baris), karena pilihan apa pun menampilkan hal yang sama. Di atas
+ * itu selalu tampil — termasuk saat 50 atau 100 baris muat di satu halaman —
+ * supaya pengguna tetap bisa kembali ke 10.
+ */
 export const TablePagination: React.FC<TablePageInfo & { label?: string }> = ({
   page,
   pageCount,
   total,
   from,
   to,
+  pageSize,
   onPageChange,
+  onPageSizeChange,
   label = 'baris'
 }) => {
-  if (pageCount <= 1) return null;
+  if (total <= TABLE_PAGE_SIZE_OPTIONS[0]) return null;
   return (
     <nav
       aria-label="Navigasi halaman tabel"
       className="no-print flex flex-wrap items-center justify-between gap-3 border-t border-border px-4 py-3"
     >
-      <p className="text-xs text-muted-foreground tabular-nums" aria-live="polite">
-        Menampilkan <span className="font-semibold text-foreground">{from}</span>–
-        <span className="font-semibold text-foreground">{to}</span> dari{' '}
-        <span className="font-semibold text-foreground">{total}</span> {label}
-      </p>
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-muted-foreground">Tampilkan</span>
+          <div role="radiogroup" aria-label={`Jumlah ${label} per halaman`} className="inline-flex rounded-lg border border-border bg-white p-0.5">
+            {TABLE_PAGE_SIZE_OPTIONS.map(size => (
+              <button
+                key={size}
+                type="button"
+                role="radio"
+                aria-checked={pageSize === size}
+                onClick={() => onPageSizeChange(size)}
+                className={cn(
+                  'h-7 min-w-9 rounded-md px-2 text-xs font-semibold tabular-nums transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-teal',
+                  pageSize === size ? 'bg-brand-teal-dark text-white' : 'text-slate-600 hover:bg-muted hover:text-foreground'
+                )}
+              >
+                {size}
+              </button>
+            ))}
+          </div>
+          <span className="text-xs text-muted-foreground">{label}</span>
+        </div>
+        <p className="text-xs text-muted-foreground tabular-nums" aria-live="polite">
+          Menampilkan <span className="font-semibold text-foreground">{from}</span>–
+          <span className="font-semibold text-foreground">{to}</span> dari{' '}
+          <span className="font-semibold text-foreground">{total}</span> {label}
+        </p>
+      </div>
+      {pageCount > 1 && (
       <div className="flex items-center gap-1.5">
         <Button
           type="button"
@@ -500,6 +575,7 @@ export const TablePagination: React.FC<TablePageInfo & { label?: string }> = ({
           Berikutnya
         </Button>
       </div>
+      )}
     </nav>
   );
 };

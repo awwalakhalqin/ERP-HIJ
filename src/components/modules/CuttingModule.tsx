@@ -159,7 +159,7 @@ export const CuttingModule: React.FC = () => {
     b.operatorCutting.toLowerCase().includes(searchQuery.toLowerCase())
   ));
 
-  const { pageRows: pagedBatches, pagination } = useTablePage(filteredBatches);
+  const { pageRows: pagedBatches, pagination } = useTablePage(filteredBatches, 'cutting.batches');
 
   // Headline numbers shown in the modal footer while the operator types.
   const formPieces = Number(formData.totalPiecesCut) || 0;
