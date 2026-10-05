@@ -65,7 +65,6 @@ const ROLE_LABELS: Record<string, string> = {
 
 const roleLabel = (role?: string) => (role ? ROLE_LABELS[role] ?? role : '-');
 const moduleName = (id: string) => ALL_MODULES.find(m => m.id === id)?.label ?? id;
-const moduleSop = (id: string) => ALL_MODULES.find(m => m.id === id)?.sop ?? '';
 
 const hasFullAccess = (user: User) => !!user.allowedModules?.includes('*');
 
@@ -492,9 +491,8 @@ export const AccountsModule: React.FC = () => {
                   className="divide-y divide-border rounded-xl border border-border"
                 >
                   {(detailUser.allowedModules || []).map(m => (
-                    <li key={m} className="flex items-center justify-between gap-3 px-3 py-2 text-sm">
+                    <li key={m} className="px-3 py-2 text-sm">
                       <span className="min-w-0 break-words font-medium text-foreground">{moduleName(m)}</span>
-                      <span className="shrink-0 font-mono text-xs text-muted-foreground">{moduleSop(m)}</span>
                     </li>
                   ))}
                 </ul>

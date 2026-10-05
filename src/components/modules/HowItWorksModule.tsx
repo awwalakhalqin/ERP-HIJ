@@ -8,7 +8,8 @@ import {
   Ruler,
   ShieldCheck,
   Lock,
-  Sparkles
+  Sparkles,
+  NotebookPen
 } from 'lucide-react';
 import { SOPModule } from '../../types';
 import { REQUIREMENT_LABELS } from '../../lib/readiness';
@@ -168,7 +169,7 @@ const PHASES: FlowPhase[] = [
         moduleLabel: 'Pengiriman',
         who: 'Admin Gudang, Admin Ekspedisi',
         body: 'Buat Surat Jalan resmi dengan rincian koli, berat total, kurir, dan nomor resi. Cetak dokumen Surat Jalan resmi dengan tanda tangan dan stempel basah HIJ.',
-        note: 'Gerbang Anti-Skip: Surat Jalan terkunci dan tidak dapat diterbitkan jika pesanan belum memiliki hasil QC berstatus Accept.'
+        note: 'Gerbang Anti-Skip: Surat Jalan terkunci dan tidak dapat diterbitkan jika pesanan belum memiliki hasil QC berstatus Accept. Ongkir yang dibayar HIJ dicatat PJ di Catatan Keuangan Harian; yang belum dicatat diberi label di halaman Pengiriman.'
       }
     ]
   },
@@ -204,7 +205,50 @@ const SUPPORT: FlowStep[] = [
     moduleLabel: 'Penggajian',
     who: 'Admin HR, Kepala Produksi',
     body: 'Upah dihitung otomatis dari jumlah pcs yang lolos QC dikalikan tarif per potong. Termasuk bonus target 10% dan insentif kehadiran operator.'
+  },
+  {
+    title: 'Catatan Keuangan Harian',
+    sop: 'Kas',
+    module: 'DailyCash',
+    moduleLabel: 'Catatan Keuangan Harian',
+    who: 'PJ Catatan Harian (admin.dani); staf lain melihat',
+    body: 'Pengeluaran harian dicatat setelah nota diterima: ongkir, belanja stok gudang, dan kebutuhan lain. Talangan anggota tetap tercatat sampai diganti.',
+    note: 'Alurnya lengkap ada di bagian Catatan Keuangan Harian di bawah.'
   }
+];
+
+/*
+ * The daily cash book as the app enforces it: the PJ alone writes, a
+ * talangan stays owed until settled, and nothing is deleted.
+ */
+const DAILY_CASH_STEPS = [
+  'Anggota yang belanja memakai uang sendiri menyerahkan nota ke PJ (admin.dani).',
+  'PJ mengecek nota, lalu mencatatnya: jenis, barang, kategori, nominal, dan dibayar pakai Kas Kantor atau Ditalangi (dengan nama penalangnya).',
+  'Kas Kantor langsung tercatat Lunas. Ditalangi masuk daftar Belum Diganti, dikelompokkan per nama, dengan umur dihitung dari tanggal catatan dibuat.',
+  'Saat membayar, biasanya sore hari, PJ memilih penalang, mencentang catatan yang dibayar, memilih Transfer atau Tunai, lalu menandainya Lunas.',
+  'Pengeluaran bulan ini dan talangan yang belum diganti tampil di Dasbor untuk semua staf.'
+];
+
+const DAILY_CASH_TYPES_GUIDE = [
+  {
+    title: 'Pengiriman',
+    body: 'Pilih surat jalan yang ongkirnya dibayar HIJ. Pesanan terisi otomatis, satu surat jalan hanya bisa dicatat sekali, dan ongkir COD tidak bisa dicatat.'
+  },
+  {
+    title: 'Stok Gudang',
+    body: 'Pilih barang stok gudang dan jumlahnya. Stok langsung bertambah dan tercatat di Riwayat Stok Masuk; kategori mengikuti barangnya.'
+  },
+  {
+    title: 'Lainnya',
+    body: 'Untuk semua pengeluaran di luar pengiriman dan stok gudang. Barang dan kategori diketik sendiri, pesanan boleh diisi.'
+  }
+];
+
+const DAILY_CASH_RULES = [
+  'Hanya PJ yang bisa mencatat, mengubah, melunasi, dan membatalkan. Super Admin hanya bisa mengganti PJ.',
+  'Catatan tidak bisa dihapus. Pembatalan wajib alasan dan tetap tersimpan sebagai riwayat.',
+  'Talangan yang sudah lunas terkunci nominal, penalang, dan cara bayarnya. Untuk mengubahnya, kembalikan dulu ke Belum Diganti dengan alasan.',
+  'Nama penalang dicocokkan tanpa membedakan huruf besar/kecil dan spasi. Pilih dari saran nama supaya satu orang tidak tercatat dua kali.'
 ];
 
 const REQUIREMENT_ITEMS = [
@@ -270,13 +314,10 @@ export const HowItWorksModule: React.FC<HowItWorksProps> = ({ onNavigate, canOpe
         )}
 
         <div className="min-w-0 flex-1 pb-6">
-          <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-            <h3 className="text-base font-bold text-slate-900">
-              {stepNumber !== undefined && <span className="sr-only">Langkah {stepNumber}: </span>}
-              {step.title}
-            </h3>
-            <span className="text-xs text-slate-500">{step.sop}</span>
-          </div>
+          <h3 className="text-base font-bold text-slate-900">
+            {stepNumber !== undefined && <span className="sr-only">Langkah {stepNumber}: </span>}
+            {step.title}
+          </h3>
 
           <p className="mt-1.5 max-w-prose text-sm leading-relaxed text-slate-700">{step.body}</p>
           {step.note && <p className="mt-1.5 max-w-prose text-sm text-slate-500">{step.note}</p>}
@@ -311,7 +352,7 @@ export const HowItWorksModule: React.FC<HowItWorksProps> = ({ onNavigate, canOpe
     <div className="mx-auto max-w-4xl space-y-6">
       <PageHeader
         title="Panduan Alur"
-        description="Urutan kerja dari penawaran sampai pelunasan, sesuai SOP 01–20."
+        description="Urutan kerja dari penawaran sampai pelunasan."
       />
 
       {/* 6-STAGE ANTI-SKIP INTEGRITY HERO CARD */}
@@ -326,9 +367,6 @@ export const HowItWorksModule: React.FC<HowItWorksProps> = ({ onNavigate, canOpe
               <p className="text-xs text-teal-200/80">Jaminan mutu operasional garmen standar industri PT Hasil Inti Jualan</p>
             </div>
           </div>
-          <span className="rounded-full bg-teal-400/10 px-3 py-1 text-xs font-mono font-semibold text-teal-300 border border-teal-400/20">
-            SOP 01 - SOP 20
-          </span>
         </div>
 
         <div className="mt-5 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3.5">
@@ -474,6 +512,55 @@ export const HowItWorksModule: React.FC<HowItWorksProps> = ({ onNavigate, canOpe
         <p className="mb-5 mt-1 max-w-prose text-sm text-slate-500">Mendukung semua tahap di atas.</p>
         <ul role="list" className="grid grid-cols-1 gap-x-6 sm:grid-cols-2">
           {SUPPORT.map(step => renderStep(step))}
+        </ul>
+      </Card>
+
+      <Card className="p-5 sm:p-6">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h2 className={`flex items-center gap-2 ${sectionHeadingClass}`}>
+            <NotebookPen size={20} className="shrink-0 text-brand-teal-dark" aria-hidden="true" />
+            Catatan Keuangan Harian
+          </h2>
+          {canOpen('DailyCash') && (
+            <Button variant="link" onClick={() => onNavigate('DailyCash')} className="h-10 px-0">
+              Buka Catatan Keuangan Harian
+              <ArrowRight size={14} aria-hidden="true" />
+            </Button>
+          )}
+        </div>
+        <p className="mt-1 max-w-prose text-sm text-slate-500">
+          Supaya biaya yang ditalangi anggota tidak terlupa untuk diganti. Diisi satu PJ, dipantau semua staf.
+        </p>
+
+        <ol role="list" className="mt-4 space-y-1.5">
+          {DAILY_CASH_STEPS.map((step, i) => (
+            <li key={step} className="flex gap-2 text-sm text-slate-700">
+              <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-teal-50 text-[11px] font-bold text-brand-teal-dark tabular-nums" aria-hidden="true">
+                {i + 1}
+              </span>
+              <span>{step}</span>
+            </li>
+          ))}
+        </ol>
+
+        <h3 className="mt-5 text-sm font-bold text-slate-900">Tiga jenis catatan</h3>
+        <div className="mt-2 grid grid-cols-1 gap-3 md:grid-cols-3">
+          {DAILY_CASH_TYPES_GUIDE.map(type => (
+            <div key={type.title} className="rounded-xl border border-slate-200 p-4">
+              <p className="text-sm font-bold text-slate-900">{type.title}</p>
+              <p className="mt-1 text-sm text-slate-600">{type.body}</p>
+            </div>
+          ))}
+        </div>
+
+        <h3 className="mt-5 text-sm font-bold text-slate-900">Aturan yang dijaga sistem</h3>
+        <ul role="list" className="mt-2 space-y-1.5">
+          {DAILY_CASH_RULES.map(rule => (
+            <li key={rule} className="flex gap-2 text-sm text-slate-700">
+              <Lock size={14} className="mt-0.5 shrink-0 text-slate-400" aria-hidden="true" />
+              <span>{rule}</span>
+            </li>
+          ))}
         </ul>
       </Card>
 
