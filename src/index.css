@@ -1,6 +1,54 @@
 @import "tailwindcss";
 
+/*
+ * Same typefaces as the company profile (Compro-HIJ, app/layout.tsx): Geist for
+ * all text, headings carried by weight, and Geist Mono for numbers and codes.
+ * Bundled from @fontsource-variable rather than Google Fonts so the PWA has
+ * them offline on the factory floor. Only latin and latin-ext are declared —
+ * the other subsets would be precached onto every phone and never used.
+ */
+@font-face {
+  font-family: 'Geist Variable';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url('../node_modules/@fontsource-variable/geist/files/geist-latin-ext-wght-normal.woff2') format('woff2-variations');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: 'Geist Variable';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url('../node_modules/@fontsource-variable/geist/files/geist-latin-wght-normal.woff2') format('woff2-variations');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Geist Mono Variable';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url('../node_modules/@fontsource-variable/geist-mono/files/geist-mono-latin-ext-wght-normal.woff2') format('woff2-variations');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: 'Geist Mono Variable';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url('../node_modules/@fontsource-variable/geist-mono/files/geist-mono-latin-wght-normal.woff2') format('woff2-variations');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
 @theme {
+  /*
+   * `font-sans` / `font-mono` sit on <body> and the app root. Without these two
+   * tokens Tailwind fell back to its own system stacks, so the fonts linked in
+   * index.html were never downloaded and every device showed its own font.
+   */
+  --font-sans: 'Geist Variable', 'Geist', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'Geist Mono Variable', 'Geist Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace;
+
   /* Exact 5 brand colors from reference/Color Palete.png with visual dominance */
   /* 1. DOMINANT (>50% area): #2bb2b5 (Workshop Teal) */
   --color-brand-teal: #2bb2b5;
@@ -231,6 +279,10 @@
 
   /* Opaque row tint so a sticky column can inherit it and stay solid. */
   --color-row-hover: #f1fafa;
+
+  /* Workspace ground behind the white cards; the shell chrome stays pure white
+     so the content area reads as the one place that changes. */
+  --color-canvas: #f6f9f9;
 }
 
 :root {
@@ -292,11 +344,11 @@
   /* Diwariskan dari body — memakai selektor universal memaksa perhitungan gaya
      di setiap elemen tanpa hasil yang berbeda. */
   body {
-    font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+    font-family: var(--font-sans);
   }
-  
-  code, pre, .font-mono {
-    font-family: 'JetBrains Mono', monospace;
+
+  code, pre, kbd, .font-mono {
+    font-family: var(--font-mono);
   }
 
   body {
