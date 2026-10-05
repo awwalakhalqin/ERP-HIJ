@@ -1,41 +1,7 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { logoutApi, getAuthToken, AUTH_EXPIRED_EVENT } from './services/api';
 import { setAuthToken } from './services/api';
-import { MODULE_SECTIONS, OPEN_TO_ALL_MODULES } from './config/modules';
-import { 
-  LayoutDashboard, 
-  Users, 
-  ShoppingCart, 
-  Palette, 
-  CalendarClock,
-  ClipboardList, 
-  ShoppingBag, 
-  Layers, 
-  Scissors, 
-  QrCode, 
-  Component, 
-  CheckCircle2, 
-  Package, 
-  Warehouse, 
-  RotateCcw, 
-  Truck, 
-  Coins, 
-  CreditCard, 
-  UserCog, 
-  Menu, 
-  X, 
-  LogOut, 
-  ScanLine, 
-  ChevronRight,
-  ChevronDown,
-  User as UserIcon,
-  Shield,
-  FileSpreadsheet,
-  Clock,
-  BookOpen,
-  NotebookPen,
-  FileText
-} from 'lucide-react';
+import { ScanLine, ChevronsLeft } from 'lucide-react';
 import { SOPModule, AuthSession, User } from './types';
 import { db, syncOfflineQueue, clearCachedMirror } from './db/dexie';
 // Common Components
@@ -45,6 +11,15 @@ import { PWAInstallBanner } from './components/common/PWAInstallBanner';
 import { Modal } from './components/ui/Modal';
 import { Button } from './components/ui/Button';
 import { Toast, useToast } from './components/ui/Toast';
+// Application shell
+import { NAV_SECTIONS, ALL_NAV_ITEMS, canUserOpenModule, navItem, sectionOf } from './components/shell/nav';
+import { useWorkspaceSignals } from './components/shell/useWorkspaceSignals';
+import { ModuleSidebar } from './components/shell/ModuleSidebar';
+import { TopBar } from './components/shell/TopBar';
+import { ModuleTabs } from './components/shell/ModuleTabs';
+import { StatusBar } from './components/shell/StatusBar';
+import { AttentionPanel } from './components/shell/AttentionPanel';
+import { CommandPalette } from './components/shell/CommandPalette';
 const ScannerModal = React.lazy(() => import('./components/common/ScannerModal').then(m => ({ default: m.ScannerModal })));
 
 // Customer Portal (Code-Split)
@@ -92,69 +67,19 @@ const ModuleLoadingFallback: React.FC = () => (
   </div>
 );
 
-interface MenuItem {
-  id: SOPModule;
-  label: string;
-  sop?: string;
-  icon: React.ElementType;
-}
-
-interface MenuSection {
-  title: string;
-  items: MenuItem[];
-}
-
-/*
- * Names and grouping come from the shared catalogue; only the icons live here,
- * so the sidebar and the permissions screen can never disagree about what a
- * module is called.
- */
-const MODULE_ICONS: Record<string, MenuItem['icon']> = {
-  Dashboard: LayoutDashboard,
-  Customers: Users,
-  Designs: Palette,
-  Quotations: FileText,
-  Orders: ShoppingCart,
-  PPIC: ClipboardList,
-  Procurement: ShoppingBag,
-  RawMaterial: Layers,
-  PatternGrading: Scissors,
-  Cutting: Scissors,
-  BundleTracking: QrCode,
-  Sewing: Component,
-  QC: CheckCircle2,
-  Packaging: Package,
-  Shipping: Truck,
-  Returns: RotateCcw,
-  Finance: CreditCard,
-  HRPayroll: Coins,
-  Accounts: UserCog,
-  DailyCash: NotebookPen,
-  HowItWorks: BookOpen
-};
-
-const MENU_SECTIONS: MenuSection[] = MODULE_SECTIONS.map(section => ({
-  title: section.title,
-  items: section.items.map(item => ({ ...item, icon: MODULE_ICONS[item.id] }))
-}));
-
 /** Which page this tab was on, kept per tab so two tabs can sit on different pages. */
 const ACTIVE_MODULE_KEY = 'hij_active_module';
+/** The page tabs open in this browser tab. */
+const OPEN_TABS_KEY = 'hij_open_tabs';
+/** Whether the dashboard's attention column is shown; a per-device preference. */
+const ATTENTION_PANEL_KEY = 'hij_attention_panel';
+const MAX_TABS = 8;
 
-/*
- * The dashboard and the flow guide are open to everyone; every other module
- * follows the role's permissions. Written once here because both the sidebar
- * and the page restored after a reload have to agree on it.
- */
-const canUserOpenModule = (user: User | undefined, id: SOPModule) =>
-  !!user && (
-    user.role === 'Super Admin' ||
-    !!user.allowedModules?.includes('*') ||
-    id === 'Dashboard' ||
-    id === 'HowItWorks' ||
-    OPEN_TO_ALL_MODULES.includes(id) ||
-    !!user.allowedModules?.includes(id)
-  );
+const readStaffUser = (): User | undefined => {
+  const session = JSON.parse(localStorage.getItem('hij_auth_session') || 'null') as AuthSession | null;
+  // Only staff navigate these modules, and permissions may have changed since.
+  return session && session.type !== 'customer' ? session.user : undefined;
+};
 
 /*
  * Reopen the page the user was on. A reload should not cost them their place:
@@ -165,12 +90,30 @@ const restoreActiveModule = (): SOPModule => {
   try {
     const saved = sessionStorage.getItem(ACTIVE_MODULE_KEY) as SOPModule | null;
     if (!saved) return 'Dashboard';
-    const session = JSON.parse(localStorage.getItem('hij_auth_session') || 'null') as AuthSession | null;
-    // Only staff navigate these modules, and permissions may have changed since.
-    const user = session && session.type !== 'customer' ? session.user : undefined;
-    return canUserOpenModule(user, saved) ? saved : 'Dashboard';
+    return canUserOpenModule(readStaffUser(), saved) ? saved : 'Dashboard';
   } catch {
     return 'Dashboard';
+  }
+};
+
+const restoreOpenTabs = (): SOPModule[] => {
+  try {
+    const saved = JSON.parse(sessionStorage.getItem(OPEN_TABS_KEY) || '[]') as SOPModule[];
+    const user = readStaffUser();
+    const allowed = saved.filter(id => navItem(id) && id !== 'Dashboard' && canUserOpenModule(user, id));
+    return (['Dashboard', ...allowed] as SOPModule[]).slice(0, MAX_TABS);
+  } catch {
+    return ['Dashboard'];
+  }
+};
+
+const favoritesKey = (user?: User) => `hij_favorites_${user?.id || user?.username || 'anon'}`;
+
+const loadFavorites = (user?: User): SOPModule[] => {
+  try {
+    return JSON.parse(localStorage.getItem(favoritesKey(user)) || '[]');
+  } catch {
+    return [];
   }
 };
 
@@ -204,7 +147,18 @@ export const App: React.FC = () => {
 
   // Navigation state
   const [currentModule, setCurrentModule] = useState<SOPModule>(restoreActiveModule);
+  const [openTabs, setOpenTabs] = useState<SOPModule[]>(restoreOpenTabs);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [isPaletteOpen, setIsPaletteOpen] = useState(false);
+  /* The rail can show another section's menus without leaving the current page. */
+  const [railSection, setRailSection] = useState<string>(() => sectionOf(restoreActiveModule())?.title ?? NAV_SECTIONS[0].title);
+  const [showAttentionPanel, setShowAttentionPanel] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(ATTENTION_PANEL_KEY) !== '0';
+    } catch {
+      return true;
+    }
+  });
 
   /*
    * Which dataset the API behind this page is serving. Typing an afternoon of
@@ -212,17 +166,22 @@ export const App: React.FC = () => {
    * this guards against, so the answer is shown, not assumed.
    */
   const [serverMode, setServerMode] = useState<{ mode: string; dataDir: string } | null>(null);
-  useEffect(() => {
-    let cancelled = false;
+  const [serverOk, setServerOk] = useState<boolean | null>(null);
+  const checkHealth = useCallback(() => {
     // Plain fetch: /api/health needs no session, and a failure here is not a login problem.
-    fetch('/api/health')
+    return fetch('/api/health')
       .then(r => (r.ok ? r.json() : null))
       .then(d => {
-        if (!cancelled && d?.mode) setServerMode({ mode: d.mode, dataDir: d.dataDir });
+        setServerOk(!!d);
+        if (d?.mode) setServerMode({ mode: d.mode, dataDir: d.dataDir });
       })
-      .catch(() => {});
-    return () => { cancelled = true; };
+      .catch(() => setServerOk(false));
   }, []);
+  useEffect(() => {
+    checkHealth();
+    const id = setInterval(checkHealth, 60_000);
+    return () => clearInterval(id);
+  }, [checkHealth]);
 
   // Connectivity & Offline Queue State
   const [isOnline, setIsOnline] = useState(navigator.onLine);
@@ -235,38 +194,42 @@ export const App: React.FC = () => {
   const [isScannerOpen, setIsScannerOpen] = useState(false);
   const [scanNotification, setScanNotification] = useState<string | null>(null);
 
-  // User Account Dropdown & Profile Modal State
-  const [isAccountMenuOpen, setIsAccountMenuOpen] = useState(false);
   const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
-  const accountMenuRef = useRef<HTMLDivElement>(null);
   const mainRef = useRef<HTMLElement>(null);
 
-  // Click outside listener for Account Dropdown Menu
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (accountMenuRef.current && !accountMenuRef.current.contains(event.target as Node)) {
-        setIsAccountMenuOpen(false);
-      }
-    };
-    if (isAccountMenuOpen) {
-      document.addEventListener('mousedown', handleClickOutside);
-    }
-    return () => {
-      document.removeEventListener('mousedown', handleClickOutside);
-    };
-  }, [isAccountMenuOpen]);
+  const staffUser = session?.type === 'internal' ? session.user : undefined;
+  const isStaffSession = session?.type === 'internal';
 
-  // Escape closes the account menu and the mobile sidebar
+  // Favourite menus belong to the person, so they survive logout on a shared PC.
+  const [favorites, setFavorites] = useState<SOPModule[]>(() => loadFavorites(staffUser));
   useEffect(() => {
-    if (!isAccountMenuOpen && !isSidebarOpen) return;
+    setFavorites(loadFavorites(staffUser));
+  }, [staffUser?.id, staffUser?.username]);
+
+  const signals = useWorkspaceSignals(isStaffSession);
+
+  // Escape closes the mobile sidebar
+  useEffect(() => {
+    if (!isSidebarOpen) return;
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return;
-      setIsAccountMenuOpen(false);
-      setIsSidebarOpen(false);
+      if (event.key === 'Escape') setIsSidebarOpen(false);
     };
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [isAccountMenuOpen, isSidebarOpen]);
+  }, [isSidebarOpen]);
+
+  // Ctrl+K / ⌘K opens the search from anywhere in the ERP.
+  useEffect(() => {
+    if (!isStaffSession) return;
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        setIsPaletteOpen(open => !open);
+      }
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [isStaffSession]);
 
   // Each module opens at the top, with its name in the browser tab
   useEffect(() => {
@@ -276,15 +239,23 @@ export const App: React.FC = () => {
       // Private browsing can refuse storage; only the restore-after-reload is lost.
     }
     mainRef.current?.scrollTo({ top: 0 });
-    const item = MENU_SECTIONS.flatMap(section => section.items).find(i => i.id === currentModule);
-    const label = item?.label ?? (currentModule === 'HowItWorks' ? 'Panduan Alur' : null);
+    const label = navItem(currentModule)?.label ?? null;
     document.title = label ? `${label} · HIJ Konveksi` : 'HIJ Konveksi';
+    const section = sectionOf(currentModule);
+    if (section) setRailSection(section.title);
   }, [currentModule]);
+
+  useEffect(() => {
+    try {
+      sessionStorage.setItem(OPEN_TABS_KEY, JSON.stringify(openTabs));
+    } catch {
+      // Only the restore-after-reload is lost.
+    }
+  }, [openTabs]);
 
   const { toast, showToast } = useToast();
 
   // Network listener, queue counter, and replay of writes made while offline
-  const isStaffSession = session?.type === 'internal';
   useEffect(() => {
     let cancelled = false;
     let replaying = false;
@@ -327,6 +298,7 @@ export const App: React.FC = () => {
 
     const handleOnline = () => {
       setIsOnline(true);
+      checkHealth();
       replayQueue();
     };
     const handleOffline = () => setIsOnline(false);
@@ -344,7 +316,7 @@ export const App: React.FC = () => {
       window.removeEventListener('offline', handleOffline);
       clearInterval(interval);
     };
-  }, [isStaffSession, showToast]);
+  }, [isStaffSession, showToast, checkHealth]);
 
   /*
    * Rows mirrored in IndexedDB belong to whoever fetched them. When the session
@@ -355,9 +327,11 @@ export const App: React.FC = () => {
     localStorage.removeItem('hij_auth_session');
     try {
       sessionStorage.removeItem(ACTIVE_MODULE_KEY);
+      sessionStorage.removeItem(OPEN_TABS_KEY);
     } catch {
       // Nothing to clean up if storage is unavailable.
     }
+    setOpenTabs(['Dashboard']);
     clearCachedMirror().catch(() => {});
   };
 
@@ -369,6 +343,7 @@ export const App: React.FC = () => {
     } catch (err) {
       console.error('Storage error:', err);
     }
+    setOpenTabs(['Dashboard']);
     setCurrentModule('Dashboard');
   };
 
@@ -397,19 +372,72 @@ export const App: React.FC = () => {
     return () => window.removeEventListener(AUTH_EXPIRED_EVENT, onExpired);
   }, []);
 
+  const canOpenModule = useCallback((id: SOPModule) => canUserOpenModule(staffUser, id), [staffUser]);
+
   /*
-   * Every route into a module goes through here — sidebar, dashboard tiles,
-   * the scanner, the flow guide — so a hidden menu item cannot be reached
-   * through a side door, and the refusal reads the same everywhere.
+   * Every route into a module goes through here — sidebar, tabs, search,
+   * dashboard tiles, the scanner, the flow guide — so a hidden menu item cannot
+   * be reached through a side door, and the refusal reads the same everywhere.
    */
-  const staffUser = session?.type === 'internal' ? session.user : undefined;
-  const navigateTo = (module: SOPModule) => {
+  const navigateTo = useCallback((module: SOPModule) => {
     if (!canUserOpenModule(staffUser, module)) {
       showToast('Anda tidak punya akses ke menu ini', 'error');
       return;
     }
+    setOpenTabs(tabs => {
+      if (tabs.includes(module)) return tabs;
+      const next = [...tabs, module];
+      // Past the limit the oldest tab goes, never the dashboard.
+      while (next.length > MAX_TABS) next.splice(1, 1);
+      return next;
+    });
     setCurrentModule(module);
+  }, [staffUser, showToast]);
+
+  const closeTab = (module: SOPModule) => {
+    if (module === 'Dashboard') return;
+    const index = openTabs.indexOf(module);
+    const next = openTabs.filter(t => t !== module);
+    setOpenTabs(next.length ? next : ['Dashboard']);
+    // Closing the page in view lands on its left neighbour, as browsers do.
+    if (module === currentModule) setCurrentModule(next[Math.max(0, index - 1)] ?? 'Dashboard');
   };
+
+  const toggleFavorite = () => {
+    setFavorites(list => {
+      const next = list.includes(currentModule) ? list.filter(m => m !== currentModule) : [...list, currentModule];
+      try {
+        localStorage.setItem(favoritesKey(staffUser), JSON.stringify(next));
+      } catch {
+        // Favourites simply do not persist on this device.
+      }
+      return next;
+    });
+  };
+
+  const toggleAttentionPanel = (show: boolean) => {
+    setShowAttentionPanel(show);
+    try {
+      localStorage.setItem(ATTENTION_PANEL_KEY, show ? '1' : '0');
+    } catch {
+      // Preference is kept for this visit only.
+    }
+  };
+
+  const openScanner = useCallback(() => setIsScannerOpen(true), []);
+  const closePalette = useCallback(() => setIsPaletteOpen(false), []);
+
+  const permittedSections = useMemo(
+    () => NAV_SECTIONS
+      .map(section => ({ ...section, items: section.items.filter(item => canOpenModule(item.id)) }))
+      .filter(section => section.items.length > 0),
+    [canOpenModule]
+  );
+  const permittedItems = useMemo(() => ALL_NAV_ITEMS.filter(i => canOpenModule(i.id)), [canOpenModule]);
+  const favoriteItems = useMemo(
+    () => favorites.map(id => navItem(id)).filter(i => i && canOpenModule(i.id)) as typeof ALL_NAV_ITEMS,
+    [favorites, canOpenModule]
+  );
 
   const handlePreviewCustomer = (customer: any) => {
     if (session?.type === 'internal') {
@@ -485,9 +513,9 @@ export const App: React.FC = () => {
         {testModeBanner}
         <PWAInstallBanner />
         <React.Suspense fallback={<ModuleLoadingFallback />}>
-          <CustomerPortal 
-            customer={session.customer} 
-            onLogout={handleLogout} 
+          <CustomerPortal
+            customer={session.customer}
+            onLogout={handleLogout}
             onBackToStaff={previousStaffUser ? handleBackToStaff : undefined}
           />
         </React.Suspense>
@@ -497,15 +525,8 @@ export const App: React.FC = () => {
 
   // Internal Staff ERP
   const user = session.user;
-
-  const canOpenModule = (id: SOPModule) => canUserOpenModule(user, id);
   const canManageAccounts = canOpenModule('Accounts');
-
-  // Filter menu sections based on user role permissions
-  const filteredSections = MENU_SECTIONS.map(section => ({
-    ...section,
-    items: section.items.filter(item => canOpenModule(item.id))
-  })).filter(section => section.items.length > 0);
+  const isDashboard = currentModule === 'Dashboard';
 
   // Render current active module component
   const renderActiveModule = () => {
@@ -513,8 +534,9 @@ export const App: React.FC = () => {
       case 'Dashboard':
         return (
           <DashboardModule
+            userName={user.name}
             onNavigate={navigateTo}
-            onOpenScanner={() => setIsScannerOpen(true)}
+            onOpenScanner={openScanner}
           />
         );
       case 'Customers':
@@ -565,15 +587,16 @@ export const App: React.FC = () => {
       default:
         return (
           <DashboardModule
+            userName={user.name}
             onNavigate={navigateTo}
-            onOpenScanner={() => setIsScannerOpen(true)}
+            onOpenScanner={openScanner}
           />
         );
     }
   };
 
   return (
-    <div className="h-dvh bg-white flex flex-col overflow-hidden font-sans text-foreground antialiased">
+    <div className="h-dvh bg-canvas flex flex-col overflow-hidden font-sans text-foreground antialiased">
       <PWAInstallBanner />
 
       {/* Global Scan Toast Notification */}
@@ -588,219 +611,100 @@ export const App: React.FC = () => {
 
       {testModeBanner}
 
-      {/* Top Navbar (brand teal #2bb2b5; dark ink because the surface is light) */}
-      <header className="relative z-30 shrink-0 bg-brand-teal text-black border-b border-black/10 px-3 sm:px-4 py-2.5 flex items-center justify-between gap-3">
-        <div className="flex items-center gap-3">
-          <button
-            onClick={() => setIsSidebarOpen(!isSidebarOpen)}
-            className="size-10 inline-flex items-center justify-center rounded-xl text-black hover:bg-black/10 transition lg:hidden cursor-pointer"
-            aria-label={isSidebarOpen ? 'Tutup menu' : 'Buka menu'}
-            aria-expanded={isSidebarOpen}
-            aria-controls="app-sidebar"
-          >
-            {isSidebarOpen ? <X className="w-6 h-6" /> : <Menu className="w-6 h-6" />}
-          </button>
+      <TopBar
+        user={user}
+        isSidebarOpen={isSidebarOpen}
+        onToggleSidebar={() => setIsSidebarOpen(open => !open)}
+        onOpenSearch={() => setIsPaletteOpen(true)}
+        onOpenScanner={openScanner}
+        onOpenProfile={() => setIsProfileModalOpen(true)}
+        onNavigate={navigateTo}
+        onLogout={handleLogout}
+        canManageAccounts={canManageAccounts}
+        attention={signals.attention}
+        attentionTotal={signals.attentionTotal}
+      />
 
-          <div className="flex items-center gap-2.5 min-w-0">
-            <img
-              src="/logo.png"
-              alt="Logo PT Hasil Inti Jualan"
-              className="h-9 sm:h-10 w-auto object-contain bg-white p-1.5 rounded-xl border border-black/10 shrink-0"
-            />
-            <div className="min-w-0">
-              <div className="font-extrabold text-base leading-tight text-black tracking-wide">HIJ Konveksi</div>
-              <div className="text-xs text-black/70 font-semibold">PT Hasil Inti Jualan</div>
-            </div>
-          </div>
-        </div>
+      <div className="flex-1 min-h-0 flex">
+        <ModuleSidebar
+          sections={permittedSections}
+          activeSection={railSection}
+          onSelectSection={setRailSection}
+          currentModule={currentModule}
+          onNavigate={navigateTo}
+          favorites={favoriteItems}
+          badges={signals.badges}
+          userInitial={user.name ? user.name.charAt(0).toUpperCase() : 'U'}
+          userName={user.name}
+          onOpenProfile={() => setIsProfileModalOpen(true)}
+          onOpenGuide={() => navigateTo('HowItWorks')}
+          isOpen={isSidebarOpen}
+          onClose={() => setIsSidebarOpen(false)}
+        />
 
-        {/* Header Right Actions */}
-        <div className="flex items-center gap-2.5 sm:gap-3">
-          {/* Quick Scanner Button */}
-          <button
-            onClick={() => setIsScannerOpen(true)}
-            className="inline-flex h-10 items-center gap-1.5 px-3 bg-brand-teal-dark hover:bg-[#0e5662] text-white text-sm font-bold rounded-xl transition cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black"
-            aria-label="Scan QR"
-          >
-            <ScanLine className="w-4 h-4 text-white" aria-hidden="true" />
-            <span className="hidden md:inline">Scan QR</span>
-          </button>
+        <div className="flex min-w-0 flex-1 flex-col">
+          <ModuleTabs
+            tabs={openTabs}
+            current={currentModule}
+            onSelect={setCurrentModule}
+            onClose={closeTab}
+            isFavorite={favorites.includes(currentModule)}
+            onToggleFavorite={toggleFavorite}
+            onNewTab={() => setIsPaletteOpen(true)}
+          />
 
-          {/* User Account Dropdown Button */}
-          <div className="relative" ref={accountMenuRef}>
-            <button
-              onClick={() => setIsAccountMenuOpen(!isAccountMenuOpen)}
-              className="inline-flex h-10 items-center gap-2 pl-1.5 pr-2.5 bg-white hover:bg-teal-50 text-black rounded-xl transition cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black"
-              aria-expanded={isAccountMenuOpen}
-              aria-haspopup="true"
-              aria-label={`Menu akun ${user.name}`}
-            >
-              <div className="w-7 h-7 rounded-lg bg-teal-50 text-brand-teal-dark border border-teal-200 flex items-center justify-center font-bold text-xs shrink-0">
-                {user.name ? user.name.charAt(0).toUpperCase() : 'U'}
+          <div className="flex min-h-0 flex-1">
+            <main ref={mainRef} className="flex-1 min-w-0 overflow-y-auto overscroll-contain px-4 py-5 sm:p-6 lg:px-8 lg:py-7">
+              <div className="max-w-[1600px] mx-auto">
+                <React.Suspense fallback={<ModuleLoadingFallback />}>
+                  {renderActiveModule()}
+                </React.Suspense>
               </div>
-              <div className="text-left hidden sm:block">
-                <div className="text-xs font-bold text-black leading-tight truncate max-w-[140px]">{user.name}</div>
-                <div className="text-[10px] font-semibold text-brand-teal-dark leading-tight">{user.role}</div>
-              </div>
-              <ChevronDown aria-hidden="true" className={`w-3.5 h-3.5 text-black/70 transition-transform duration-200 ${isAccountMenuOpen ? 'rotate-180' : ''}`} />
-            </button>
+            </main>
 
-            {/* Dropdown Menu Popup */}
-            {isAccountMenuOpen && (
-              <div className="absolute right-0 top-full mt-2 w-72 max-w-[calc(100vw-1.5rem)] bg-white rounded-2xl border border-border shadow-diffusion-lg p-2 z-50 text-black">
-                {/* User Header Summary */}
-                <div className="p-3 bg-teal-50/60 rounded-xl border border-teal-200/70 mb-2">
-                  <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-xl bg-brand-teal text-black flex items-center justify-center font-extrabold text-base border border-brand-teal-dark/30 shadow-xs shrink-0">
-                      {user.name ? user.name.charAt(0).toUpperCase() : 'U'}
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <div className="font-bold text-sm text-black truncate">{user.name}</div>
-                      <div className="text-xs text-slate-500 font-mono truncate">@{user.username}</div>
-                    </div>
-                  </div>
-                  <div className="mt-2.5 pt-2 border-t border-teal-200/60 flex items-center justify-between">
-                    <span className="text-[11px] text-slate-600 font-medium">Peran Staff</span>
-                    <span className="px-2 py-0.5 rounded-md text-[11px] font-bold bg-brand-teal-dark text-white shadow-2xs">
-                      {user.role}
-                    </span>
-                  </div>
-                </div>
-
-                {/* Dropdown Navigation Actions */}
-                <div className="space-y-1 text-sm">
-                  <button
-                    onClick={() => {
-                      setIsAccountMenuOpen(false);
-                      setIsProfileModalOpen(true);
-                    }}
-                    className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-black hover:bg-teal-50 hover:text-brand-teal-dark transition-colors cursor-pointer text-left font-semibold"
-                  >
-                    <UserIcon size={16} className="text-brand-teal-dark" />
-                    <span>Profil Akun</span>
-                  </button>
-
-                  {canManageAccounts && (
-                    <button
-                      onClick={() => {
-                        setIsAccountMenuOpen(false);
-                        navigateTo('Accounts');
-                      }}
-                      className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-black hover:bg-teal-50 hover:text-brand-teal-dark transition-colors cursor-pointer text-left font-semibold"
-                    >
-                      <UserCog size={16} className="text-brand-teal-dark" />
-                      <span>Kelola Akun & Hak Akses</span>
-                    </button>
-                  )}
-
-                  <button
-                    onClick={() => {
-                      setIsAccountMenuOpen(false);
-                      navigateTo('HowItWorks');
-                    }}
-                    className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-black hover:bg-teal-50 hover:text-brand-teal-dark transition-colors cursor-pointer text-left font-semibold"
-                  >
-                    <BookOpen size={16} className="text-brand-teal-dark" />
-                    <span>Panduan Alur Kerja</span>
-                  </button>
-                </div>
-
-                {/* Hairline Divider */}
-                <div className="my-1.5 border-t border-border" />
-
-                {/* Logout Button */}
-                <button
-                  onClick={() => {
-                    setIsAccountMenuOpen(false);
-                    handleLogout();
-                  }}
-                  className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-brand-red hover:bg-rose-50 transition-colors cursor-pointer text-left font-bold text-sm"
-                >
-                  <LogOut size={16} className="text-brand-red" />
-                  <span>Keluar dari Sistem</span>
-                </button>
-              </div>
+            {isDashboard && showAttentionPanel && (
+              <AttentionPanel
+                attention={signals.attention}
+                loaded={signals.loaded}
+                canOpen={canOpenModule}
+                onNavigate={navigateTo}
+                onOpenScanner={openScanner}
+                onCollapse={() => toggleAttentionPanel(false)}
+              />
+            )}
+            {isDashboard && !showAttentionPanel && (
+              <button
+                type="button"
+                onClick={() => toggleAttentionPanel(true)}
+                title="Tampilkan panel perlu tindakan"
+                aria-label="Tampilkan panel perlu tindakan"
+                className="hidden xl:flex w-9 shrink-0 items-start justify-center border-l border-border bg-white pt-4 text-slate-400 hover:text-foreground cursor-pointer"
+              >
+                <ChevronsLeft size={16} />
+              </button>
             )}
           </div>
         </div>
-      </header>
-
-      {/* Body Container */}
-      <div className="flex-1 min-h-0 flex">
-        {/* Sidebar Overlay for Mobile */}
-        {isSidebarOpen && (
-          <div
-            onClick={() => setIsSidebarOpen(false)}
-            aria-hidden="true"
-            className="fixed inset-0 bg-black/50 z-40 lg:hidden"
-          />
-        )}
-
-        {/* Sidebar Navigation (white canvas; teal is reserved for the active item) */}
-        <aside
-          id="app-sidebar"
-          className={`fixed lg:static inset-y-0 left-0 z-40 w-72 lg:w-64 shrink-0 bg-white text-foreground border-r border-border flex flex-col transition-[translate,visibility] duration-200 ease-out ${
-            isSidebarOpen ? 'translate-x-0' : 'max-lg:invisible -translate-x-full lg:translate-x-0'
-          }`}
-        >
-          {/* Mobile Sidebar Close Button */}
-          <div className="p-4 flex items-center justify-between lg:hidden border-b border-border">
-            <span className="text-sm font-bold text-foreground">Menu</span>
-            <button
-              onClick={() => setIsSidebarOpen(false)}
-              className="size-10 inline-flex items-center justify-center text-muted-foreground hover:bg-muted hover:text-foreground rounded-lg cursor-pointer"
-              aria-label="Tutup menu"
-            >
-              <X className="w-5 h-5" />
-            </button>
-          </div>
-
-          {/* Navigation Links List */}
-          <nav aria-label="Menu modul" className="sidebar-scroll flex-1 overflow-y-auto overscroll-contain py-4 px-3 space-y-5">
-            {filteredSections.map((section) => (
-              <div key={section.title} className="space-y-0.5">
-                <div className="px-3 text-[11px] font-bold text-brand-teal-dark mb-1.5 uppercase tracking-wider">
-                  {section.title}
-                </div>
-                {section.items.map((item) => {
-                  const Icon = item.icon;
-                  const isActive = currentModule === item.id;
-
-                  return (
-                    <button
-                      key={item.id}
-                      onClick={() => {
-                        navigateTo(item.id);
-                        setIsSidebarOpen(false);
-                      }}
-                      aria-current={isActive ? 'page' : undefined}
-                      className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-sm transition cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-teal ${
-                        isActive
-                          ? 'bg-brand-teal text-black font-bold'
-                          : 'font-medium text-slate-700 hover:bg-muted hover:text-brand-teal-dark'
-                      }`}
-                    >
-                      <div className="flex items-center gap-2.5 truncate">
-                        <Icon aria-hidden="true" className={`w-4 h-4 shrink-0 ${isActive ? 'text-black' : 'text-brand-teal-dark'}`} />
-                        <span className="truncate">{item.label}</span>
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
-            ))}
-          </nav>
-        </aside>
-
-        {/* Main Content Area (Dominant Pure White Canvas) */}
-        <main ref={mainRef} className="flex-1 min-w-0 overflow-y-auto overscroll-contain px-4 py-5 sm:p-6 lg:p-8 bg-white">
-          <div className="max-w-[1600px] mx-auto">
-            <React.Suspense fallback={<ModuleLoadingFallback />}>
-              {renderActiveModule()}
-            </React.Suspense>
-          </div>
-        </main>
       </div>
+
+      <StatusBar
+        isOnline={isOnline}
+        serverOk={serverOk}
+        serverMode={serverMode?.mode}
+        pendingSyncCount={pendingSyncCount}
+        onOpenGuide={() => navigateTo('HowItWorks')}
+      />
+
+      <CommandPalette
+        isOpen={isPaletteOpen}
+        onClose={closePalette}
+        items={permittedItems}
+        orders={signals.orders}
+        spks={signals.spks}
+        canOpen={canOpenModule}
+        onNavigate={navigateTo}
+        onOpenScanner={openScanner}
+      />
 
       {/* Global Barcode / QR Scanner Modal (Loaded On Demand) */}
       {isScannerOpen && (
