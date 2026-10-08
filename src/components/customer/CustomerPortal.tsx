@@ -855,7 +855,7 @@ Mohon informasi ketersediaan slot antrean produksi dan penawaran invoice terbaru
                       <span className="font-semibold text-slate-900 whitespace-nowrap">{formatCurrency(activeInvoice?.amount || activeOrder?.totalPrice)}</span>
                     </div>
                     <div className="flex justify-between gap-3">
-                      <span className="text-slate-600">DP Diterima</span>
+                      <span className="text-slate-600">Sudah Dibayar</span>
                       <span className="font-semibold text-emerald-700 whitespace-nowrap">
                         -{formatCurrency(activeInvoice?.downPaymentReceived || activeOrder?.downPayment || 0)}
                       </span>
@@ -867,6 +867,36 @@ Mohon informasi ketersediaan slot antrean produksi dan penawaran invoice terbaru
                       </span>
                     </div>
                   </div>
+
+                  {/* INSTALMENTS: which one is being asked for now, and until when */}
+                  {(activeInvoice?.paymentSchedule || []).length > 0 && (
+                    <div className="space-y-2">
+                      <p className="text-sm font-semibold text-slate-900">Termin Pembayaran</p>
+                      <ul className="divide-y divide-slate-100 rounded-2xl border border-slate-100 text-sm">
+                        {(activeInvoice?.paymentSchedule || []).map(term => {
+                          const remaining = Math.max(0, (Number(term.amount) || 0) - (Number(term.paidAmount) || 0));
+                          const asked = !!term.billedAt && term.status !== 'Lunas';
+                          return (
+                            <li key={term.id} className="flex items-start justify-between gap-3 px-4 py-3">
+                              <div className="min-w-0">
+                                <p className="font-semibold text-slate-900">{term.label} {term.percentage}%</p>
+                                <p className="text-xs text-slate-500">
+                                  {term.status === 'Lunas'
+                                    ? 'Lunas'
+                                    : asked
+                                      ? `Ditagih${term.billNo ? ` (${term.billNo})` : ''}${term.dueDate ? ` · jatuh tempo ${formatDate(term.dueDate)}` : ''}`
+                                      : 'Belum ditagih'}
+                                </p>
+                              </div>
+                              <span className={`shrink-0 tabular-nums font-bold whitespace-nowrap ${term.status === 'Lunas' ? 'text-emerald-700' : asked ? 'text-rose-700' : 'text-slate-500'}`}>
+                                {formatCurrency(term.status === 'Lunas' ? term.amount : remaining)}
+                              </span>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    </div>
+                  )}
 
                   {/* PAYMENT ACCOUNT INFO */}
                   <div className="p-4 bg-teal-50/50 border border-teal-100 rounded-2xl text-sm space-y-3">

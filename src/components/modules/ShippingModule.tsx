@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { Truck, Search, Plus, Download, Printer, ExternalLink, CheckCircle2, ArrowRight } from 'lucide-react';
 import { Shipment, Order, QCReport, DailyCashEntry } from '../../types';
-import { fetchResource, createResource, updateResource } from '../../services/api';
+import { fetchResource, createResource, updateResource, uploadMedia } from '../../services/api';
+import { localDate } from '../../lib/terms';
 import { formatDate, formatDateTime, exportTableToExcel, generateId, formatCurrency, statusLabel } from '../../lib/utils';
 import { Badge, StatusBadge } from '../ui/Badge';
 import { Modal } from '../ui/Modal';
@@ -10,7 +11,7 @@ import { Card } from '../ui/Card';
 import { COMPANY_CONTACT } from '../../config/contact';
 import { Button } from '../ui/Button';
 import { Input } from '../ui/Input';
-import { FormError } from '../ui/Field';
+import { FormError, FieldHint } from '../ui/Field';
 import { Toast, useToast } from '../ui/Toast';
 import { PageHeader } from '../ui/PageHeader';
 import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell, TableRowActions, RowActionButton, TableEmptyRow, TableSkeletonRows, useTablePage, TablePagination } from '../ui/Table';
@@ -102,9 +103,65 @@ export const ShippingModule: React.FC = () => {
     loadData();
   }, []);
 
+  /*
+   * Bukti terima: who took the goods, when, and a photo of the signed surat
+   * jalan when there is one. Pelunasan is billed against this, so the server
+   * refuses "Sampai Tujuan" without a receiver.
+   */
+  const [deliveryFor, setDeliveryFor] = useState<Shipment | null>(null);
+  const [delivery, setDelivery] = useState({ receivedBy: '', receivedAt: localDate(), proofOfDeliveryUrl: '' });
+  const [deliveryError, setDeliveryError] = useState<string | null>(null);
+  const [uploadingProof, setUploadingProof] = useState(false);
+
+  const handleProofUpload = async (file?: File | null) => {
+    if (!file) return;
+    setDeliveryError(null);
+    setUploadingProof(true);
+    try {
+      const url = await uploadMedia(file);
+      setDelivery(prev => ({ ...prev, proofOfDeliveryUrl: url }));
+    } catch (err: any) {
+      setDeliveryError(err?.message || 'Foto bukti gagal diunggah. Coba lagi.');
+    } finally {
+      setUploadingProof(false);
+    }
+  };
+
+  const handleConfirmDelivery = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!deliveryFor) return;
+    if (!delivery.receivedBy.trim()) {
+      setDeliveryError('Isi nama penerima barang.');
+      return;
+    }
+    try {
+      setUpdatingId(deliveryFor.id);
+      setDeliveryError(null);
+      await updateResource<Shipment>('shipments', deliveryFor.id, {
+        status: 'Delivered',
+        receivedBy: delivery.receivedBy.trim(),
+        receivedAt: delivery.receivedAt,
+        ...(delivery.proofOfDeliveryUrl ? { proofOfDeliveryUrl: delivery.proofOfDeliveryUrl } : {})
+      });
+      showToast(`${deliveryFor.id}: diterima ${delivery.receivedBy.trim()}.`);
+      setDeliveryFor(null);
+      await loadData();
+    } catch (err: any) {
+      setDeliveryError(err?.message || 'Gagal menyimpan bukti terima. Coba lagi.');
+    } finally {
+      setUpdatingId(null);
+    }
+  };
+
   const handleAdvanceStatus = async (s: Shipment) => {
     const step = NEXT_STEP[s.status];
     if (!step) return;
+    if (step.next === 'Delivered') {
+      setDelivery({ receivedBy: s.receivedBy || '', receivedAt: localDate(), proofOfDeliveryUrl: s.proofOfDeliveryUrl || '' });
+      setDeliveryError(null);
+      setDeliveryFor(s);
+      return;
+    }
     try {
       setUpdatingId(s.id);
       setActionError(null);
@@ -417,6 +474,24 @@ export const ShippingModule: React.FC = () => {
                 <DetailField label="ID pelanggan" mono>{detailShipment.customerId}</DetailField>
                 <DetailField label="Alamat tujuan" full>{detailShipment.destinationAddress}</DetailField>
               </DetailSection>
+              {detailShipment.status === 'Delivered' && (
+                <DetailSection title="Bukti Terima">
+                  <DetailField label="Diterima oleh">{detailShipment.receivedBy || <Badge variant="warning" size="sm">Belum dicatat</Badge>}</DetailField>
+                  <DetailField label="Tanggal terima">{detailShipment.receivedAt && formatDate(detailShipment.receivedAt)}</DetailField>
+                  <DetailField label="Foto bukti" full>
+                    {detailShipment.proofOfDeliveryUrl ? (
+                      <a
+                        href={detailShipment.proofOfDeliveryUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center gap-1 text-teal-700 hover:underline"
+                      >
+                        <ExternalLink size={14} aria-hidden="true" /> Buka foto bukti terima
+                      </a>
+                    ) : undefined}
+                  </DetailField>
+                </DetailSection>
+              )}
               <DetailSection title="Ekspedisi">
                 <DetailField label="Kurir">{detailShipment.courier}</DetailField>
                 <DetailField label="Layanan">{detailShipment.serviceType}</DetailField>
@@ -698,6 +773,61 @@ export const ShippingModule: React.FC = () => {
             </div>
           </div>
         </div>
+      </Modal>
+
+      <Modal
+        isOpen={!!deliveryFor}
+        onClose={() => setDeliveryFor(null)}
+        title={`Barang sampai — ${deliveryFor?.id ?? ''}`}
+        subtitle="Bukti terima menjadi dasar penagihan pelunasan."
+        maxWidth="lg"
+      >
+        <form onSubmit={handleConfirmDelivery} className="space-y-5">
+          <FormError>{deliveryError}</FormError>
+          <div>
+            <label htmlFor="pod-receiver" className="block text-sm font-medium text-slate-700 mb-1.5">Nama penerima</label>
+            <Input
+              id="pod-receiver"
+              required
+              value={delivery.receivedBy}
+              onChange={e => setDelivery(prev => ({ ...prev, receivedBy: e.target.value }))}
+              placeholder="Mis. Pak Budi (bagian gudang)"
+            />
+          </div>
+          <div>
+            <label htmlFor="pod-date" className="block text-sm font-medium text-slate-700 mb-1.5">Tanggal diterima</label>
+            <Input
+              id="pod-date"
+              type="date"
+              required
+              value={delivery.receivedAt}
+              onChange={e => setDelivery(prev => ({ ...prev, receivedAt: e.target.value }))}
+            />
+          </div>
+          <div>
+            <label htmlFor="pod-photo" className="block text-sm font-medium text-slate-700 mb-1.5">Foto surat jalan bertanda tangan</label>
+            <input
+              id="pod-photo"
+              type="file"
+              accept="image/*"
+              onChange={e => handleProofUpload(e.target.files?.[0])}
+              className="block w-full text-sm text-slate-700 file:mr-3 file:rounded-lg file:border-0 file:bg-slate-100 file:px-3 file:py-2 file:text-sm file:font-semibold"
+            />
+            <FieldHint>
+              {uploadingProof
+                ? 'Mengunggah foto…'
+                : delivery.proofOfDeliveryUrl
+                  ? 'Foto terunggah.'
+                  : 'Opsional, tapi sangat dianjurkan bila pelanggan menyangkal sudah menerima barang.'}
+            </FieldHint>
+          </div>
+          <div className="flex justify-end gap-2 pt-4 border-t border-slate-100">
+            <Button type="button" variant="outline" onClick={() => setDeliveryFor(null)}>Batal</Button>
+            <Button type="submit" disabled={uploadingProof || updatingId === deliveryFor?.id}>
+              {updatingId === deliveryFor?.id ? 'Menyimpan…' : 'Tandai Sampai Tujuan'}
+            </Button>
+          </div>
+        </form>
       </Modal>
 
       <Toast toast={toast} />

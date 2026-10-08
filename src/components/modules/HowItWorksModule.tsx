@@ -177,13 +177,13 @@ const PHASES: FlowPhase[] = [
     title: 'Pelunasan & Garansi Purnajual',
     steps: [
       {
-        title: 'Faktur Pelunasan (End Payment)',
+        title: 'Faktur & Tagihan per Termin',
         sop: 'SOP 20',
         module: 'Finance',
         moduleLabel: 'Keuangan',
         who: 'Admin Keuangan',
-        body: 'Terbitkan Invoice resmi dengan rincian Termin 1 (DP 50%) dan Termin 2 (Pelunasan). Dilengkapi terbilang Rupiah dan rekening resmi PT Mandiri / BCA.',
-        note: 'Pengiriman barang memicu draf faktur pelunasan otomatis, dengan DP yang sudah dibayar langsung terpotong. Pesanan berstatus Selesai setelah barang diterima dan faktur lunas.'
+        body: 'Faktur terbit bersama pesanan, berisi termin yang disepakati di Surat Penawaran. Tiap termin punya tahap pemicu (saat deal, sampel disetujui, lolos QC, barang dikirim, atau barang diterima). Begitu tahapnya tercapai, termin berstatus Siap Ditagih; Keuangan menekan Tagih untuk memberi nomor tagihan (mis. INV-005/T2) lalu mencetaknya.',
+        note: 'Tagihan jatuh tempo 7 hari setelah ditagih; yang telat muncul di Umur Piutang dengan tombol pengingat WhatsApp, dan pelanggan yang menunggak tidak bisa memakai SPK jalur cepat tanpa persetujuan Owner. Pembayaran masuk otomatis ke termin terlama yang belum lunas dan bisa dicetak kwitansinya. Potongan dari pelanggan (PPh 23, biaya transfer, pembulatan) dicatat sebagai Potongan, bukan kas masuk. Kelebihan bayar dan uang dari pesanan batal menjadi Saldo Pelanggan untuk dikembalikan, dipindah ke faktur lain, atau (pesanan batal) dinyatakan hangus. Faktur dan pembayaran tidak bisa diedit langsung.'
       },
       {
         title: 'Retur & Garansi Kepuasan (RMA)',
@@ -268,13 +268,14 @@ const PURCHASE_PATTERNS = [
     title: 'Pola 1 — Pesanan baru lewat Surat Penawaran',
     when: 'Model, bahan, atau desain baru.',
     steps: [
-      'Surat Penawaran dibuat dan dikirim ke pelanggan.',
-      'Deal: pesanan terbentuk otomatis, DP wajib = termin pertama.',
-      'Pelanggan kirim bukti transfer lewat WhatsApp; PIC pesanan mencatat DP di Keuangan dan memverifikasinya.',
-      'Desain disetujui; sampel fisik bila diminta penawaran.',
+      'Desain dibuat dan di-ACC pelanggan lebih dulu (kancing, sablon, bordir menentukan harga). Model baru wajib desain baru; desain yang sama hanya untuk Repeat Order.',
+      'Surat Penawaran dibuat dari desain yang sudah ACC, lengkap dengan termin dan biaya sampel bila perlu sampel.',
+      'Deal: pesanan dan fakturnya terbentuk otomatis. Tanpa sampel, termin DP langsung siap ditagih.',
+      'Bila perlu sampel: tugas sampel terbentuk otomatis saat deal dan langsung dikerjakan tanpa menunggu DP. DP siap ditagih saat sampel dikirim. Biaya sampel gratis bila lanjut produksi, ditagih bila batal setelah sampel dibuat.',
+      'Pelanggan kirim bukti transfer DP lewat WhatsApp; PIC pesanan mencatatnya. Sampel di-ACC.',
       'SPK terbit, produksi, QC.',
-      'Surat jalan: draf faktur pelunasan otomatis, DP sudah terpotong.',
-      'Pelunasan diterima + barang sampai → pesanan Selesai.'
+      'Lolos QC dan surat jalan membuat termin berikutnya siap ditagih; Keuangan menagihnya dari Detail faktur.',
+      'Barang sampai: catat nama penerima (dan foto surat jalan bertanda tangan) → pelunasan diterima → pesanan Selesai.'
     ]
   },
   {
@@ -282,7 +283,7 @@ const PURCHASE_PATTERNS = [
     when: 'Pelanggan lama memesan ulang produk yang sama.',
     steps: [
       'Tambah Pesanan (Repeat Order) dari pesanan lamanya; ukuran & harga disalin.',
-      'Draf faktur dibuat otomatis — Keuangan memeriksa lalu mengirimnya.',
+      'Draf faktur dengan terminnya dibuat otomatis — Keuangan menagih tiap termin saat tahapnya tercapai.',
       'SPK jalur cepat: DP dan sampel tidak menahan, desain tetap harus disetujui.',
       'Produksi, QC, surat jalan.',
       'DP/pelunasan dicatat di Keuangan → pesanan Selesai saat lunas dan barang sampai.'

@@ -84,7 +84,8 @@ const WRITE_MODULES: Record<string, string[]> = {
 const READ_MODULES: Record<string, string[]> = {
   users: ['Accounts'],
   borongan_salary_slips: ['HRPayroll'],
-  store_settings: ['Accounts']
+  store_settings: ['Accounts'],
+  customer_credits: ['Finance', 'Orders']
 };
 
 /** Storefront and top-up tables: an admin-only area, whether or not it is switched on. */
@@ -98,7 +99,15 @@ const isAdminOnlyTable = (table: string) => ADMIN_ONLY_PREFIXES.some(prefix => t
  */
 const DEDICATED_TABLES: Record<string, string> = {
   daily_cash_entries: 'Catatan harian hanya bisa diubah PJ lewat menu Catatan Keuangan Harian.',
-  stock_receipts: 'Riwayat stok masuk dibuat otomatis dari Catatan Keuangan Harian.'
+  stock_receipts: 'Riwayat stok masuk dibuat otomatis dari Catatan Keuangan Harian.',
+  /*
+   * Money records change only through their own routes: an invoice by
+   * revision, a payment by verifying or voiding it. An edit here rewrote a
+   * total or a verified amount with no trace of what it was before.
+   */
+  invoices: 'Faktur tidak bisa diubah langsung. Ubah lewat Revisi Penawaran, tagih termin atau tandai terkirim dari menu Keuangan.',
+  payments: 'Pembayaran tidak bisa diubah langsung. Batalkan pembayaran yang salah lalu catat ulang dari menu Keuangan.',
+  customer_credits: 'Saldo pelanggan hanya berubah lewat pembayaran, pembatalan pesanan, atau tindakan saldo di menu Keuangan.'
 };
 
 export function writeBlockReason(user: any, table: string): string | null {

@@ -2,6 +2,7 @@ import React from 'react';
 import { Quotation, Customer } from '../../types';
 import { effectiveUnitPrice, isBelowMoq, parseSizeRows } from '../../lib/pricing';
 import { DocumentPage } from './DocumentPage';
+import { TERM_TRIGGER_LABELS, termTrigger } from '../../lib/terms';
 
 interface QuotationDocumentProps {
   id: string;
@@ -227,6 +228,14 @@ export const QuotationDocument: React.FC<QuotationDocumentProps> = ({ id, quotat
             <span className="font-bold">Sampel : </span>
             {quotation.needsSample ? 'Perlu sampel fisik sebelum produksi' : 'Tanpa sampel fisik'}
           </p>
+          {quotation.needsSample && (
+            <p className="mt-1">
+              <span className="font-bold">Biaya sampel : </span>
+              {Number(quotation.sampleFee) > 0
+                ? `Rp ${formatNumberId(quotation.sampleFee)}, gratis bila lanjut produksi; ditagih bila pesanan batal setelah sampel dibuat.`
+                : 'Gratis'}
+            </p>
+          )}
         </div>
 
         <div>
@@ -236,6 +245,7 @@ export const QuotationDocument: React.FC<QuotationDocumentProps> = ({ id, quotat
               <thead>
                 <tr className="bg-[#55b3b5] font-bold">
                   <th className={`${cellClass} text-left`}>TERMIN</th>
+                  <th className={`${cellClass} text-left`}>DITAGIH SAAT</th>
                   <th className={`${cellClass} text-right`}>%</th>
                   <th className={`${cellClass} text-right`}>JUMLAH (RP)</th>
                 </tr>
@@ -249,6 +259,7 @@ export const QuotationDocument: React.FC<QuotationDocumentProps> = ({ id, quotat
                       <td className={cellClass}>
                         {term.label || `Termin ${index + 1}`}
                       </td>
+                      <td className={cellClass}>{TERM_TRIGGER_LABELS[termTrigger(term, index, schedule.length)]}</td>
                       <td className={`${cellClass} text-right tabular-nums`}>{percentage}%</td>
                       <td className={`${cellClass} text-right tabular-nums`}>{formatNumberId(amount) || '-'}</td>
                     </tr>

@@ -11,17 +11,27 @@ import {
   Ban,
   ArrowDownLeft,
   ExternalLink,
-  Send
+  Send,
+  Receipt,
+  BellRing,
+  PiggyBank,
+  Clock,
+  Scissors
 } from 'lucide-react';
-import { Invoice, Payment, Order, Customer, PaymentTerm } from '../../types';
+import { Invoice, Payment, Order, Customer, PaymentTerm, TermStatus, CustomerCredit } from '../../types';
 import { fetchResource, updateResource, authFetch } from '../../services/api';
 import { cn, formatCurrency, formatDate, formatDateTime, statusLabel, exportTableToExcel, terbilangRupiah } from '../../lib/utils';
 import { getCurrentUser } from '../../lib/session';
-import { Badge, StatusBadge } from '../ui/Badge';
+import { Badge, StatusBadge, BadgeUrgency } from '../ui/Badge';
+import { TERM_TRIGGER_LABELS, termTrigger, termDaysLate, isCashIn, DEFAULT_TERM_DUE_DAYS } from '../../lib/terms';
+import { ReceiptDocument, receiptNumber } from '../documents/ReceiptDocument';
+import { AgingPanel } from './finance/AgingPanel';
+import { CreditsPanel } from './finance/CreditsPanel';
+import { DeductionModal } from './finance/DeductionModal';
+import { invoiceTerms, termBalance, overdueTagihan, reminderMessage, whatsappNumber } from './finance/shared';
 import { Modal } from '../ui/Modal';
 import { exportElementToPdf } from '../../services/pdfGenerator';
 import { InvoiceDocument } from '../documents/InvoiceDocument';
-import { withAmounts } from '../ui/PaymentTermsEditor';
 import { COMPANY_CONTACT } from '../../config/contact';
 import { Card } from '../ui/Card';
 import { Button } from '../ui/Button';
@@ -39,6 +49,28 @@ const labelClass = 'block text-sm font-medium text-slate-700 mb-1.5';
 const selectClass = 'w-full h-10 px-3 text-sm border border-slate-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-teal-600';
 const linkClass = 'inline-flex min-h-10 items-center gap-1.5 text-sm font-semibold text-brand-teal-dark underline underline-offset-4 hover:text-slate-900';
 
+/* An instalment's state, coloured by what finance has to do about it. */
+const TERM_STATUS_URGENCY: Record<TermStatus, BadgeUrgency> = {
+  Menunggu: 'idle',
+  'Siap Ditagih': 'warning',
+  Ditagih: 'progress',
+  Sebagian: 'warning',
+  Lunas: 'done'
+};
+
+const TermStatusBadge: React.FC<{ status?: TermStatus }> = ({ status }) =>
+  status ? <Badge variant={TERM_STATUS_URGENCY[status]} size="sm">{status}</Badge> : null;
+
+
+/** What is owed now: billed or due instalments, or the whole balance on an invoice without a schedule. */
+const dueNowOf = (inv: Invoice) => Number(inv.dueNow ?? inv.balanceRemaining) || 0;
+
+
+/** The instalment the next payment lands in: the oldest one not yet settled. */
+const openTerm = (inv?: Invoice | null) => invoiceTerms(inv).find(term => term.status !== 'Lunas');
+
+type FinanceTab = 'invoices' | 'payments' | 'aging' | 'credits';
+
 export const FinanceModule: React.FC = () => {
   const { toast, showToast } = useToast();
   const { confirm, ask, confirmDialog } = useConfirm();
@@ -48,7 +80,11 @@ export const FinanceModule: React.FC = () => {
   const [loading, setLoading] = useState(true);
 
   // Navigation & Filtering
-  const [activeTab, setActiveTab] = useState<'invoices' | 'payments'>('invoices');
+  const [activeTab, setActiveTab] = useState<FinanceTab>('invoices');
+  const [credits, setCredits] = useState<CustomerCredit[]>([]);
+  const [deductionInvoice, setDeductionInvoice] = useState<Invoice | null>(null);
+  const [receiptPayment, setReceiptPayment] = useState<Payment | null>(null);
+  const [isDownloadingReceipt, setIsDownloadingReceipt] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [invoiceStatusFilter, setInvoiceStatusFilter] = useState<'Semua' | 'Belum Bayar' | 'DP Dibayar' | 'Lunas'>('Semua');
   const [paymentMethodFilter, setPaymentMethodFilter] = useState<string>('Semua');
@@ -58,6 +94,8 @@ export const FinanceModule: React.FC = () => {
   const [isInvoiceModalOpen, setIsInvoiceModalOpen] = useState(false);
   const [isPrintModalOpen, setIsPrintModalOpen] = useState(false);
   const [printInvoice, setPrintInvoice] = useState<Invoice | null>(null);
+  /** Set when one instalment's tagihan is printed rather than the whole invoice. */
+  const [printTermId, setPrintTermId] = useState<string | null>(null);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [isDownloadingInvoice, setIsDownloadingInvoice] = useState(false);
   const [invoicePdfError, setInvoicePdfError] = useState<string | null>(null);
@@ -105,16 +143,18 @@ export const FinanceModule: React.FC = () => {
   const loadData = async () => {
     try {
       setLoading(true);
-      const [invRes, payRes, ordRes, custRes] = await Promise.all([
+      const [invRes, payRes, ordRes, custRes, creditRes] = await Promise.all([
         fetchResource<Invoice>('invoices'),
         fetchResource<Payment>('payments'),
         fetchResource<Order>('orders'),
-        fetchResource<Customer>('customers')
+        fetchResource<Customer>('customers'),
+        fetchResource<CustomerCredit>('customer_credits').catch(() => [] as CustomerCredit[])
       ]);
       setInvoices(invRes);
       setPayments(payRes);
       setOrders(ordRes);
       setCustomers(custRes || []);
+      setCredits(creditRes || []);
     } catch (err) {
       console.error('Error loading finance data:', err);
     } finally {
@@ -131,7 +171,9 @@ export const FinanceModule: React.FC = () => {
     setInvoicePdfError(null);
     setIsDownloadingInvoice(true);
     try {
-      await exportElementToPdf('invoice-doc', `Invoice_${printInvoice.id}`);
+      const printedTerm = printTermId ? invoiceTerms(printInvoice).find(t => t.id === printTermId) : undefined;
+      const fileName = printedTerm?.billNo ? `Tagihan_${printedTerm.billNo.replace(/\//g, '-')}` : `Invoice_${printInvoice.id}`;
+      await exportElementToPdf('invoice-doc', fileName);
     } catch (err) {
       setInvoicePdfError('PDF faktur gagal dibuat. Tutup pratinjau, lalu coba unduh lagi.');
     } finally {
@@ -181,12 +223,14 @@ export const FinanceModule: React.FC = () => {
   // Quick action: Open Catat Kas Masuk for a specific invoice
   const handleOpenPayForInvoice = (inv: Invoice) => {
     setPaymentFormError(null);
+    const term = openTerm(inv);
     setPaymentForm({
       invoiceId: inv.id,
       orderId: inv.orderId || '',
       customerId: inv.customerId || '',
       customerName: inv.customerName,
-      amount: inv.balanceRemaining > 0 ? inv.balanceRemaining : inv.total,
+      // The open instalment's remainder; the whole balance when there is no schedule.
+      amount: term ? termBalance(term) : inv.balanceRemaining > 0 ? inv.balanceRemaining : inv.total,
       type: (inv.status === 'DP Dibayar' || inv.downPaymentReceived > 0) ? 'Pelunasan' : 'DP',
       paymentMethod: '',
       date: new Date().toISOString().split('T')[0],
@@ -226,7 +270,10 @@ export const FinanceModule: React.FC = () => {
       selectedInvoiceBalance: inv?.balanceRemaining || 0
     };
 
-    if (next.type === 'DP' && ord.dpRequired !== undefined) {
+    const term = openTerm(inv);
+    if (term) {
+      next = { ...next, amount: termBalance(term) };
+    } else if (next.type === 'DP' && ord.dpRequired !== undefined) {
       next = { ...next, amount: Math.max(0, Number(ord.dpRequired) - (Number(ord.downPayment) || 0)) };
     } else if (inv) {
       next = { ...next, amount: inv.balanceRemaining > 0 ? inv.balanceRemaining : inv.total };
@@ -256,16 +303,116 @@ export const FinanceModule: React.FC = () => {
     });
     if (!approved) return;
     try {
-      await updateResource('invoices', inv.id, {
-        reviewStatus: 'Sent',
-        sentAt: new Date().toISOString(),
-        sentBy: getCurrentUser()?.name || 'Admin Keuangan'
-      });
+      const res = await authFetch(`/api/invoices/${inv.id}/mark-sent`, { method: 'POST' });
+      const data = await res.json().catch(() => ({} as any));
+      if (!res.ok) throw new Error(data.error || 'Gagal memperbarui faktur. Coba lagi.');
       await loadData();
       showToast(`Faktur ${inv.id} ditandai sudah dikirim ke pelanggan.`);
-    } catch (err) {
-      showToast('Gagal memperbarui faktur. Coba lagi.', 'error');
+    } catch (err: any) {
+      showToast(err?.message || 'Gagal memperbarui faktur. Coba lagi.', 'error');
     }
+  };
+
+  /*
+   * Bills one instalment. A due one only needs a confirmation; one whose
+   * milestone has not been reached needs a reason, which the server keeps.
+   * The tagihan opens for printing right after.
+   */
+  const handleBillTerm = async (inv: Invoice, term: PaymentTerm, index: number) => {
+    const terms = invoiceTerms(inv);
+    const trigger = TERM_TRIGGER_LABELS[termTrigger(term, index, terms.length)];
+    let reason = '';
+    if (term.readyAt) {
+      const approved = await confirm({
+        title: `Tagih ${term.label} sekarang?`,
+        message: `${term.label} sebesar ${formatCurrency(termBalance(term))} diberi nomor tagihan dan dicatat sudah ditagih ke ${inv.customerName}, jatuh tempo ${DEFAULT_TERM_DUE_DAYS} hari. Dokumen tagihannya langsung terbuka untuk dicetak.`,
+        confirmLabel: 'Tagih'
+      });
+      if (!approved) return;
+    } else {
+      const answer = await ask({
+        title: `Tagih ${term.label} lebih awal?`,
+        message: `${term.label} baru jatuh tagih saat "${trigger.toLowerCase()}", dan tahap itu belum tercapai.`,
+        inputLabel: 'Alasan ditagih lebih awal',
+        placeholder: 'Mis. diminta pelanggan untuk proses anggaran',
+        hint: 'Alasan ini tersimpan di termin sebagai jejak audit.',
+        confirmLabel: 'Tagih',
+        cancelLabel: 'Kembali',
+        required: true
+      });
+      if (answer === null) return;
+      reason = answer;
+    }
+    try {
+      const res = await authFetch(`/api/invoices/${inv.id}/terms/${encodeURIComponent(term.id)}/bill`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reason })
+      });
+      const data = await res.json().catch(() => ({} as any));
+      if (!res.ok) throw new Error(data.error || 'Gagal menagih termin. Coba lagi.');
+      await loadData();
+      showToast(data.message || `${term.label} ditagih.`);
+      setPrintInvoice(data.invoice);
+      setPrintTermId(term.id);
+      setIsPrintModalOpen(true);
+    } catch (err: any) {
+      showToast(err?.message || 'Gagal menagih termin. Coba lagi.', 'error');
+    }
+  };
+
+  /*
+   * Opens WhatsApp with a ready reminder for the customer, and logs it so the
+   * next person chasing the tagihan sees it was sent. Without a phone number
+   * on file the text is copied instead.
+   */
+  const handleRemind = async (inv: Invoice, term: PaymentTerm) => {
+    const customer = customers.find(c => c.id === inv.customerId);
+    const order = orders.find(o => o.id === inv.orderId);
+    const text = reminderMessage(inv, term, customer, order);
+    const phone = whatsappNumber(customer?.phone || customer?.contact);
+    // Open the window inside the click, before any await, or the browser blocks it.
+    const win = phone ? window.open(`https://wa.me/${phone}?text=${encodeURIComponent(text)}`, '_blank', 'noopener') : null;
+    if (!phone) {
+      try {
+        await navigator.clipboard.writeText(text);
+      } catch {
+        /* clipboard may be unavailable; the toast still says what to do */
+      }
+    }
+    try {
+      const res = await authFetch(`/api/invoices/${inv.id}/terms/${encodeURIComponent(term.id)}/remind`, { method: 'POST' });
+      const data = await res.json().catch(() => ({} as any));
+      if (!res.ok) throw new Error(data.error || 'Pengingat gagal dicatat.');
+      await loadData();
+      showToast(
+        phone
+          ? `Pengingat ${term.billNo || term.label} dibuka di WhatsApp dan dicatat.`
+          : `${inv.customerName} belum punya nomor WhatsApp. Teks pengingat disalin; tempel di chat pelanggan.`
+      );
+    } catch (err: any) {
+      win?.close();
+      showToast(err?.message || 'Pengingat gagal dicatat.', 'error');
+    }
+  };
+
+  const handleDownloadReceiptPdf = async () => {
+    if (!receiptPayment || isDownloadingReceipt) return;
+    setIsDownloadingReceipt(true);
+    try {
+      await exportElementToPdf('receipt-doc', `Kwitansi_${receiptNumber(receiptPayment)}`);
+    } catch {
+      showToast('PDF kwitansi gagal dibuat. Coba lagi.', 'error');
+    } finally {
+      setIsDownloadingReceipt(false);
+    }
+  };
+
+  const openPrint = (inv: Invoice, termId: string | null = null) => {
+    setInvoicePdfError(null);
+    setPrintInvoice(inv);
+    setPrintTermId(termId);
+    setIsPrintModalOpen(true);
   };
 
   // Submit Kas Masuk
@@ -365,13 +512,6 @@ export const FinanceModule: React.FC = () => {
   };
 
   // Create Invoice
-  /** The order's agreed installments, recalculated for this invoice total. */
-  const invoiceSchedule = (orderId?: string, total?: number): PaymentTerm[] => {
-    const order = orders.find(o => o.id === orderId);
-    if (!order?.paymentSchedule?.length) return [];
-    return withAmounts(order.paymentSchedule, Number(total) || 0);
-  };
-
   const handleCreateInvoice = async (e: React.FormEvent) => {
     e.preventDefault();
     setInvoiceFormError(null);
@@ -383,18 +523,14 @@ export const FinanceModule: React.FC = () => {
     try {
       setSubmitting(true);
       const invPayload = {
-        orderId: newInvoice.orderId || 'ORD-GEN',
-        customerId: newInvoice.customerId || 'CUST-GEN',
+        // An order's invoice takes the order's total and instalments on the server.
+        orderId: newInvoice.orderId || '',
+        customerId: newInvoice.customerId || '',
         customerName: newInvoice.customerName || 'Klien',
         amount: Number(newInvoice.amount) || Number(newInvoice.total) || 0,
         tax: Number(newInvoice.tax) || 0,
         total: Number(newInvoice.total) || 0,
-        downPaymentReceived: Number(newInvoice.downPaymentReceived) || 0,
-        balanceRemaining: Math.max(0, (Number(newInvoice.total) || 0) - (Number(newInvoice.downPaymentReceived) || 0)),
-        status: newInvoice.status || 'Belum Bayar',
-        notes: newInvoice.notes || 'Faktur pesanan konveksi',
-        // Installments agreed on the quotation, restated against this invoice total
-        paymentSchedule: invoiceSchedule(newInvoice.orderId, Number(newInvoice.total) || 0)
+        notes: newInvoice.notes || 'Faktur pesanan konveksi'
       };
 
       const res = await authFetch('/api/invoices', {
@@ -431,13 +567,27 @@ export const FinanceModule: React.FC = () => {
 
   const totalKasMasuk = useMemo(() => {
     return payments
-      .filter(p => p.status === 'Verified')
+      .filter(isCashIn)
       .reduce((acc, p) => acc + (Number(p.amount) || 0), 0);
   }, [payments]);
 
-  const totalPiutang = useMemo(() => {
-    return liveInvoices.reduce((acc, i) => acc + (Number(i.balanceRemaining) || 0), 0);
-  }, [liveInvoices]);
+  // Owed now: billed or due instalments. Instalments still waiting on production are not piutang yet.
+  const totalPiutang = useMemo(() => liveInvoices.reduce((acc, i) => acc + dueNowOf(i), 0), [liveInvoices]);
+  const notYetDue = useMemo(
+    () => liveInvoices.reduce((acc, i) => acc + Math.max(0, (Number(i.balanceRemaining) || 0) - dueNowOf(i)), 0),
+    [liveInvoices]
+  );
+
+  /* Instalments whose milestone is reached but that nobody has billed yet. */
+  const readyTerms = useMemo(
+    () =>
+      liveInvoices.flatMap(inv =>
+        invoiceTerms(inv)
+          .filter(term => term.status === 'Siap Ditagih')
+          .map(term => ({ inv, term }))
+      ),
+    [liveInvoices]
+  );
 
   const draftInvoiceCount = useMemo(() => liveInvoices.filter(i => i.reviewStatus === 'Draft').length, [liveInvoices]);
 
@@ -496,8 +646,12 @@ export const FinanceModule: React.FC = () => {
     ? invoices.find(i => i.id === detailPayment.invoiceId)
     : undefined;
 
-  const unpaidInvoiceCount = liveInvoices.filter(i => (Number(i.balanceRemaining) > 0 || i.status !== 'Lunas')).length;
-  const verifiedPaymentCount = payments.filter(p => p.status === 'Verified').length;
+  const unpaidInvoiceCount = liveInvoices.filter(i => dueNowOf(i) > 0).length;
+  const paymentInvoice = invoices.find(i => i.id === paymentForm.invoiceId);
+  const paymentLanding = openTerm(paymentInvoice);
+  const verifiedPaymentCount = payments.filter(isCashIn).length;
+  const overdue = overdueTagihan(invoices);
+  const openCredits = credits.filter(c => c.status === 'Terbuka');
 
   return (
     <div className="space-y-6">
@@ -534,6 +688,67 @@ export const FinanceModule: React.FC = () => {
         </div>
       )}
 
+      {/* INSTALMENTS DUE BUT NOT BILLED */}
+      {readyTerms.length > 0 && (
+        <div className="p-4 bg-status-warning-bg border border-status-warning-border rounded-xl flex items-start gap-3" role="status">
+          <Receipt size={20} className="text-status-warning shrink-0" aria-hidden="true" />
+          <div className="min-w-0 text-sm text-status-warning text-pretty">
+            <p>
+              <span className="font-bold">{readyTerms.length} termin sudah jatuh tagih tapi belum ditagih.</span>{' '}
+              Tagih dari Detail faktur supaya nomor tagihannya tercatat.
+            </p>
+            <ul className="mt-2 flex flex-wrap gap-2">
+              {readyTerms.slice(0, 6).map(({ inv, term }) => (
+                <li key={`${inv.id}-${term.id}`}>
+                  <button
+                    type="button"
+                    onClick={() => setDetailInvoiceId(inv.id)}
+                    className="inline-flex min-h-8 items-center gap-1.5 rounded-lg border border-status-warning-border bg-white px-2.5 text-xs font-semibold text-slate-800 hover:bg-slate-50"
+                  >
+                    <span className="font-mono">{inv.id}</span> · {term.label} · {formatCurrency(termBalance(term))}
+                  </button>
+                </li>
+              ))}
+              {readyTerms.length > 6 && (
+                <li className="self-center text-xs">+{readyTerms.length - 6} lainnya</li>
+              )}
+            </ul>
+          </div>
+        </div>
+      )}
+
+      {/* OVERDUE TAGIHAN & SALDO PELANGGAN */}
+      {(overdue.length > 0 || openCredits.length > 0) && (
+        <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+          {overdue.length > 0 && (
+            <button
+              type="button"
+              onClick={() => setActiveTab('aging')}
+              className="flex items-start gap-3 rounded-xl border border-status-critical-border bg-status-critical-bg p-4 text-left hover:brightness-[0.98]"
+            >
+              <Clock size={20} className="mt-0.5 shrink-0 text-status-critical" aria-hidden="true" />
+              <span className="text-sm text-status-critical text-pretty">
+                <span className="font-bold">{overdue.length} tagihan lewat jatuh tempo</span>, total{' '}
+                {formatCurrency(overdue.reduce((sum, row) => sum + termBalance(row.term), 0))}. Buka Umur Piutang untuk mengingatkan pelanggan.
+              </span>
+            </button>
+          )}
+          {openCredits.length > 0 && (
+            <button
+              type="button"
+              onClick={() => setActiveTab('credits')}
+              className="flex items-start gap-3 rounded-xl border border-status-warning-border bg-status-warning-bg p-4 text-left hover:brightness-[0.98]"
+            >
+              <PiggyBank size={20} className="mt-0.5 shrink-0 text-status-warning" aria-hidden="true" />
+              <span className="text-sm text-status-warning text-pretty">
+                <span className="font-bold">{openCredits.length} saldo pelanggan belum ditindaklanjuti</span>, total{' '}
+                {formatCurrency(openCredits.reduce((sum, c) => sum + (Number(c.remaining) || 0), 0))}. Kembalikan, pindahkan, atau nyatakan hangus.
+              </span>
+            </button>
+          )}
+        </div>
+      )}
+
       {/* SUMMARY — one compact strip: stacked rows on phones, three columns from sm */}
       <Card className="grid grid-cols-1 divide-y divide-border sm:grid-cols-3 sm:divide-y-0 sm:divide-x">
         {/* Kas Masuk */}
@@ -547,14 +762,16 @@ export const FinanceModule: React.FC = () => {
           </p>
         </div>
 
-        {/* Sisa Tagihan */}
+        {/* Jatuh Tagih: billed or due instalments still unpaid */}
         <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 px-4 py-3 sm:grid-cols-1 sm:items-start sm:py-4">
-          <p className="text-sm font-medium text-slate-600">Sisa Tagihan</p>
+          <p className="text-sm font-medium text-slate-600">Jatuh Tagih</p>
           <p className="row-span-2 text-base font-bold text-status-warning tabular-nums whitespace-nowrap sm:row-span-1 sm:mt-1 sm:text-lg xl:text-2xl">
             {formatCurrency(totalPiutang)}
           </p>
           <div className="flex flex-wrap items-center gap-1.5 sm:mt-1">
-            <span className="text-xs text-slate-500">{unpaidInvoiceCount} faktur belum lunas</span>
+            <span className="text-xs text-slate-500">
+              {unpaidInvoiceCount} faktur · {formatCurrency(notYetDue)} belum jatuh tagih
+            </span>
           </div>
         </div>
 
@@ -574,7 +791,7 @@ export const FinanceModule: React.FC = () => {
       <Card className="overflow-hidden">
         {/* Tab Header Bar */}
         <div className="flex flex-col md:flex-row md:items-center justify-between border-b border-slate-100 p-4 gap-4">
-          <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as 'invoices' | 'payments')}>
+          <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as FinanceTab)}>
             <TabsList aria-label="Data keuangan">
               <TabsTrigger
                 value="invoices"
@@ -600,10 +817,31 @@ export const FinanceModule: React.FC = () => {
                   {payments.length}
                 </Badge>
               </TabsTrigger>
+              <TabsTrigger
+                value="aging"
+                id="fin-tab-aging"
+                aria-controls={activeTab === 'aging' ? 'fin-panel-aging' : undefined}
+                className="gap-2"
+              >
+                <Clock size={16} aria-hidden="true" />
+                <span>Umur Piutang</span>
+                {overdue.length > 0 && <Badge variant="critical" size="sm">{overdue.length}</Badge>}
+              </TabsTrigger>
+              <TabsTrigger
+                value="credits"
+                id="fin-tab-credits"
+                aria-controls={activeTab === 'credits' ? 'fin-panel-credits' : undefined}
+                className="gap-2"
+              >
+                <PiggyBank size={16} aria-hidden="true" />
+                <span>Saldo Pelanggan</span>
+                {openCredits.length > 0 && <Badge variant="warning" size="sm">{openCredits.length}</Badge>}
+              </TabsTrigger>
             </TabsList>
           </Tabs>
 
           {/* Search Bar */}
+          {(activeTab === 'invoices' || activeTab === 'payments') && (
           <div className="relative w-full md:w-96">
             <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" aria-hidden="true" />
             <Input
@@ -615,7 +853,27 @@ export const FinanceModule: React.FC = () => {
               className="pl-9"
             />
           </div>
+          )}
         </div>
+
+        {activeTab === 'aging' && (
+          <div role="tabpanel" id="fin-panel-aging" aria-labelledby="fin-tab-aging" className="py-4">
+            <AgingPanel invoices={invoices} onOpenInvoice={setDetailInvoiceId} onRemind={handleRemind} />
+          </div>
+        )}
+
+        {activeTab === 'credits' && (
+          <div role="tabpanel" id="fin-panel-credits" aria-labelledby="fin-tab-credits">
+            <CreditsPanel
+              credits={credits}
+              invoices={invoices}
+              onChanged={async message => {
+                await loadData();
+                showToast(message);
+              }}
+            />
+          </div>
+        )}
 
         {/* TAB 1: INVOICES */}
         {activeTab === 'invoices' && (
@@ -646,6 +904,7 @@ export const FinanceModule: React.FC = () => {
                   <TableHead className="hidden md:table-cell">Pelanggan</TableHead>
                   <TableHead className="hidden sm:table-cell text-right tabular-nums">Total</TableHead>
                   <TableHead className="hidden sm:table-cell text-right tabular-nums">Sisa Tagihan</TableHead>
+                  <TableHead className="hidden lg:table-cell">Termin</TableHead>
                   <TableHead className="hidden 2xl:table-cell">Pemeriksaan</TableHead>
                   <TableHead className="text-center">Status</TableHead>
                   <TableHead className="cell-sticky-end text-right">Aksi</TableHead>
@@ -653,10 +912,10 @@ export const FinanceModule: React.FC = () => {
               </TableHeader>
               <TableBody>
                 {loading && invoices.length === 0 ? (
-                  <TableSkeletonRows columns={8} />
+                  <TableSkeletonRows columns={9} />
                 ) : filteredInvoices.length === 0 ? (
                   <TableEmptyRow
-                    colSpan={8}
+                    colSpan={9}
                     icon={<FileText size={20} />}
                     title={invoices.length === 0 ? 'Belum ada faktur' : 'Tidak ada faktur yang cocok'}
                     description={
@@ -730,6 +989,28 @@ export const FinanceModule: React.FC = () => {
                           >
                             {formatCurrency(inv.balanceRemaining || 0)}
                           </span>
+                        </TableCell>
+
+                        {/* Termin: how many are settled, and the one that needs finance next */}
+                        <TableCell className="hidden lg:table-cell whitespace-nowrap">
+                          {(() => {
+                            const terms = invoiceTerms(inv);
+                            if (terms.length === 0) return <span className="text-slate-400">—</span>;
+                            const settled = terms.filter(t => t.status === 'Lunas').length;
+                            const next = inv.supersededBy
+                              ? undefined
+                              : terms.find(t => t.status === 'Siap Ditagih') || terms.find(t => t.status !== 'Lunas');
+                            return (
+                              <span className="inline-flex items-center gap-1.5">
+                                <span className="tabular-nums text-slate-600">{settled}/{terms.length} lunas</span>
+                                {next && (
+                                  <Badge variant={TERM_STATUS_URGENCY[next.status || 'Menunggu']} size="sm">
+                                    {next.label}: {next.status || 'Menunggu'}
+                                  </Badge>
+                                )}
+                              </span>
+                            );
+                          })()}
                         </TableCell>
 
                         {/* Pemeriksaan */}
@@ -839,6 +1120,9 @@ export const FinanceModule: React.FC = () => {
                       {/* Jumlah */}
                       <TableCell className="hidden sm:table-cell text-right tabular-nums font-bold text-status-done whitespace-nowrap">
                         {formatCurrency(pay.amount)}
+                        {pay.adjustmentType && (
+                          <Badge variant="idle" size="sm" className="ml-1.5 align-middle">{pay.adjustmentType}</Badge>
+                        )}
                       </TableCell>
 
                       {/* Tanggal */}
@@ -917,12 +1201,14 @@ export const FinanceModule: React.FC = () => {
                   <Send size={16} aria-hidden="true" /> Tandai Sudah Dikirim
                 </Button>
               )}
-              <Button
-                variant="outline"
-                onClick={() => { setPrintInvoice(detailInvoice); setIsPrintModalOpen(true); }}
-              >
-                <Printer size={16} aria-hidden="true" /> Cetak
+              <Button variant="outline" onClick={() => openPrint(detailInvoice)}>
+                <Printer size={16} aria-hidden="true" /> Cetak Faktur
               </Button>
+              {Number(detailInvoice.balanceRemaining) > 0 && !detailInvoice.supersededBy && (
+                <Button variant="outline" onClick={() => setDeductionInvoice(detailInvoice)}>
+                  <Scissors size={16} aria-hidden="true" /> Potongan
+                </Button>
+              )}
               {Number(detailInvoice.balanceRemaining) > 0 && (
                 <Button onClick={() => handleOpenPayForInvoice(detailInvoice)}>
                   <ArrowDownLeft size={16} aria-hidden="true" /> Bayar
@@ -939,12 +1225,90 @@ export const FinanceModule: React.FC = () => {
                 { label: 'Total tagihan', value: formatCurrency(detailInvoice.total) },
                 { label: 'Sudah dibayar', value: formatCurrency(detailInvoice.downPaymentReceived || 0) },
                 {
-                  label: 'Sisa tagihan',
-                  value: formatCurrency(detailInvoice.balanceRemaining || 0),
-                  tone: Number(detailInvoice.balanceRemaining) > 0 ? 'danger' : 'default'
+                  label: 'Jatuh tagih',
+                  value: formatCurrency(dueNowOf(detailInvoice)),
+                  tone: dueNowOf(detailInvoice) > 0 ? 'danger' : 'default'
                 }
               ]}
             />
+            {invoiceTerms(detailInvoice).length > 0 && (
+              <DetailBlock title="Termin Pembayaran">
+                <ul className="divide-y divide-border rounded-xl border border-border">
+                  {invoiceTerms(detailInvoice).map((term, index, all) => {
+                    const trigger = TERM_TRIGGER_LABELS[termTrigger(term, index, all.length)];
+                    const live = !detailInvoice.supersededBy;
+                    const canBill = live && !term.billedAt && term.status !== 'Lunas';
+                    return (
+                      <li key={term.id} className="space-y-2 px-3 py-2.5">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="text-sm font-semibold text-foreground">
+                              {term.label} {term.percentage}%
+                            </p>
+                            <p className="mt-0.5 text-xs text-muted-foreground break-words">
+                              Ditagih saat {trigger.toLowerCase()}
+                              {term.billNo && <> · <span className="font-mono">{term.billNo}</span></>}
+                              {term.billedAt && <> · ditagih {formatDate(term.billedAt)}{term.billedBy ? ` oleh ${term.billedBy}` : ''}</>}
+                              {term.dueDate && term.status !== 'Lunas' && <> · jatuh tempo {formatDate(term.dueDate)}</>}
+                            </p>
+                            {termDaysLate(term) > 0 && (
+                              <p className="mt-1">
+                                <Badge variant="critical" size="sm">Telat {termDaysLate(term)} hari</Badge>
+                                {(term.reminders || []).length > 0 && (
+                                  <span className="ml-1.5 text-xs text-muted-foreground">
+                                    diingatkan {(term.reminders || []).length}× · terakhir {formatDate(term.reminders![term.reminders!.length - 1].at)}
+                                  </span>
+                                )}
+                              </p>
+                            )}
+                            {term.billedEarlyReason && (
+                              <p className="mt-0.5 text-xs text-muted-foreground break-words">
+                                Ditagih lebih awal: {term.billedEarlyReason}
+                              </p>
+                            )}
+                          </div>
+                          <div className="shrink-0 text-right">
+                            <p className="text-sm font-bold text-foreground tabular-nums whitespace-nowrap">{formatCurrency(term.amount)}</p>
+                            {Number(term.paidAmount) > 0 && term.status !== 'Lunas' && (
+                              <p className="text-xs text-muted-foreground tabular-nums whitespace-nowrap">
+                                dibayar {formatCurrency(term.paidAmount || 0)}
+                              </p>
+                            )}
+                            <div className="mt-1">
+                              <TermStatusBadge status={term.status} />
+                            </div>
+                          </div>
+                        </div>
+                        {(canBill || term.billNo) && (
+                          <div className="flex flex-wrap justify-end gap-2">
+                            {live && term.billedAt && term.status !== 'Lunas' && (
+                              <Button size="sm" variant="outline" onClick={() => handleRemind(detailInvoice, term)}>
+                                <BellRing size={14} aria-hidden="true" /> Ingatkan
+                              </Button>
+                            )}
+                            {canBill && (
+                              <Button
+                                size="sm"
+                                variant={term.readyAt ? 'default' : 'outline'}
+                                onClick={() => handleBillTerm(detailInvoice, term, index)}
+                              >
+                                <Receipt size={14} aria-hidden="true" />
+                                {term.readyAt ? 'Tagih' : 'Tagih Lebih Awal'}
+                              </Button>
+                            )}
+                            {term.billNo && (
+                              <Button size="sm" variant="outline" onClick={() => openPrint(detailInvoice, term.id)}>
+                                <Printer size={14} aria-hidden="true" /> Cetak Tagihan
+                              </Button>
+                            )}
+                          </div>
+                        )}
+                      </li>
+                    );
+                  })}
+                </ul>
+              </DetailBlock>
+            )}
             <DetailSection title="Faktur">
               <DetailField label="No. faktur" mono>{detailInvoice.id}</DetailField>
               <DetailField label="Pesanan" mono>{detailInvoice.orderId}</DetailField>
@@ -983,7 +1347,7 @@ export const FinanceModule: React.FC = () => {
                       <div className="min-w-0">
                         <p className="font-mono text-[13px] font-medium text-foreground">{p.id}</p>
                         <p className="mt-0.5 text-xs text-muted-foreground break-words">
-                          {formatDate(p.date)} · {p.type} · {p.paymentMethod || p.bankAccount || '-'}
+                          {formatDate(p.date)} · {p.termLabel || p.type} · {p.paymentMethod || p.bankAccount || '-'}
                         </p>
                       </div>
                       <div className="shrink-0 text-right">
@@ -1020,10 +1384,19 @@ export const FinanceModule: React.FC = () => {
         }
         status={detailPayment && <StatusBadge status={detailPayment.status} />}
         footer={
-          detailPayment && detailPayment.status !== 'Verified' && (
-            <Button onClick={() => handleVerifyPayment(detailPayment.id)}>
-              <Check size={16} aria-hidden="true" /> Verifikasi
-            </Button>
+          detailPayment && (
+            <>
+              {isCashIn(detailPayment) && (
+                <Button variant="outline" onClick={() => setReceiptPayment(detailPayment)}>
+                  <Printer size={16} aria-hidden="true" /> Cetak Kwitansi
+                </Button>
+              )}
+              {detailPayment.status !== 'Verified' && detailPayment.status !== 'Rejected' && (
+                <Button onClick={() => handleVerifyPayment(detailPayment.id)}>
+                  <Check size={16} aria-hidden="true" /> Verifikasi
+                </Button>
+              )}
+            </>
           )
         }
       >
@@ -1054,7 +1427,15 @@ export const FinanceModule: React.FC = () => {
               <DetailField label="ID pelanggan" mono>{detailPayment.customerId}</DetailField>
             </DetailSection>
             <DetailSection title="Jenis & Metode">
-              <DetailField label="Jenis">{detailPayment.type}</DetailField>
+              <DetailField label="Jenis">
+                {detailPayment.adjustmentType ? `${detailPayment.adjustmentType} (bukan kas masuk)` : detailPayment.type}
+              </DetailField>
+              <DetailField label="Termin">{detailPayment.termLabel}</DetailField>
+              {detailPayment.adjustmentType && (
+                <DetailField label={detailPayment.adjustmentType === 'PPh 23' ? 'No. bukti potong' : 'Referensi'} mono>
+                  {detailPayment.reference || (detailPayment.adjustmentType === 'PPh 23' ? 'Belum diterima' : undefined)}
+                </DetailField>
+              )}
               <DetailField label="Tanggal diterima">{detailPayment.date && formatDate(detailPayment.date)}</DetailField>
               <DetailField label="Metode">{detailPayment.paymentMethod}</DetailField>
               <DetailField label="Rekening">{detailPayment.bankAccount}</DetailField>
@@ -1183,7 +1564,7 @@ export const FinanceModule: React.FC = () => {
             >
               <option value="">Pilih faktur (opsional)</option>
               {/* A replaced revision is not payable; its successor is listed instead. */}
-              {liveInvoices.map(inv => (
+              {liveInvoices.filter(inv => inv.status !== 'Dibatalkan').map(inv => (
                 <option key={inv.id} value={inv.id}>
                   {inv.id} - {inv.customerName} (Sisa: {formatCurrency(inv.balanceRemaining)})
                 </option>
@@ -1235,7 +1616,27 @@ export const FinanceModule: React.FC = () => {
               placeholder="0"
               className="font-bold tabular-nums text-base text-status-done"
             />
-            {paymentForm.selectedInvoiceBalance > 0 && (
+            {paymentForm.selectedInvoiceBalance > 0 && paymentLanding && (
+              <div className="flex flex-wrap items-center gap-2 mt-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setPaymentForm({ ...paymentForm, amount: termBalance(paymentLanding) })}
+                >
+                  Bayar {paymentLanding.label} ({formatCurrency(termBalance(paymentLanding))})
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setPaymentForm({ ...paymentForm, amount: paymentForm.selectedInvoiceBalance })}
+                >
+                  Lunasi Sisa ({formatCurrency(paymentForm.selectedInvoiceBalance)})
+                </Button>
+              </div>
+            )}
+            {paymentForm.selectedInvoiceBalance > 0 && !paymentLanding && (
               <div className="flex flex-wrap items-center gap-2 mt-2">
                 <Button
                   type="button"
@@ -1259,6 +1660,17 @@ export const FinanceModule: React.FC = () => {
 
           {/* Jenis Pembayaran & Metode */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            {paymentLanding ? (
+              /* With a schedule the money lands in the oldest unsettled instalment; nothing to choose. */
+              <div>
+                <p className={labelClass}>Masuk ke Termin</p>
+                <div className="flex min-h-10 items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 text-sm">
+                  <span className="font-semibold text-slate-900">{paymentLanding.label}</span>
+                  <span className="text-slate-500 tabular-nums">sisa {formatCurrency(termBalance(paymentLanding))}</span>
+                </div>
+                <p className="mt-1.5 text-xs text-slate-500">Kelebihan dihitung ke termin berikutnya.</p>
+              </div>
+            ) : (
             <div>
               <label htmlFor="fin-pay-type" className={labelClass}>Jenis Pembayaran</label>
               <select
@@ -1272,6 +1684,7 @@ export const FinanceModule: React.FC = () => {
                 <option value="Cicilan">Cicilan</option>
               </select>
             </div>
+            )}
             <div>
               <label htmlFor="fin-pay-method" className={labelClass}>Metode Pembayaran</label>
               <select
@@ -1357,9 +1770,10 @@ export const FinanceModule: React.FC = () => {
                     amount: total,
                     total: total,
                     downPaymentReceived: dp,
-                    balanceRemaining: Math.max(0, total - dp),
-                    status: dp >= total ? 'Lunas' : (dp > 0 ? 'DP Dibayar' : 'Belum Bayar')
+                    balanceRemaining: Math.max(0, total - dp)
                   });
+                } else {
+                  setNewInvoice({ ...newInvoice, orderId: '', downPaymentReceived: 0, balanceRemaining: Number(newInvoice.total) || 0 });
                 }
               }}
               className={selectClass}
@@ -1397,6 +1811,8 @@ export const FinanceModule: React.FC = () => {
                 type="number"
                 required
                 min={0}
+                readOnly={!!newInvoice.orderId}
+                aria-describedby={newInvoice.orderId ? 'fin-inv-total-hint' : undefined}
                 value={newInvoice.total || ''}
                 onChange={(e) => {
                   const tot = Number(e.target.value);
@@ -1410,25 +1826,18 @@ export const FinanceModule: React.FC = () => {
                 }}
                 className="tabular-nums font-bold text-slate-900"
               />
+              {newInvoice.orderId && (
+                <p id="fin-inv-total-hint" className="text-xs text-slate-500 mt-1.5">
+                  Mengikuti nilai pesanan dan termin yang disepakati.
+                </p>
+              )}
             </div>
+            {/* Paid amounts come from recorded payments, never from this form. */}
             <div>
-              <label htmlFor="fin-inv-dp" className={labelClass}>DP Diterima (Rp)</label>
-              <Input
-                id="fin-inv-dp"
-                type="number"
-                min={0}
-                value={newInvoice.downPaymentReceived || ''}
-                onChange={(e) => {
-                  const dp = Number(e.target.value);
-                  const tot = Number(newInvoice.total) || 0;
-                  setNewInvoice({
-                    ...newInvoice,
-                    downPaymentReceived: dp,
-                    balanceRemaining: Math.max(0, tot - dp)
-                  });
-                }}
-                className="tabular-nums font-bold text-status-done"
-              />
+              <p className={labelClass}>Sudah Dibayar</p>
+              <p className="flex h-10 items-center rounded-lg border border-slate-200 bg-slate-50 px-3 text-sm font-bold tabular-nums text-status-done">
+                {formatCurrency(newInvoice.downPaymentReceived || 0)}
+              </p>
             </div>
           </div>
 
@@ -1470,7 +1879,11 @@ export const FinanceModule: React.FC = () => {
       <Modal
         isOpen={isPrintModalOpen}
         onClose={() => setIsPrintModalOpen(false)}
-        title={`Faktur ${printInvoice?.id ?? ''}`}
+        title={
+          printTermId
+            ? `Tagihan ${invoiceTerms(printInvoice).find(t => t.id === printTermId)?.billNo ?? ''}`
+            : `Faktur ${printInvoice?.id ?? ''}`
+        }
         subtitle="Dokumen A4 resmi di atas kop surat HIJ."
         maxWidth="4xl"
         footer={
@@ -1495,9 +1908,53 @@ export const FinanceModule: React.FC = () => {
                   invoice={printInvoice}
                   order={orders.find(o => o.id === printInvoice.orderId)}
                   customer={customers.find(c => c.id === printInvoice.customerId)}
+                  termId={printTermId || undefined}
                 />
               )}
             </div>
+          </div>
+        </div>
+      </Modal>
+
+      <DeductionModal
+        invoice={deductionInvoice}
+        onClose={() => setDeductionInvoice(null)}
+        onSaved={async message => {
+          await loadData();
+          showToast(message);
+        }}
+      />
+
+      {/* MODAL 4: KWITANSI */}
+      <Modal
+        isOpen={!!receiptPayment}
+        onClose={() => setReceiptPayment(null)}
+        title={`Kwitansi ${receiptPayment ? receiptNumber(receiptPayment) : ''}`}
+        subtitle="Bukti penerimaan pembayaran di atas kop surat HIJ."
+        maxWidth="4xl"
+        footer={
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <Button type="button" variant="outline" onClick={() => setReceiptPayment(null)}>
+              Tutup
+            </Button>
+            <Button onClick={handleDownloadReceiptPdf} disabled={isDownloadingReceipt}>
+              <Download size={16} aria-hidden="true" />
+              {isDownloadingReceipt ? 'Membuat PDF…' : 'Unduh PDF'}
+            </Button>
+          </div>
+        }
+      >
+        <div className="max-h-[68vh] overflow-auto rounded-xl bg-slate-200 p-3">
+          <div className="mx-auto w-fit">
+            {receiptPayment && (
+              <ReceiptDocument
+                id="receipt-doc"
+                payment={receiptPayment}
+                invoice={invoices.find(i => i.id === receiptPayment.invoiceId)}
+                order={orders.find(o => o.id === receiptPayment.orderId)}
+                customer={customers.find(c => c.id === receiptPayment.customerId)}
+              />
+            )}
           </div>
         </div>
       </Modal>

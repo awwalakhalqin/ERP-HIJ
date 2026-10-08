@@ -23,7 +23,7 @@ import {
   Ban
 } from 'lucide-react';
 import { Order, Customer, SPK, Design, Sample, Invoice, PaymentTerm, SizeChart } from '../../types';
-import { fetchResource, createResource, updateResource, deleteResource, fetchReadinessData, issueSpkApi, approveDpApi, commitExcelImportApi, authFetch, fetchStaffDirectory, StaffDirectoryEntry } from '../../services/api';
+import { fetchResource, createResource, updateResource, deleteResource, fetchReadinessData, issueSpkApi, approveDpApi, commitExcelImportApi, fetchStaffDirectory, StaffDirectoryEntry } from '../../services/api';
 import { COMPANY_CONTACT } from '../../config/contact';
 import { getCurrentUser } from '../../lib/session';
 import { parseWorkbookData, type ImportPlan } from '../../lib/excelImport';
@@ -719,22 +719,11 @@ export const OrdersModule: React.FC = () => {
         };
         await updateResource('orders', editingOrderId, changes);
 
-        // Keep the money and the shop floor in step with the new quantity.
+        // The server issues a revision of the invoice when the price or instalments change.
         const linkedInvoice = pricingChanged
           ? invoices.find(inv => inv.orderId === editingOrderId && !inv.supersededBy)
           : undefined;
-        if (linkedInvoice) {
-          const paid = Number(linkedInvoice.downPaymentReceived) || 0;
-          const balanceRemaining = Math.max(0, total - paid);
-          await updateResource('invoices', linkedInvoice.id, {
-            amount: total,
-            total,
-            balanceRemaining,
-            status: total > 0 && balanceRemaining <= 0 ? 'Lunas' : paid > 0 ? 'DP Dibayar' : 'Belum Bayar',
-            dueDate: repeatFormData.deadline,
-            paymentSchedule: termsWithAmounts
-          });
-        }
+        // Keep the shop floor in step with the new quantity.
         const linkedSpk = spks.find(spk => spk.orderId === editingOrderId);
         if (linkedSpk) {
           // The cutting list follows the new breakdown, not just its total.
@@ -805,36 +794,9 @@ export const OrdersModule: React.FC = () => {
         designUrl: repeatFormData.designUrl
       };
 
-      // 1. Simpan order baru
-      const createdOrder = await createResource('orders', newOrderPayload);
-
-      // 2. Otomatis buatkan draft Invoice untuk pesanan ini
-      let invoiceNote = '';
-      try {
-        const invRes = await authFetch('/api/invoices', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-          orderId: createdOrder.id,
-          customerId: createdOrder.customerId,
-          customerName: createdOrder.customerName,
-          amount: total,
-          total: total,
-          downPaymentReceived: 0,
-          balanceRemaining: total,
-          dueDate: createdOrder.deadline,
-          status: 'Belum Bayar',
-          reviewStatus: 'Draft',
-          paymentSchedule: termsWithAmounts,
-          timestamp: now.toISOString(),
-          notes: `Tagihan untuk repeat order ${createdOrder.po || createdOrder.id}`
-          })
-        });
-        if (!invRes.ok) throw new Error();
-      } catch (invErr) {
-        // The order stands; say so rather than leaving it silently unbilled.
-        invoiceNote = ' Draf faktur belum terbuat — buat dari menu Keuangan.';
-      }
+      // The server creates the order's draft invoice with its instalments in the same request.
+      await createResource('orders', newOrderPayload);
+      const invoiceNote = ' Draf faktur dengan termin pembayarannya ada di menu Keuangan.';
 
       setIsRepeatOrderModalOpen(false);
       await loadData();
@@ -926,7 +888,7 @@ export const OrdersModule: React.FC = () => {
   const handleCancelOrder = async (order: Order) => {
     const approved = await confirm({
       title: `Batalkan pesanan ${order.po || order.id}?`,
-      message: 'SPK yang masih antre ikut dihapus dan pesanan berhenti diproduksi. Pembayaran yang sudah masuk tetap tercatat di Keuangan.',
+      message: 'SPK yang masih antre ikut dihapus dan pesanan berhenti diproduksi. Fakturnya ditutup, dan pembayaran yang sudah masuk menjadi saldo pelanggan di Keuangan. Bila sampel fisik sudah dibuat, faktur diganti menjadi tagihan biaya sampel dan DP yang masuk dipakai untuk menutupnya lebih dulu.',
       confirmLabel: 'Batalkan Pesanan',
       cancelLabel: 'Kembali',
       tone: 'danger'

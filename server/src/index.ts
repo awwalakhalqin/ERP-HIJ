@@ -28,8 +28,32 @@ import {
   withAmounts,
   syncOrderStatus,
   syncAllOrderStatuses,
-  sampleSettled
+  sampleSettled,
+  nextRevision,
+  reconcileInvoice,
+  createInvoiceForOrder,
+  reviseInvoice,
+  syncInvoiceTerms,
+  syncTermsForOrder,
+  openTermFor,
+  syncCreditFor,
+  creditForInvoice,
+  creditOwedFor,
+  creditUsed,
+  overdueTermsForCustomer
 } from './flow.js';
+import {
+  planTerms,
+  scheduleError,
+  paymentTypeForTerm,
+  termTrigger,
+  TERM_TRIGGER_LABELS,
+  DEFAULT_TERM_DUE_DAYS,
+  DEDUCTION_TYPES,
+  addDays,
+  localDate,
+  SAMPLE_MADE_STATUSES
+} from '../../src/lib/terms.js';
 import {
   hashPassword,
   verifyPassword,
@@ -834,6 +858,19 @@ function spkBlockReason(orderId: string | undefined): string | null {
 
   // SPK tidak wajib dipenuhi untuk repeat order atau kuantitas di bawah 50 pcs (dibuat manual di tiap pesanan)
   if (order.isRepeatOrder || (Number(order.quantity) > 0 && Number(order.quantity) < 50)) {
+    /*
+     * The fast path trusts the customer to pay later. One who is already late
+     * on another tagihan waits for the owner's approval (Termin Khusus).
+     */
+    const overdue = overdueTermsForCustomer(order.customerId, order.id);
+    if (overdue.length > 0 && !order.specialTermsApprovedBy) {
+      const worst = overdue.reduce((a: any, b: any) => (b.daysLate > a.daysLate ? b : a));
+      return (
+        `SPK jalur cepat ditahan: ${order.customerName} punya ${overdue.length} tagihan lewat jatuh tempo ` +
+        `(mis. ${worst.term.billNo || worst.invoice.id}, telat ${worst.daysLate} hari). ` +
+        'Tagih dulu, atau minta Owner menyetujui termin khusus di pesanan ini.'
+      );
+    }
     return null;
   }
   const readiness = readinessForOrder(order);
@@ -951,19 +988,23 @@ app.post('/api/orders/:id/approve-dp', requireModule('Orders', 'Finance'), (req:
   const amount = Number(req.body?.amount);
   if (!amount || amount <= 0) return res.status(400).json({ error: 'Nominal DP harus lebih dari 0.' });
   if (order.status === 'Cancelled') return res.status(409).json({ error: `Pesanan ${order.id} sudah dibatalkan.` });
+  /*
+   * The transfer is recorded as it arrived. Anything above what is owed
+   * becomes a saldo pelanggan for Keuangan to refund or move, rather than
+   * the PIC being made to type a smaller figure than the bank shows.
+   */
   const owed = outstandingForOrder(order);
-  if (owed !== null && owed <= 0) {
-    return res.status(409).json({ error: `Pesanan ${order.id} sudah lunas; tidak ada tagihan yang tersisa.` });
-  }
-  if (owed !== null && amount > owed) {
-    return res.status(409).json({ error: `Nominal Rp ${amount.toLocaleString('id-ID')} melebihi sisa tagihan Rp ${owed.toLocaleString('id-ID')}.` });
-  }
+  const excess = owed !== null && amount > owed ? amount - owed : 0;
 
   const invoice = activeInvoiceForOrder(order.id);
   const paidSoFar = verifiedPaidForOrder(order.id, readTable('payments'));
   const required = Number(order.dpRequired) || 0;
-  // Once the agreed DP is covered, whatever follows is settlement.
-  const type = required > 0 && paidSoFar >= required ? 'Pelunasan' : 'DP';
+  // The money lands in the oldest unsettled instalment and is named after it.
+  const landing = invoice ? openTermFor(syncInvoiceTerms(invoice.id)) : null;
+  // Without a schedule: once the agreed DP is covered, whatever follows is settlement.
+  const type = landing
+    ? paymentTypeForTerm(landing.index, landing.count)
+    : required > 0 && paidSoFar >= required ? 'Pelunasan' : 'DP';
   const now = new Date().toISOString();
   const extraNote = String(req.body?.notes || '').trim();
 
@@ -975,6 +1016,7 @@ app.post('/api/orders/:id/approve-dp', requireModule('Orders', 'Finance'), (req:
     customerName: order.customerName || 'Klien',
     amount,
     type,
+    ...(landing ? { termId: landing.term.id, termLabel: landing.term.label } : {}),
     date: req.body?.date || now.split('T')[0],
     paymentMethod: req.body?.paymentMethod || 'Transfer Bank',
     bankAccount: req.body?.bankAccount || '',
@@ -993,7 +1035,9 @@ app.post('/api/orders/:id/approve-dp', requireModule('Orders', 'Finance'), (req:
 
   res.status(201).json({
     success: true,
-    message: `${type} Rp ${amount.toLocaleString('id-ID')} disetujui dan tercatat.`,
+    message:
+      `${type} Rp ${amount.toLocaleString('id-ID')} disetujui dan tercatat.` +
+      (excess > 0 ? ` Kelebihan Rp ${excess.toLocaleString('id-ID')} menjadi saldo pelanggan di menu Keuangan.` : ''),
     payment,
     order: findById('orders', order.id),
     invoice: invoice ? findById('invoices', invoice.id) : null
@@ -1035,9 +1079,27 @@ app.post('/api/quotations/:id/approve-to-order', requireModule('Quotations'), (r
     return res.status(409).json({ error: `Nomor PO ${finalPo} sudah dipakai pesanan ${poClash.id}. Pakai nomor lain.` });
   }
   const totalAmount = Number(quotation.totalPrice) || (Number(quotation.quantity) * Number(quotation.price));
-  let schedule = Array.isArray(quotation.paymentSchedule) && quotation.paymentSchedule.length > 0
-    ? withAmounts(quotation.paymentSchedule, totalAmount)
-    : [];
+  const termsProblem = scheduleError(quotation.paymentSchedule);
+  if (termsProblem) {
+    return res.status(409).json({ error: `Termin di penawaran ${quotation.id} belum benar: ${termsProblem} Perbaiki penawarannya dulu.` });
+  }
+  const designProblem = designReuseError(quotation.designId, { isRepeatOrder: quotation.isRepeatOrder });
+  if (designProblem) return res.status(409).json({ error: designProblem });
+  /*
+   * Every deal is billed in instalments. A quotation that agreed none is the
+   * old 50/50: DP at the deal, the rest when the goods leave.
+   */
+  let schedule = withAmounts(
+    planTerms(
+      Array.isArray(quotation.paymentSchedule) && quotation.paymentSchedule.length > 0
+        ? quotation.paymentSchedule
+        : [
+            { id: 'term-dp', label: 'DP', percentage: 50, amount: 0 },
+            { id: 'term-final', label: 'Pelunasan', percentage: 50, amount: 0 }
+          ]
+    ),
+    totalAmount
+  );
   // The first agreed instalment is the DP; 50% only when nothing was agreed.
   const scheduledDp = Number(schedule[0]?.amount) || Math.round(totalAmount * 0.5);
   const typedDp = downPayment !== undefined && downPayment !== null && downPayment !== '' ? Number(downPayment) : NaN;
@@ -1104,6 +1166,7 @@ app.post('/api/quotations/:id/approve-to-order', requireModule('Quotations'), (r
     // Anti-Skip & Specifications mapping
     needsSample: quotation.needsSample !== undefined ? quotation.needsSample : true,
     sampleStatus: quotation.needsSample === false ? 'Approved' : 'Pending',
+    ...(quotation.needsSample !== false ? { sampleFee: Number(quotation.sampleFee) || 0 } : {}),
     sablonBordir: quotation.sablonBordir || quotation.accessories || '-',
     designId: quotation.designId || '',
     designName: quotation.designName || quotation.productType,
@@ -1130,26 +1193,52 @@ app.post('/api/quotations/:id/approve-to-order', requireModule('Quotations'), (r
     approvedAt: now.toISOString()
   });
 
+  /*
+   * 3. The deal is the "kejelasan" the sample waits for: its task opens now,
+   * without waiting for DP (the DP is billed once the sample is sent).
+   */
+  let sampleTask = null;
+  if (newOrder.needsSample === true) {
+    const fee = Number(newOrder.sampleFee) || 0;
+    sampleTask = insertItem('samples', {
+      id: nextId('samples', 'SMP'),
+      orderId,
+      customerId: newOrder.customerId,
+      customerName: newOrder.customerName,
+      productName: `Sampel ${newOrder.productType}`,
+      size: newOrder.size,
+      quantity: 1,
+      status: 'Development',
+      notes:
+        `Dari penawaran ${quotation.id}.` +
+        (fee > 0 ? ` Biaya sampel Rp ${fee.toLocaleString('id-ID')}, gratis bila lanjut produksi.` : ''),
+      user: orderPayload.user,
+      timestamp: now.toISOString()
+    });
+  }
+
+  // 4. The invoice is born with the order; each instalment falls due at its milestone.
+  const invoice = createInvoiceForOrder(newOrder, {
+    reviewStatus: 'Draft',
+    notes: `Faktur dari penawaran ${quotation.id}. Termin ditagih sesuai tahap pesanan.`,
+    user: orderPayload.user
+  });
+
   res.json({
     success: true,
-    message: `Penawaran ${quotation.id} disetujui. Pesanan ${orderId} dibuat dan menunggu syarat produksi.`,
+    message:
+      `Penawaran ${quotation.id} disetujui. Pesanan ${orderId} dibuat dan menunggu syarat produksi.` +
+      (sampleTask ? ` Tugas sampel ${sampleTask.id} dibuat di Desain & Sampel.` : '') +
+      (invoice ? ` Faktur ${invoice.id} terbit.` : ''),
     quotation: updatedQuotation,
     order: newOrder,
+    invoice,
     readiness: readinessForOrder(newOrder)
   });
 });
 
 // SOP-01A & SOP-20: Revisi Penawaran yang sudah Deal (Perubahan Qty/Harga di tengah jalan)
 // Otomatis menyinkronkan Quotation -> Order -> Invoice
-/** Next free revision number for a document family, and the id that carries it. */
-function nextRevision(table: string, baseId: string) {
-  const family = readTable(table).filter(
-    (r: any) => r.id === baseId || r.revisionOf === baseId
-  );
-  const highest = family.reduce((max: number, r: any) => Math.max(max, Number(r.revision) || 0), 0);
-  const revision = highest + 1;
-  return { revision, id: `${baseId}-R${revision}` };
-}
 
 /*
  * SOP-01/20: a deal whose quantity changes mid-flight.
@@ -1181,6 +1270,8 @@ app.put('/api/quotations/:id/revise-deal', requireModule('Quotations'), (req: Re
   }
 
   const { quantity, price, totalPrice, deadline, notes, paymentSchedule, user } = req.body;
+  const termsProblem = scheduleError(paymentSchedule);
+  if (termsProblem) return res.status(400).json({ error: termsProblem });
   const newQty = Number(quantity) || Number(quotation.quantity) || 1;
   const newPrice = Number(price) || Number(quotation.price) || 0;
   const newTotal = Number(totalPrice) || newQty * newPrice;
@@ -1207,7 +1298,7 @@ app.put('/api/quotations/:id/revise-deal', requireModule('Quotations'), (req: Re
     notes: notes !== undefined ? notes : quotation.notes,
     // Same percentages, amounts recomputed: the old amounts described the old total.
     paymentSchedule: withAmounts(
-      Array.isArray(paymentSchedule) ? paymentSchedule : (quotation.paymentSchedule || []),
+      planTerms(Array.isArray(paymentSchedule) && paymentSchedule.length > 0 ? paymentSchedule : quotation.paymentSchedule),
       newTotal
     ),
     timestamp: now
@@ -1220,6 +1311,7 @@ app.put('/api/quotations/:id/revise-deal', requireModule('Quotations'), (req: Re
   );
   let updatedOrder = null;
   let newInvoice = null;
+  let invoiceReplaced = false;
 
   if (linkedOrder) {
     const revisedSchedule = newQuotation.paymentSchedule || [];
@@ -1251,38 +1343,21 @@ app.put('/api/quotations/:id/revise-deal', requireModule('Quotations'), (req: Re
       syncOrderStatus(linkedOrder.id);
     }
 
-    // 3. Reissue the invoice, carrying over whatever has already been paid.
+    // 3. Reissue the invoice, carrying over whatever has already been paid and billed.
     const activeInvoice = readTable('invoices').find(
       (inv: any) => !inv.supersededBy && (inv.orderId === linkedOrder.id || inv.quotationId === quotation.id)
     );
 
-    if (activeInvoice) {
-      const invBase = activeInvoice.revisionOf || activeInvoice.id;
-      const invNext = nextRevision('invoices', invBase);
-      const paid = verifiedPaidForInvoice(activeInvoice);
-      const balanceRemaining = Math.max(0, newTotal - paid);
-      const status = invoiceStatusFor(newTotal, paid);
-
-      newInvoice = insertItem('invoices', {
-        ...activeInvoice,
-        id: invNext.id,
-        invoiceNo: activeInvoice.invoiceNo || invBase,
-        revision: invNext.revision,
-        revisionOf: invBase,
-        revisedBy,
-        supersededBy: undefined,
-        supersededAt: undefined,
-        quotationId: newQuotation.id,
-        amount: newTotal,
-        total: newTotal,
-        downPaymentReceived: paid,
-        balanceRemaining,
-        status,
-        paymentSchedule: newQuotation.paymentSchedule,
-        timestamp: now
-      });
-      updateItem('invoices', activeInvoice.id, { supersededBy: newInvoice.id, supersededAt: now });
-    }
+    invoiceReplaced = !!activeInvoice;
+    newInvoice = activeInvoice
+      ? reviseInvoice(activeInvoice, {
+          total: newTotal,
+          schedule: revisedSchedule,
+          revisedBy,
+          quotationId: newQuotation.id
+        })
+      // A deal closed before invoices were born with the order gets its invoice now.
+      : createInvoiceForOrder(updatedOrder, { reviewStatus: 'Draft', user: revisedBy });
   }
 
   res.json({
@@ -1290,7 +1365,9 @@ app.put('/api/quotations/:id/revise-deal', requireModule('Quotations'), (req: Re
     message:
       `Revisi ${quoNext.revision} diterbitkan: ${newQuotation.id}. ` +
       (newInvoice
-        ? `Faktur ${newInvoice.id} menggantikan yang lama, pembayaran yang sudah masuk tetap terhitung.`
+        ? invoiceReplaced
+          ? `Faktur ${newInvoice.id} menggantikan yang lama, pembayaran yang sudah masuk tetap terhitung.`
+          : `Faktur ${newInvoice.id} diterbitkan untuk pesanan ini.`
         : 'Pesanan terkait sudah disinkronkan.'),
     quotation: newQuotation,
     order: updatedOrder,
@@ -1314,7 +1391,8 @@ app.get('/api/dashboard/stats', requireStaff, (_req: Request, res: Response) => 
   // A superseded revision is history; counting it doubled piutang after every Revisi Qty.
   const liveInvoices = invoices.filter(i => !i.supersededBy);
   const totalRevenue = liveInvoices.reduce((acc, i) => acc + (Number(i.total) || 0), 0);
-  const pendingPayment = liveInvoices.reduce((acc, i) => acc + (Number(i.balanceRemaining) || 0), 0);
+  // Owed now: instalments still waiting on production are not piutang yet.
+  const pendingPayment = liveInvoices.reduce((acc, i) => acc + (Number(i.dueNow ?? i.balanceRemaining) || 0), 0);
 
   const totalInspected = qcReports.reduce((acc, q) => acc + (Number(q.totalInspected) || 0), 0);
   const totalPassed = qcReports.reduce((acc, q) => acc + (Number(q.passedQty) || 0), 0);
@@ -1335,36 +1413,6 @@ app.get('/api/dashboard/stats', requireStaff, (_req: Request, res: Response) => 
 // ---------------------------------------------------------
 // SOP-20: KAS MASUK & REKONSILIASI PIUTANG / INVOICE
 // ---------------------------------------------------------
-export function reconcileInvoice(invoiceId: string) {
-  if (!invoiceId) return null;
-  const invoice = activeInvoiceFor(invoiceId);
-  if (!invoice) return null;
-
-  // Verified money only, and all of it: see verifiedPaidForInvoice.
-  const totalPaid = verifiedPaidForInvoice(invoice);
-  const invoiceTotal = Number(invoice.total) || Number(invoice.amount) || 0;
-  const balanceRemaining = Math.max(0, invoiceTotal - totalPaid);
-
-  const updatedInvoice = updateItem('invoices', invoice.id, {
-    downPaymentReceived: totalPaid,
-    balanceRemaining: balanceRemaining,
-    status: invoiceStatusFor(invoiceTotal, totalPaid)
-  });
-
-  if (invoice.orderId) {
-    const order = findById('orders', invoice.orderId);
-    if (order) {
-      const paid = verifiedPaidForOrder(order.id, readTable('payments'));
-      updateItem('orders', order.id, {
-        downPayment: paid,
-        dpPercent: order.totalPrice > 0 ? Math.min(100, Math.round((paid / order.totalPrice) * 100)) : 0
-      });
-    }
-    syncOrderStatus(invoice.orderId);
-  }
-
-  return updatedInvoice;
-}
 
 // Dedicated Endpoint: Record Kas Masuk / Payment with auto invoice & order reconciliation
 app.post('/api/payments/record', requireModule('Finance'), (req: Request, res: Response) => {
@@ -1388,7 +1436,9 @@ app.post('/api/payments/record', requireModule('Finance'), (req: Request, res: R
     return res.status(400).json({ error: 'Nominal pembayaran harus lebih dari 0.' });
   }
   const recOrder = orderId ? findById('orders', orderId) : (invoiceId ? findById('orders', activeInvoiceFor(invoiceId)?.orderId) : null);
-  if (recOrder?.status === 'Cancelled') {
+  // A cancelled order takes money only for the sample fee it still owes.
+  const recInvoice = recOrder ? activeInvoiceForOrder(recOrder.id) : null;
+  if (recOrder?.status === 'Cancelled' && !(Number(recInvoice?.cancellationFee) > 0 && Number(recInvoice?.balanceRemaining) > 0)) {
     return res.status(409).json({ error: `Pesanan ${recOrder.id} sudah dibatalkan; pembayaran tidak dicatat.` });
   }
 
@@ -1417,6 +1467,15 @@ app.post('/api/payments/record', requireModule('Finance'), (req: Request, res: R
     }
   }
 
+  /*
+   * Verified money lands in the oldest unsettled instalment; the payment keeps
+   * its name so the history reads "DP", "Termin 2"... rather than whatever
+   * was picked in the form.
+   */
+  // Finance records money it has seen, or parks a proof for checking; nothing else.
+  const paymentStatus = status === 'Pending Verification' ? 'Pending Verification' : 'Verified';
+  const landing = targetInvoiceId ? openTermFor(syncInvoiceTerms(targetInvoiceId)) : null;
+
   const paymentPayload = {
     id: paymentId,
     orderId: targetOrderId || '',
@@ -1424,17 +1483,19 @@ app.post('/api/payments/record', requireModule('Finance'), (req: Request, res: R
     customerId: targetCustomerId || '',
     customerName: targetCustomerName || 'Klien',
     amount: Number(amount),
-    type: type || 'DP',
+    type: landing ? paymentTypeForTerm(landing.index, landing.count) : type || 'DP',
+    ...(landing ? { termId: landing.term.id, termLabel: landing.term.label } : {}),
     date: date || new Date().toISOString().split('T')[0],
     paymentMethod: paymentMethod || bankAccount || 'Transfer Bank BCA',
     bankAccount: bankAccount || paymentMethod || 'Transfer Bank BCA',
     proofImageUrl: proofImageUrl || '',
-    status: status || 'Verified',
-    notes: notes || `Penerimaan kas masuk ${type || 'pembayaran'}.`,
+    status: paymentStatus,
+    notes: notes || `Penerimaan kas masuk ${landing ? landing.term.label : type || 'pembayaran'}.`,
     user: user || 'Finance Staff',
     timestamp: new Date().toISOString()
   };
 
+  const creditBefore = targetInvoiceId ? creditForInvoice(findById('invoices', targetInvoiceId))?.remaining || 0 : 0;
   const newPayment = insertItem('payments', paymentPayload);
 
   // Auto reconcile invoice balance
@@ -1443,10 +1504,13 @@ app.post('/api/payments/record', requireModule('Finance'), (req: Request, res: R
     updatedInvoice = reconcileInvoice(targetInvoiceId);
   }
   reconcileOrderPayments(targetOrderId);
+  const excess = updatedInvoice ? (creditForInvoice(updatedInvoice)?.remaining || 0) - creditBefore : 0;
 
   res.status(201).json({
     success: true,
-    message: `Pembayaran Rp ${Number(amount).toLocaleString('id-ID')} berhasil dicatat.`,
+    message:
+      `Pembayaran Rp ${Number(amount).toLocaleString('id-ID')} berhasil dicatat.` +
+      (excess > 0 ? ` Kelebihan Rp ${excess.toLocaleString('id-ID')} menjadi saldo pelanggan.` : ''),
     payment: newPayment,
     invoice: updatedInvoice
   });
@@ -1481,6 +1545,21 @@ app.post('/api/payments/:id/reject', requireModule('Finance', 'Orders'), (req: R
   const payment = findById('payments', req.params.id);
   if (!payment) return res.status(404).json({ error: 'Pembayaran tidak ditemukan.' });
   if (payment.status === 'Rejected') return res.status(409).json({ error: 'Pembayaran ini sudah dibatalkan.' });
+  /*
+   * Saldo already refunded, forfeited or moved was backed by this money. A
+   * void that would leave less than that is refused: undo the saldo step first.
+   */
+  const payInvoice = payment.invoiceId ? activeInvoiceFor(payment.invoiceId) : activeInvoiceForOrder(payment.orderId);
+  const payCredit = payInvoice ? creditForInvoice(payInvoice) : null;
+  if (payCredit && payment.status === 'Verified') {
+    const paidAfter = verifiedPaidForInvoice(payInvoice) - (Number(payment.amount) || 0);
+    const { owed } = creditOwedFor(payInvoice, paidAfter);
+    if (creditUsed(payCredit) > owed) {
+      return res.status(409).json({
+        error: `Pembayaran ${payment.id} tidak bisa dibatalkan: saldo ${payCredit.id} dari pembayaran ini sudah dikembalikan atau dipindahkan.`
+      });
+    }
+  }
   const actor = actorUser(req);
   const reason = String(req.body?.reason || '').trim();
   const updatedPayment = updateItem('payments', payment.id, {
@@ -1489,49 +1568,314 @@ app.post('/api/payments/:id/reject', requireModule('Finance', 'Orders'), (req: R
     rejectedAt: new Date().toISOString(),
     notes: `${payment.notes ? payment.notes + ' | ' : ''}Dibatalkan ${actor?.name || 'staf'}${reason ? `: ${reason}` : ''}`
   });
+  // Saldo moved onto this invoice goes back to where it came from.
+  if (payment.adjustmentType === 'Pindahan Saldo' && payment.creditId) {
+    const source = findById('customer_credits', payment.creditId);
+    if (source) {
+      updateItem('customer_credits', source.id, {
+        history: (source.history || []).filter((h: any) => h.paymentId !== payment.id)
+      });
+      const sourceInvoice = activeInvoiceFor(source.invoiceId);
+      if (sourceInvoice) syncCreditFor(sourceInvoice);
+    }
+  }
   const updatedInvoice = payment.invoiceId ? reconcileInvoice(payment.invoiceId) : null;
   reconcileOrderPayments(payment.orderId);
   res.json({ success: true, message: `Pembayaran ${payment.id} dibatalkan.`, payment: updatedPayment, invoice: updatedInvoice });
 });
 
-// Specialized Invoice Creation Endpoint with auto balance calculations
+/*
+ * A deduction the customer made instead of paying: PPh 23 withheld, a bank
+ * fee taken off the transfer, rounding. It settles the invoice like money but
+ * is not kas masuk. PPh 23 keeps the number of its bukti potong when known.
+ */
+app.post('/api/payments/adjust', requireModule('Finance'), (req: Request, res: Response) => {
+  const { invoiceId, amount, adjustmentType, reference, notes, date } = req.body || {};
+  const invoice = invoiceId ? activeInvoiceFor(String(invoiceId)) : null;
+  if (!invoice) return res.status(404).json({ error: 'Faktur tidak ditemukan.' });
+  if (invoice.status === 'Dibatalkan') return res.status(409).json({ error: `Faktur ${invoice.id} sudah dibatalkan.` });
+  if (!(DEDUCTION_TYPES as readonly string[]).includes(String(adjustmentType))) {
+    return res.status(400).json({ error: 'Pilih jenis potongan.' });
+  }
+  const value = Number(amount);
+  if (!(value > 0)) return res.status(400).json({ error: 'Nominal potongan harus lebih dari 0.' });
+  const balance = Math.max(0, (Number(invoice.total) || 0) - verifiedPaidForInvoice(invoice));
+  if (value > balance) {
+    return res.status(409).json({ error: `Potongan Rp ${value.toLocaleString('id-ID')} melebihi sisa tagihan Rp ${balance.toLocaleString('id-ID')}.` });
+  }
+  const actor = actorUser(req);
+  const landing = openTermFor(syncInvoiceTerms(invoice.id));
+  const payment = insertItem('payments', {
+    id: nextId('payments', 'PAY'),
+    orderId: invoice.orderId || '',
+    invoiceId: invoice.id,
+    customerId: invoice.customerId || '',
+    customerName: invoice.customerName || 'Klien',
+    amount: value,
+    type: 'Custom',
+    adjustmentType,
+    reference: String(reference || '').trim(),
+    ...(landing ? { termId: landing.term.id, termLabel: landing.term.label } : {}),
+    date: date || localDate(),
+    paymentMethod: `Potongan ${adjustmentType}`,
+    status: 'Verified',
+    notes: String(notes || '').trim() || `Potongan ${adjustmentType} oleh pelanggan.`,
+    user: actor?.name || 'Admin Keuangan',
+    timestamp: new Date().toISOString()
+  });
+  const updatedInvoice = reconcileInvoice(invoice.id);
+  reconcileOrderPayments(invoice.orderId);
+  res.status(201).json({
+    success: true,
+    message: `Potongan ${adjustmentType} Rp ${value.toLocaleString('id-ID')} dicatat pada ${invoice.id}.`,
+    payment,
+    invoice: updatedInvoice
+  });
+});
+
+/*
+ * Saldo pelanggan is settled one step at a time: refunded to the customer,
+ * moved to another invoice of the same customer (recorded there as a
+ * 'Pindahan Saldo' payment), or, for a cancelled order, declared forfeited.
+ */
+app.post('/api/credits/:id/resolve', requireModule('Finance'), (req: Request, res: Response) => {
+  const credit = findById('customer_credits', req.params.id);
+  if (!credit) return res.status(404).json({ error: 'Saldo pelanggan tidak ditemukan.' });
+  const { action, targetInvoiceId, method, note } = req.body || {};
+  const value = Number(req.body?.amount);
+  if (!['Refund', 'Hangus', 'Pindah'].includes(action)) return res.status(400).json({ error: 'Pilih tindakan untuk saldo ini.' });
+  if (!(value > 0)) return res.status(400).json({ error: 'Nominal harus lebih dari 0.' });
+  if (value > Number(credit.remaining)) {
+    return res.status(409).json({ error: `Nominal melebihi sisa saldo Rp ${Number(credit.remaining).toLocaleString('id-ID')}.` });
+  }
+  if (action === 'Hangus' && credit.source !== 'Pesanan Batal') {
+    return res.status(409).json({ error: 'Hanya saldo dari pesanan batal yang bisa dinyatakan hangus. Kelebihan bayar dikembalikan atau dipindah.' });
+  }
+  const noteText = String(note || '').trim();
+  if (action === 'Hangus' && !noteText) return res.status(400).json({ error: 'Tulis dasar DP hangus (mis. pasal di penawaran).' });
+
+  const actor = actorUser(req);
+  const now = new Date().toISOString();
+  const entry: any = { at: now, by: actor?.name || 'Admin Keuangan', action, amount: value, ...(noteText ? { note: noteText } : {}) };
+
+  if (action === 'Refund') {
+    entry.method = String(method || '').trim() || 'Transfer Bank';
+  }
+  if (action === 'Pindah') {
+    const target = targetInvoiceId ? activeInvoiceFor(String(targetInvoiceId)) : null;
+    if (!target) return res.status(404).json({ error: 'Faktur tujuan tidak ditemukan.' });
+    if ((target.revisionOf || target.id) === credit.invoiceId) return res.status(409).json({ error: 'Faktur tujuan sama dengan asal saldo.' });
+    if (target.status === 'Dibatalkan') return res.status(409).json({ error: `Faktur ${target.id} sudah dibatalkan.` });
+    if (String(target.customerId) !== String(credit.customerId)) {
+      return res.status(409).json({ error: 'Saldo hanya bisa dipindah ke faktur pelanggan yang sama.' });
+    }
+    const targetBalance = Math.max(0, (Number(target.total) || 0) - verifiedPaidForInvoice(target));
+    if (value > targetBalance) {
+      return res.status(409).json({ error: `Nominal melebihi sisa tagihan ${target.id} (Rp ${targetBalance.toLocaleString('id-ID')}).` });
+    }
+    const landing = openTermFor(syncInvoiceTerms(target.id));
+    const moved = insertItem('payments', {
+      id: nextId('payments', 'PAY'),
+      orderId: target.orderId || '',
+      invoiceId: target.id,
+      customerId: target.customerId || '',
+      customerName: target.customerName || 'Klien',
+      amount: value,
+      type: landing ? paymentTypeForTerm(landing.index, landing.count) : 'Custom',
+      adjustmentType: 'Pindahan Saldo',
+      creditId: credit.id,
+      reference: credit.id,
+      ...(landing ? { termId: landing.term.id, termLabel: landing.term.label } : {}),
+      date: localDate(),
+      paymentMethod: `Saldo ${credit.id}`,
+      status: 'Verified',
+      notes: `Dipindah dari saldo ${credit.id} (${credit.source}, ${credit.invoiceId}).${noteText ? ` ${noteText}` : ''}`,
+      user: actor?.name || 'Admin Keuangan',
+      timestamp: now
+    });
+    entry.targetInvoiceId = target.id;
+    entry.paymentId = moved.id;
+  }
+
+  updateItem('customer_credits', credit.id, { history: [...(credit.history || []), entry] });
+  const sourceInvoice = activeInvoiceFor(credit.invoiceId);
+  if (sourceInvoice) syncCreditFor(sourceInvoice);
+  if (entry.targetInvoiceId) {
+    reconcileInvoice(entry.targetInvoiceId);
+    reconcileOrderPayments(findById('invoices', entry.targetInvoiceId)?.orderId);
+  }
+  const label = action === 'Refund' ? 'dikembalikan' : action === 'Hangus' ? 'dinyatakan hangus' : `dipindah ke ${entry.targetInvoiceId}`;
+  res.json({
+    success: true,
+    message: `Rp ${value.toLocaleString('id-ID')} dari saldo ${credit.id} ${label}.`,
+    credit: findById('customer_credits', credit.id)
+  });
+});
+
+/*
+ * Faktur dibuat dari menu Keuangan. A priced order's invoice is the order's:
+ * its total and its instalments, never figures typed into the form. Paid,
+ * balance and status always come from the verified payments.
+ */
 app.post('/api/invoices', requireModule('Finance', 'Orders'), (req: Request, res: Response) => {
-  const data = req.body;
+  const data = req.body || {};
+  const orderId = String(data.orderId || '').trim();
+  const order = orderId ? findById('orders', orderId) : null;
+  if (orderId && !order) return res.status(404).json({ error: `Pesanan ${orderId} tidak ditemukan.` });
+  if (order?.status === 'Cancelled') return res.status(409).json({ error: `Pesanan ${order.id} sudah dibatalkan.` });
   /*
    * Two live invoices for one order split the payments between them: one stayed
    * "Belum Bayar" forever and omzet counted the order twice.
    */
-  const existing = data.orderId ? activeInvoiceForOrder(data.orderId) : null;
+  const existing = order ? activeInvoiceForOrder(order.id) : null;
   if (existing) {
     return res.status(409).json({
-      error: `Pesanan ${data.orderId} sudah punya faktur ${existing.id}. Buka faktur itu, atau revisi lewat Surat Penawaran.`
+      error: `Pesanan ${order.id} sudah punya faktur ${existing.id}. Buka faktur itu, atau revisi lewat Surat Penawaran.`
     });
   }
-  const invId = data.id && !findById('invoices', data.id) ? data.id : nextId('invoices', 'INV');
-  
+  const actor = actorUser(req);
+
+  if (order && Number(order.totalPrice) > 0) {
+    const invoice = createInvoiceForOrder(order, {
+      reviewStatus: 'Draft',
+      notes: String(data.notes || '').trim() || undefined,
+      user: actor?.name
+    });
+    return res.status(201).json(invoice);
+  }
+
+  // No order, or an imported order with no price: a plain invoice for the typed total.
   const amount = Number(data.amount) || Number(data.total) || 0;
   const tax = Number(data.tax) || 0;
-  const total = Number(data.total) || (amount + tax);
-  const downPayment = Number(data.downPaymentReceived) || 0;
-  const balanceRemaining = Math.max(0, total - downPayment);
-  const status = balanceRemaining <= 0 && total > 0 ? 'Lunas' : (downPayment > 0 ? 'DP Dibayar' : 'Belum Bayar');
+  const total = Number(data.total) || amount + tax;
+  if (total <= 0) return res.status(400).json({ error: 'Isi total tagihan faktur.' });
 
-  const invoicePayload = {
-    ...data,
-    id: invId,
+  const created = insertItem('invoices', {
+    id: nextId('invoices', 'INV'),
+    orderId: order?.id || '',
+    customerId: order?.customerId || String(data.customerId || ''),
+    customerName: order?.customerName || String(data.customerName || '').trim() || 'Klien',
     amount,
     tax,
     total,
-    downPaymentReceived: downPayment,
-    balanceRemaining,
-    status: data.status || status,
-    timestamp: data.timestamp || new Date().toISOString()
-  };
+    downPaymentReceived: 0,
+    balanceRemaining: total,
+    status: 'Belum Bayar',
+    reviewStatus: 'Draft',
+    notes: String(data.notes || '').trim() || 'Faktur manual.',
+    user: actor?.name || 'Admin Keuangan',
+    timestamp: new Date().toISOString()
+  });
+  res.status(201).json(reconcileInvoice(created.id) || created);
+});
 
-  const newInvoice = insertItem('invoices', invoicePayload);
-  // Money recorded against the order before this invoice existed counts toward it.
-  const reconciled = newInvoice.orderId ? reconcileInvoice(newInvoice.id) : null;
-  res.status(201).json(reconciled || newInvoice);
+/*
+ * Bills one instalment: stamps its number and date so it can be printed and
+ * sent. An instalment is billed when its milestone is reached; billing one
+ * earlier (the customer asks for it, or a deal made outside the usual flow)
+ * needs a reason, which stays on the record.
+ */
+app.post('/api/invoices/:id/terms/:termId/bill', requireModule('Finance'), (req: Request, res: Response) => {
+  const invoice = syncInvoiceTerms(req.params.id);
+  if (!invoice) return res.status(404).json({ error: 'Faktur tidak ditemukan.' });
+  if (invoice.supersededBy) {
+    return res.status(409).json({ error: `Faktur ${invoice.id} sudah diganti ${invoice.supersededBy}. Tagih dari faktur terbaru.` });
+  }
+  const order = invoice.orderId ? findById('orders', invoice.orderId) : null;
+  if (order?.status === 'Cancelled' && !(Number(invoice.cancellationFee) > 0)) {
+    return res.status(409).json({ error: `Pesanan ${order.id} sudah dibatalkan.` });
+  }
+
+  const terms: any[] = Array.isArray(invoice.paymentSchedule) ? invoice.paymentSchedule : [];
+  const index = terms.findIndex(t => String(t.id) === String(req.params.termId));
+  if (index === -1) return res.status(404).json({ error: 'Termin tidak ditemukan di faktur ini.' });
+  const term = terms[index];
+  if (term.billedAt) {
+    return res.status(409).json({ error: `${term.label} sudah ditagih dengan nomor ${term.billNo}.` });
+  }
+  if (term.status === 'Lunas') return res.status(409).json({ error: `${term.label} sudah lunas; tidak ada yang ditagih.` });
+
+  const reason = String(req.body?.reason || '').trim();
+  if (!term.readyAt && !reason) {
+    const trigger = termTrigger(term, index, terms.length);
+    return res.status(409).json({
+      error: trigger === 'manual'
+        ? `Tulis alasan menagih ${term.label} sekarang.`
+        : `${term.label} baru jatuh tagih saat "${TERM_TRIGGER_LABELS[trigger]}". Tulis alasan bila memang ditagih lebih awal.`,
+      needsReason: true
+    });
+  }
+
+  const dueDays = req.body?.dueDays === undefined || req.body?.dueDays === '' ? DEFAULT_TERM_DUE_DAYS : Number(req.body.dueDays);
+  if (!Number.isInteger(dueDays) || dueDays < 0 || dueDays > 90) {
+    return res.status(400).json({ error: 'Jatuh tempo harus 0–90 hari.' });
+  }
+
+  const actor = actorUser(req);
+  const now = new Date().toISOString();
+  const baseNo = invoice.invoiceNo || invoice.revisionOf || invoice.id;
+  const nextTerms = terms.map((t, i) =>
+    i === index
+      ? {
+          ...t,
+          billNo: `${baseNo}/T${index + 1}`,
+          billedAt: now,
+          billedBy: actor?.name || 'Admin Keuangan',
+          dueDate: addDays(localDate(), dueDays),
+          ...(!t.readyAt ? { billedEarlyReason: reason } : {})
+        }
+      : t
+  );
+  // A billed instalment has gone to the customer, so the invoice has too.
+  updateItem('invoices', invoice.id, {
+    paymentSchedule: nextTerms,
+    ...(invoice.reviewStatus !== 'Sent' ? { reviewStatus: 'Sent', sentAt: now, sentBy: actor?.name || 'Admin Keuangan' } : {})
+  });
+  const updated = syncInvoiceTerms(invoice.id);
+  const billed = updated.paymentSchedule[index];
+  res.json({
+    success: true,
+    message: `${billed.label} ditagih dengan nomor ${billed.billNo}.`,
+    invoice: updated,
+    term: billed
+  });
+});
+
+// SOP-20: finance has checked a draft invoice and sent it to the customer.
+app.post('/api/invoices/:id/mark-sent', requireModule('Finance'), (req: Request, res: Response) => {
+  const invoice = findById('invoices', req.params.id);
+  if (!invoice) return res.status(404).json({ error: 'Faktur tidak ditemukan.' });
+  if (invoice.supersededBy) return res.status(409).json({ error: `Faktur ${invoice.id} sudah diganti ${invoice.supersededBy}.` });
+  if (invoice.reviewStatus === 'Sent') return res.status(409).json({ error: `Faktur ${invoice.id} sudah ditandai terkirim.` });
+  const actor = actorUser(req);
+  const updated = updateItem('invoices', invoice.id, {
+    reviewStatus: 'Sent',
+    sentAt: new Date().toISOString(),
+    sentBy: actor?.name || 'Admin Keuangan'
+  });
+  res.json({ success: true, message: `Faktur ${invoice.id} ditandai sudah dikirim.`, invoice: updated });
+});
+
+/*
+ * A reminder sent over WhatsApp for a billed instalment. The message itself
+ * leaves from the browser (wa.me); the server keeps when and by whom, so the
+ * next person chasing the customer sees it was already done.
+ */
+app.post('/api/invoices/:id/terms/:termId/remind', requireModule('Finance'), (req: Request, res: Response) => {
+  const invoice = findById('invoices', req.params.id);
+  if (!invoice || invoice.supersededBy) return res.status(404).json({ error: 'Faktur aktif tidak ditemukan.' });
+  const terms: any[] = Array.isArray(invoice.paymentSchedule) ? invoice.paymentSchedule : [];
+  const index = terms.findIndex(t => String(t.id) === String(req.params.termId));
+  if (index === -1) return res.status(404).json({ error: 'Termin tidak ditemukan di faktur ini.' });
+  const term = terms[index];
+  if (!term.billedAt) return res.status(409).json({ error: `${term.label} belum ditagih.` });
+  if (term.status === 'Lunas') return res.status(409).json({ error: `${term.label} sudah lunas.` });
+  const actor = actorUser(req);
+  const reminder = { at: new Date().toISOString(), by: actor?.name || 'Admin Keuangan' };
+  const updated = updateItem('invoices', invoice.id, {
+    paymentSchedule: terms.map((t, i) => (i === index ? { ...t, reminders: [...(t.reminders || []), reminder] } : t))
+  });
+  res.json({ success: true, message: `Pengingat ${term.label} dicatat.`, invoice: updated });
 });
 
 // ---------------------------------------------------------
@@ -1539,38 +1883,19 @@ app.post('/api/invoices', requireModule('Finance', 'Orders'), (req: Request, res
 // ---------------------------------------------------------
 const SHIPPED_STATUSES = ['Picked Up', 'In Transit', 'Delivered'];
 
-function nextInvoiceId(): string {
-  return nextId('invoices', 'INV');
-}
-
-/** Creates a draft invoice for the shipment's order once it is handed to the courier, unless one exists. */
+/*
+ * Orders from before invoices were born with the order reach the courier with
+ * no invoice; they get their draft here. Every other order already has one,
+ * and the shipment only makes its settlement instalment due.
+ */
 function ensureDraftInvoiceForShipment(shipment: any) {
   if (!shipment || !SHIPPED_STATUSES.includes(shipment.status) || !shipment.orderId) return null;
   const order = findById('orders', shipment.orderId);
   if (!order) return null;
-  if (activeInvoiceForOrder(order.id)) return null;
-
-  const total = Number(order.totalPrice) || 0;
-  // An order with no price on record (imports) has nothing to bill.
-  if (total <= 0) return null;
-  const paid = verifiedPaidForOrder(order.id, readTable('payments'));
-  const balanceRemaining = Math.max(0, total - paid);
-
-  return insertItem('invoices', {
-    id: nextInvoiceId(),
-    orderId: order.id,
-    customerId: order.customerId,
-    customerName: order.customerName,
-    amount: total,
-    tax: 0,
-    total,
-    downPaymentReceived: paid,
-    balanceRemaining,
-    status: balanceRemaining <= 0 && total > 0 ? 'Lunas' : (paid > 0 ? 'DP Dibayar' : 'Belum Bayar'),
+  return createInvoiceForOrder(order, {
     reviewStatus: 'Draft',
     shipmentId: shipment.id,
-    notes: `Draf otomatis dari surat jalan ${shipment.id}. Periksa sebelum dikirim ke pelanggan.`,
-    user: 'Sistem'
+    notes: `Draf otomatis dari surat jalan ${shipment.id}. Periksa sebelum dikirim ke pelanggan.`
   });
 }
 
@@ -1588,6 +1913,11 @@ function shipmentBlockReason(body: any, existing?: any): string | null {
   if (!order) return `Pesanan ${orderId} tidak ditemukan.`;
   if (order.status === 'Cancelled') return `Pesanan ${orderId} sudah dibatalkan.`;
   if (!existing && order.status === 'Completed') return `Pesanan ${orderId} sudah selesai; tidak ada yang dikirim lagi.`;
+  // Delivered is the proof a pelunasan rests on: who received the goods, and when.
+  if (body?.status === 'Delivered' && existing?.status !== 'Delivered') {
+    const receiver = String(body?.receivedBy ?? existing?.receivedBy ?? '').trim();
+    if (!receiver) return 'Isi nama penerima barang sebelum menandai sampai tujuan.';
+  }
   if (body?.status !== undefined && !SHIPMENT_STATUSES.includes(String(body.status))) {
     return `Status pengiriman "${body.status}" tidak dikenal.`;
   }
@@ -2660,7 +2990,7 @@ app.post('/api/import/commit', requireModule('Orders'), (req: Request, res: Resp
 });
 
 const OFFLINE_BLOCKED_TABLES = new Set([
-  'orders', 'quotations', 'customers', 'invoices', 'payments', 'shipments',
+  'orders', 'quotations', 'customers', 'invoices', 'payments', 'customer_credits', 'shipments',
   'spk_produksi', 'users', 'qc_reports', 'designs', 'samples', 'size_charts'
 ]);
 
@@ -2707,6 +3037,85 @@ app.post('/api/sync', requireStaff, (req: Request, res: Response) => {
   }
 });
 
+/*
+ * A quotation or order carries the agreed instalments only. They are checked
+ * here (whole percentages adding up to 100) and stripped of billing state, so
+ * a repeat order copying an old order's schedule starts unbilled.
+ */
+function scheduleWriteError(tableName: string, body: any): string | null {
+  if (!['quotations', 'orders'].includes(tableName) || !body || body.paymentSchedule === undefined) return null;
+  const problem = scheduleError(body.paymentSchedule);
+  if (problem) return problem;
+  if (Array.isArray(body.paymentSchedule)) body.paymentSchedule = planTerms(body.paymentSchedule);
+  return null;
+}
+
+/*
+ * A new model needs its own design. The same design may only be shared by a
+ * repeat order of the same model; otherwise a revision for one order would
+ * silently change the SPK of another.
+ */
+function ordersUsingDesign(designId: string | undefined, exceptOrderId?: string): any[] {
+  if (!designId) return [];
+  const design = findById('designs', designId);
+  return readTable('orders').filter(
+    (o: any) =>
+      o.id !== exceptOrderId &&
+      o.status !== 'Cancelled' &&
+      (o.designId === designId || (design?.orderId && design.orderId === o.id))
+  );
+}
+
+function designReuseError(designId: string | undefined, options: { isRepeatOrder?: boolean; exceptOrderId?: string }): string | null {
+  if (!designId || options.isRepeatOrder) return null;
+  const used = ordersUsingDesign(designId, options.exceptOrderId);
+  if (used.length === 0) return null;
+  return (
+    `Desain ${designId} sudah dipakai pesanan ${used.map((o: any) => o.id).join(', ')}. ` +
+    'Model baru perlu desain baru: buat desainnya di Desain & Sampel lalu ACC. Desain yang sama hanya untuk Repeat Order.'
+  );
+}
+
+/** Rules a quotation write must meet beyond its schedule: sample fee, and a design of its own. */
+function quotationWriteError(body: any, existing?: any): string | null {
+  if (!body || typeof body !== 'object') return null;
+  if (body.sampleFee !== undefined && body.sampleFee !== '' && !(Number(body.sampleFee) >= 0)) {
+    return 'Biaya sampel tidak valid.';
+  }
+  const designId = body.designId !== undefined ? body.designId : existing?.designId;
+  const designChanged = body.designId !== undefined && body.designId !== existing?.designId;
+  if (!existing || designChanged) {
+    return designReuseError(designId, {
+      isRepeatOrder: body.isRepeatOrder ?? existing?.isRepeatOrder,
+      exceptOrderId: existing?.orderId
+    });
+  }
+  return null;
+}
+
+const scheduleKey = (terms: any) =>
+  JSON.stringify(planTerms(terms).map(t => [t.id, t.label, t.percentage, t.trigger]));
+
+/*
+ * An order edited before production (Ubah Pesanan on a repeat order) can change
+ * its price or instalments. Its invoice is then revised, never overwritten, so
+ * the figures the customer was billed on stay readable.
+ */
+function reviseInvoiceAfterOrderEdit(before: any, after: any, revisedBy: string) {
+  if (!before || !after) return;
+  const priceChanged = Number(before.totalPrice) !== Number(after.totalPrice);
+  const termsChanged = scheduleKey(before.paymentSchedule) !== scheduleKey(after.paymentSchedule);
+  if (!priceChanged && !termsChanged) return;
+  const active = activeInvoiceForOrder(after.id);
+  if (!active) return;
+  reviseInvoice(active, {
+    total: Number(after.totalPrice) || 0,
+    schedule: Array.isArray(after.paymentSchedule) && after.paymentSchedule.length > 0 ? after.paymentSchedule : undefined,
+    revisedBy,
+    notes: `Direvisi dari Ubah Pesanan ${after.id}.`
+  });
+}
+
 // ---------------------------------------------------------
 // GENERIC CRUD REST API FOR ALL 20 SOPS
 // ---------------------------------------------------------
@@ -2747,6 +3156,8 @@ const TABLE_MAP: Record<string, string> = {
   payroll: 'borongan_salary_slips',
   invoices: 'invoices',
   payments: 'payments',
+  'customer-credits': 'customer_credits',
+  customer_credits: 'customer_credits',
   'daily-cash': 'daily_cash_entries',
   daily_cash_entries: 'daily_cash_entries',
   'stock-receipts': 'stock_receipts',
@@ -2906,6 +3317,8 @@ function advanceOrderAfterWrite(tableName: string, item: any): any | null {
       updateItem('orders', order.id, { sampleStatus: 'Approved' });
     }
     if (order && sampleSettled(findById('orders', order.id))) syncOrderStatus(order.id);
+    // A sample sent to the customer makes a "Sampel dikirim" instalment due.
+    syncTermsForOrder(item.orderId);
   }
   // An order re-pointed at another template hands its SPK the new chart.
   if (tableName === 'orders' && item.sizeChartId) {
@@ -3154,6 +3567,11 @@ app.post('/api/:resource', requireAuth, (req: Request, res: Response) => {
       return res.status(409).json({ error: `SPK ${spk.id} belum punya catatan produksi; catat potong/jahit/finishing dulu sebelum QC.` });
     }
   }
+  const postScheduleProblem =
+    scheduleWriteError(tableName, req.body) ||
+    (tableName === 'quotations' ? quotationWriteError(req.body) : null) ||
+    (tableName === 'orders' ? designReuseError(req.body?.designId, { isRepeatOrder: req.body?.isRepeatOrder }) : null);
+  if (postScheduleProblem) return res.status(400).json({ error: postScheduleProblem });
   if (tableName === 'orders') {
     const clash = poTakenBy(req.body?.po);
     if (clash) return res.status(409).json({ error: `Nomor PO ${req.body.po} sudah dipakai pesanan ${clash.id}. Pakai nomor lain.` });
@@ -3193,6 +3611,14 @@ app.post('/api/:resource', requireAuth, (req: Request, res: Response) => {
   }
 
   const item = insertItem(tableName, req.body);
+  // An order typed straight into Pesanan Masuk is billed the same way as a closed quotation.
+  if (tableName === 'orders') {
+    createInvoiceForOrder(item, {
+      reviewStatus: 'Draft',
+      notes: `Faktur ${item.isRepeatOrder ? 'repeat order' : 'pesanan'} ${item.po || item.id}. Termin ditagih sesuai tahap pesanan.`,
+      user: staff?.name
+    });
+  }
   const fresh = advanceOrderAfterWrite(tableName, item) || item;
   res.status(201).json(fresh);
 });
@@ -3243,11 +3669,14 @@ app.put('/api/:resource/:id', requireAuth, (req: Request, res: Response) => {
       ...(qc !== undefined ? { manualQc: Number(qc) || 0 } : {})
     };
   }
-  // Paid/balance/status on an invoice come from its payments, never from a form.
-  if (tableName === 'invoices' && req.body && typeof req.body === 'object') {
-    const { status: _s, downPaymentReceived: _d, balanceRemaining: _b, ...rest } = req.body;
-    req.body = rest;
-  }
+  const orderBefore = tableName === 'orders' ? findById('orders', req.params.id) : null;
+  const putScheduleProblem =
+    scheduleWriteError(tableName, req.body) ||
+    (tableName === 'quotations' ? quotationWriteError(req.body, findById('quotations', req.params.id)) : null) ||
+    (tableName === 'orders' && req.body?.designId !== undefined && req.body.designId !== orderBefore?.designId
+      ? designReuseError(req.body.designId, { isRepeatOrder: orderBefore?.isRepeatOrder, exceptOrderId: req.params.id })
+      : null);
+  if (putScheduleProblem) return res.status(400).json({ error: putScheduleProblem });
 
   req.body = hashIncomingPassword(tableName, req.body);
 
@@ -3308,11 +3737,39 @@ app.put('/api/:resource/:id', requireAuth, (req: Request, res: Response) => {
 
   const item = updateItem(tableName, req.params.id, req.body);
   if (!item) return res.status(404).json({ error: 'Data tidak ditemukan.' });
+  if (tableName === 'orders') reviseInvoiceAfterOrderEdit(orderBefore, item, staff?.name || 'Staf');
   if (cancelOrderId) {
     for (const spk of readTable('spk_produksi').filter((s: any) => s.orderId === cancelOrderId)) {
       deleteItem('spk_produksi', spk.id);
       cleanUpAfterDelete('spk_produksi', spk.id);
     }
+    /*
+     * The invoice closes as Dibatalkan and stops counting as piutang. Money
+     * already received becomes a saldo pelanggan: refund, move or forfeit.
+     */
+    const paid = verifiedPaidForOrder(cancelOrderId, readTable('payments'));
+    /*
+     * Sampel dikenakan biaya, digratiskan bila lanjut produksi. Cancelled after
+     * the sample was made, the invoice is revised to bill that fee; DP already
+     * paid covers it first and only the rest becomes saldo.
+     */
+    const fee = Number(item.sampleFee) || 0;
+    const sampleMade =
+      item.needsSample === true &&
+      readTable('samples').some((s: any) => s.orderId === cancelOrderId && SAMPLE_MADE_STATUSES.includes(s.status));
+    const chargeFee = fee > 0 && sampleMade;
+    let cancelInvoice =
+      activeInvoiceForOrder(cancelOrderId) || (paid > 0 || chargeFee ? createInvoiceForOrder(item, { user: staff?.name }) : null);
+    if (cancelInvoice && chargeFee) {
+      const revised = reviseInvoice(cancelInvoice, {
+        total: fee,
+        schedule: [{ id: 'term-sample-fee', label: 'Biaya Sampel', percentage: 100, amount: fee, trigger: 'manual' }],
+        revisedBy: staff?.name || 'Staf',
+        notes: `Pesanan ${cancelOrderId} batal setelah sampel dibuat: ditagih biaya sampel.`
+      });
+      cancelInvoice = updateItem('invoices', revised.id, { cancellationFee: fee });
+    }
+    if (cancelInvoice) reconcileInvoice(cancelInvoice.id);
   }
   const fresh = advanceOrderAfterWrite(tableName, item) || item;
   res.json(stripSensitive(fresh));
@@ -3402,6 +3859,51 @@ process.on('unhandledRejection', reason => {
   }
   if (missing.length > 0) console.log(`   ${missing.length} size chart standar HIJ ditambahkan.`);
 }
+
+/*
+ * A fixed Super Admin for local testing, so every developer signs in to the
+ * test dataset the same way. Test mode only: the credentials live in the
+ * gitignored .env, and a production server ignores them even when set.
+ */
+(function ensureLocalTestAdmin() {
+  const username = String(process.env.LOCAL_ADMIN_USERNAME || '').trim().toLowerCase();
+  const plain = String(process.env.LOCAL_ADMIN_PASSWORD || '');
+  if (!username || !plain) return;
+  if (HIJ_MODE !== 'test') {
+    console.warn('  LOCAL_ADMIN_* diabaikan: akun default hanya dibuat di mode uji (npm run dev:test).');
+    return;
+  }
+  if (plain.length < 12) {
+    console.warn('  LOCAL_ADMIN_PASSWORD diabaikan: minimal 12 karakter.');
+    return;
+  }
+  const existing = readTable('users').find((u: any) => String(u.username || '').toLowerCase() === username);
+  if (!existing) {
+    insertItem('users', {
+      id: nextId('users', 'USR'),
+      username,
+      password: hashPassword(plain),
+      name: 'Admin HIJ (lokal)',
+      role: 'Super Admin',
+      allowedModules: ['*'],
+      status: 'Active',
+      user: 'System'
+    });
+    console.log(`   Akun uji lokal dibuat: ${username} (Super Admin).`);
+    return;
+  }
+  // Keep it usable: the password from .env wins, and the account stays active.
+  const passwordOk = verifyPassword(plain, existing.password).ok;
+  if (!passwordOk || existing.status === 'Inactive' || existing.role !== 'Super Admin') {
+    updateItem('users', existing.id, {
+      ...(passwordOk ? {} : { password: hashPassword(plain) }),
+      role: 'Super Admin',
+      allowedModules: ['*'],
+      status: 'Active'
+    });
+    console.log(`   Akun uji lokal ${username} disegarkan dari .env.`);
+  }
+})();
 
 {
   const spks = recomputeAllSpks();

@@ -10,6 +10,12 @@ interface InvoiceDocumentProps {
   invoice: Invoice;
   order?: Order;
   customer?: Customer;
+  /**
+   * Print the tagihan for one instalment: its own number and date, and only
+   * its unpaid part as the amount to transfer. Without it the whole invoice
+   * prints, as before.
+   */
+  termId?: string;
 }
 
 /** Formatter helper using Indonesian dot notation: e.g. 8.510.000 */
@@ -46,6 +52,8 @@ interface SummaryRow {
   amount: number;
   /** Paid instalments are marked so the customer can see what is still open. */
   paid?: boolean;
+  /** The instalment this tagihan is for. */
+  billed?: boolean;
 }
 
 /*
@@ -54,16 +62,22 @@ interface SummaryRow {
  * matched against the instalments in order, so a DP that has been transferred
  * shows as paid while later terms stay open.
  */
-function scheduleRows(schedule: PaymentTerm[], subTotal: number, received: number): SummaryRow[] {
+function scheduleRows(schedule: PaymentTerm[], subTotal: number, received: number, billedTermId?: string): SummaryRow[] {
   let remaining = received;
   return schedule.map((term, index) => {
     const percentage = Number(term.percentage) || 0;
     const amount = Number(term.amount) || Math.round(subTotal * percentage / 100);
-    const paidAmount = Number(term.paidAmount) || 0;
-    const paid = paidAmount > 0 ? paidAmount >= amount : amount > 0 && remaining >= amount;
-    if (paidAmount <= 0 && paid) remaining -= amount;
+    // The server's allocation when it has one; older invoices are matched here, oldest first.
+    let paid: boolean;
+    if (term.status) {
+      paid = term.status === 'Lunas';
+    } else {
+      const paidAmount = Number(term.paidAmount) || 0;
+      paid = paidAmount > 0 ? paidAmount >= amount : amount > 0 && remaining >= amount;
+      if (paidAmount <= 0 && paid) remaining -= amount;
+    }
     const label = `${(term.label || `Termin ${index + 1}`).toUpperCase()}${percentage > 0 ? ` ${percentage}%` : ''}`;
-    return { key: term.id || `term-${index}`, label, amount, paid };
+    return { key: term.id || `term-${index}`, label, amount, paid, billed: !!billedTermId && term.id === billedTermId };
   });
 }
 
@@ -72,8 +86,9 @@ function scheduleRows(schedule: PaymentTerm[], subTotal: number, received: numbe
  * Strictly replicates the structure, layout, typography, borders, and colors
  * of the official template: reference/generate-form/Invoice_ORD-001.pdf
  */
-export const InvoiceDocument: React.FC<InvoiceDocumentProps> = ({ id, invoice, order, customer }) => {
-  const documentNo = invoice.invoiceNo || invoice.id;
+export const InvoiceDocument: React.FC<InvoiceDocumentProps> = ({ id, invoice, order, customer, termId }) => {
+  const billedTerm = termId ? (invoice.paymentSchedule || []).find(term => term.id === termId) : undefined;
+  const documentNo = billedTerm?.billNo || invoice.invoiceNo || invoice.id;
   const poNumber = order?.po || invoice.orderId || order?.id;
   const recipient = customer?.company || customer?.name || invoice.customerName || '-';
 
@@ -106,7 +121,10 @@ export const InvoiceDocument: React.FC<InvoiceDocumentProps> = ({ id, invoice, o
   const sampleDiscount = Number(order?.discount) || 0;
   const discountPercent = Number(order?.discountPercent) || 0;
   const received = Number(invoice.downPaymentReceived) || Number(order?.downPayment) || 0;
-  const endPayment = Number(invoice.balanceRemaining) || Math.max(0, subTotal - sampleDiscount - received);
+  const endPayment = billedTerm
+    ? Math.max(0, (Number(billedTerm.amount) || 0) - (Number(billedTerm.paidAmount) || 0))
+    : Number(invoice.balanceRemaining) || Math.max(0, subTotal - sampleDiscount - received);
+  const endPaymentLabel = billedTerm ? `JUMLAH DITAGIH (${(billedTerm.label || 'TERMIN').toUpperCase()})` : 'END PAYMENT';
   const moq = Number(order?.moq) || 0;
   const isUnderMoq = moq > 0 && quantity > 0 && quantity < moq;
 
@@ -116,7 +134,7 @@ export const InvoiceDocument: React.FC<InvoiceDocumentProps> = ({ id, invoice, o
       ? order.paymentSchedule
       : [];
   const instalmentRows: SummaryRow[] = schedule.length > 0
-    ? scheduleRows(schedule, subTotal, received)
+    ? scheduleRows(schedule, subTotal, received, billedTerm?.id)
     : [{ key: 'received', label: 'UANG MUKA DITERIMA', amount: received, paid: received > 0 }];
 
   const summaryRows: SummaryRow[] = [
@@ -129,8 +147,8 @@ export const InvoiceDocument: React.FC<InvoiceDocumentProps> = ({ id, invoice, o
   const revisionLabel = invoice.revision ? `Revisi ${invoice.revision}` : '';
   const superseded = !!invoice.supersededBy;
 
-  // Invoice signature date
-  const invoiceDate = formatIndonesianDate(invoice.timestamp || order?.timestamp);
+  // Invoice signature date: a tagihan is dated the day it was billed.
+  const invoiceDate = formatIndonesianDate(billedTerm?.billedAt || invoice.timestamp || order?.timestamp);
 
   return (
     <DocumentPage id={id} template="/templates/Invoice.png">
@@ -156,6 +174,9 @@ export const InvoiceDocument: React.FC<InvoiceDocumentProps> = ({ id, invoice, o
             No : {documentNo}
             {revisionLabel && <span className="ml-2 rounded-sm bg-[#ea2027] px-1.5 py-px text-[10px] text-white">{revisionLabel}</span>}
           </p>
+          {billedTerm && (
+            <p className="text-[11px] text-black">Ref. Invoice : {invoice.invoiceNo || invoice.revisionOf || invoice.id}</p>
+          )}
           {poNumber && poNumber !== documentNo && (
             <p className="text-[11px] text-black">Ref. PO : {poNumber}</p>
           )}
@@ -173,7 +194,12 @@ export const InvoiceDocument: React.FC<InvoiceDocumentProps> = ({ id, invoice, o
 
       {/* Hal : Invoice */}
       <p className="text-[12px] text-black mb-3">
-        Hal : <span className="font-bold">Invoice</span>
+        Hal :{' '}
+        <span className="font-bold">
+          {billedTerm
+            ? `Tagihan ${billedTerm.label}${Number(billedTerm.percentage) > 0 ? ` (${billedTerm.percentage}%)` : ''}`
+            : 'Invoice'}
+        </span>
       </p>
 
       {/* Recipient */}
@@ -251,6 +277,11 @@ export const InvoiceDocument: React.FC<InvoiceDocumentProps> = ({ id, invoice, o
             <tr key={row.key} className={index % 2 === 0 ? 'bg-[#e0e0e0]' : 'bg-white'}>
               <td colSpan={7} className="px-2.5 py-1.5 text-[11px] font-bold text-left">
                 {row.label}
+                {row.billed && !row.paid && (
+                  <span className="ml-2 rounded-sm border border-[#ea2027] px-1 py-px text-[9px] font-bold text-[#ea2027]">
+                    DITAGIH
+                  </span>
+                )}
                 {row.paid && (
                   <span className="ml-2 rounded-sm border border-[#1b7f3b] px-1 py-px text-[9px] font-bold text-[#1b7f3b]">
                     LUNAS
@@ -269,7 +300,7 @@ export const InvoiceDocument: React.FC<InvoiceDocumentProps> = ({ id, invoice, o
           {/* Final Row: END PAYMENT */}
           <tr className={summaryRows.length % 2 === 0 ? 'bg-[#e0e0e0]' : 'bg-white'}>
             <td colSpan={7} className="px-2.5 py-1.5 text-[11px] font-bold text-[#ea2027] text-left">
-              END PAYMENT
+              {endPaymentLabel}
             </td>
             <td className="px-1 py-1.5 text-center text-[11px] font-bold text-[#ea2027]">
               Rp
@@ -284,7 +315,7 @@ export const InvoiceDocument: React.FC<InvoiceDocumentProps> = ({ id, invoice, o
       {/* Terbilang Section */}
       <p className="mt-2 text-[11px] text-black">
         <span className="font-bold">Terbilang </span>
-        <span className="font-bold text-[#ea2027]">(END PAYMENT)</span>
+        <span className="font-bold text-[#ea2027]">({endPaymentLabel})</span>
         <span className="font-bold"> : </span>
         <span className="font-bold italic text-[#ea2027]">{terbilangRupiah(endPayment)}</span>
       </p>

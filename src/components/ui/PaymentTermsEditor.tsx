@@ -1,20 +1,22 @@
 import React from 'react';
 import { Plus, Trash2 } from 'lucide-react';
-import { PaymentTerm } from '../../types';
+import { PaymentTerm, TermTrigger } from '../../types';
 import { formatCurrency } from '../../lib/utils';
+import { TERM_TRIGGERS, TERM_TRIGGER_LABELS, termTrigger } from '../../lib/terms';
 import { Button } from './Button';
 import { Input } from './Input';
-import { FieldLabel, FieldHint, FieldError } from './Field';
+import { FieldLabel, FieldHint, FieldError, Select } from './Field';
 
 /*
  * Installments are agreed with the customer on the quotation and then printed
  * on the invoice, so the split has to be explicit here rather than implied by a
- * single "DP 50%" field.
+ * single "DP 50%" field. Each one also names the milestone that makes it due;
+ * the invoice bills it when the order gets there.
  */
 
 export const DEFAULT_PAYMENT_SCHEDULE: Omit<PaymentTerm, 'amount'>[] = [
-  { id: 'term-dp', label: 'DP', percentage: 50 },
-  { id: 'term-final', label: 'Pelunasan', percentage: 50 }
+  { id: 'term-dp', label: 'DP', percentage: 50, trigger: 'deal' },
+  { id: 'term-final', label: 'Pelunasan', percentage: 50, trigger: 'shipped' }
 ];
 
 /** Recalculate each installment's amount from the current total. */
@@ -59,22 +61,30 @@ export const PaymentTermsEditor: React.FC<PaymentTermsEditorProps> = ({
     onChange(withAmounts(next, total));
   };
 
+  /*
+   * A term with no milestone of its own takes one from its position, so adding
+   * or removing a row would silently move the others (the old last term would
+   * turn from "Barang dikirim" into "Lolos QC"). Pin them first.
+   */
+  const pinned = () => terms.map((term, index) => ({ ...term, trigger: termTrigger(term, index, terms.length) }));
+
   const addTerm = () => {
     const remaining = Math.max(0, 100 - percent);
     const next = [
-      ...terms,
+      ...pinned(),
       {
         id: `term-${Date.now()}`,
         label: `Termin ${terms.length + 1}`,
         percentage: remaining,
-        amount: 0
+        amount: 0,
+        trigger: 'shipped' as TermTrigger
       }
     ];
     onChange(withAmounts(next, total));
   };
 
   const removeTerm = (index: number) => {
-    onChange(withAmounts(terms.filter((_, i) => i !== index), total));
+    onChange(withAmounts(pinned().filter((_, i) => i !== index), total));
   };
 
   return (
@@ -83,7 +93,7 @@ export const PaymentTermsEditor: React.FC<PaymentTermsEditorProps> = ({
         {terms.map((term, index) => (
           <div
             key={term.id}
-            className="grid grid-cols-1 gap-3 rounded-xl border border-border bg-muted/30 p-3 sm:grid-cols-[1fr_92px_auto]"
+            className="grid grid-cols-1 gap-3 rounded-xl border border-border bg-muted/30 p-3 sm:grid-cols-[1fr_92px_minmax(0,1fr)_auto]"
           >
             <div>
               <FieldLabel htmlFor={`${idPrefix}-label-${index}`} className="text-xs">
@@ -112,6 +122,23 @@ export const PaymentTermsEditor: React.FC<PaymentTermsEditorProps> = ({
                 onChange={e => update(index, { percentage: Number(e.target.value) })}
                 className="text-right font-semibold tabular-nums"
               />
+            </div>
+
+            <div>
+              <FieldLabel htmlFor={`${idPrefix}-trigger-${index}`} className="text-xs">
+                Ditagih saat
+              </FieldLabel>
+              <Select
+                id={`${idPrefix}-trigger-${index}`}
+                value={termTrigger(term, index, terms.length)}
+                onChange={e => update(index, { trigger: e.target.value as TermTrigger })}
+              >
+                {TERM_TRIGGERS.map(trigger => (
+                  <option key={trigger} value={trigger}>
+                    {TERM_TRIGGER_LABELS[trigger]}
+                  </option>
+                ))}
+              </Select>
             </div>
 
             <div className="flex items-end justify-between gap-2 sm:flex-col sm:items-end">
@@ -151,7 +178,7 @@ export const PaymentTermsEditor: React.FC<PaymentTermsEditorProps> = ({
         <FieldError>{error}</FieldError>
       ) : (
         <FieldHint>
-          Termin ini disepakati bersama pelanggan dan dicetak di invoice.
+          Termin ini disepakati bersama pelanggan dan dicetak di invoice. Tiap termin baru bisa ditagih saat tahapnya tercapai.
         </FieldHint>
       )}
     </div>

@@ -66,6 +66,7 @@ import { Modal } from '../ui/Modal';
 import { Toast, useToast } from '../ui/Toast';
 import { useConfirm } from '../ui/ConfirmDialog';
 import { QuotationDocument } from '../documents/QuotationDocument';
+import { TERM_TRIGGER_LABELS, termTrigger } from '../../lib/terms';
 import {
   PaymentTermsEditor,
   createDefaultSchedule,
@@ -269,6 +270,35 @@ export const QuotationsModule: React.FC = () => {
   }, [loadData]);
 
   const approvedDesigns = useMemo(() => designs.filter(d => d.status === 'Approved'), [designs]);
+
+  /*
+   * A new model needs its own design (the server enforces it); a design an
+   * active order already uses is shown but cannot be picked, except by the
+   * quotation that order came from.
+   */
+  const designUsedBy = (designId: string): string[] => {
+    const design = designs.find(d => d.id === designId);
+    const ownOrderId = editingQuotationId ? quotations.find(q => q.id === editingQuotationId)?.orderId : undefined;
+    return orders
+      .filter(o => o.status !== 'Cancelled' && o.id !== ownOrderId && (o.designId === designId || design?.orderId === o.id))
+      .map(o => o.id);
+  };
+
+  /** DP waits for the sample to reach the customer when one is made; otherwise it is due at the deal. */
+  const setNeedsSample = (needsSample: boolean) => {
+    setQuoFormData(prev => {
+      const terms = prev.paymentSchedule;
+      if (!terms?.length) return { ...prev, needsSample };
+      const first = terms[0];
+      const firstTrigger = first.trigger || 'deal';
+      const nextTrigger = needsSample && firstTrigger === 'deal' ? 'sampleSent' : !needsSample && firstTrigger === 'sampleSent' ? 'deal' : firstTrigger;
+      return {
+        ...prev,
+        needsSample,
+        paymentSchedule: [{ ...first, trigger: nextTrigger }, ...terms.slice(1)]
+      };
+    });
+  };
 
   // Handler auto-fill dari Desain Mockup ke form Penawaran
   const handleSelectDesign = (designId: string) => {
@@ -690,6 +720,7 @@ export const QuotationsModule: React.FC = () => {
         priceBelowMoq: Number(quoFormData.priceBelowMoq) || Number(quoFormData.price),
         needsSample: Boolean(quoFormData.needsSample),
         sampleStatus: quoFormData.needsSample ? 'Pending' : 'Tanpa Sampel',
+        sampleFee: quoFormData.needsSample ? Number(quoFormData.sampleFee) || 0 : 0,
         paymentSchedule: scheduleWithAmounts,
         timestamp: quoFormData.timestamp || new Date().toISOString()
       };
@@ -1261,6 +1292,13 @@ export const QuotationsModule: React.FC = () => {
               <DetailField label="Kebutuhan sampel">
                 {detailQuotation.needsSample ? 'Perlu sampel fisik' : 'Tanpa sampel fisik (langsung produksi)'}
               </DetailField>
+              {detailQuotation.needsSample && (
+                <DetailField label="Biaya sampel">
+                  {Number(detailQuotation.sampleFee) > 0
+                    ? `${formatCurrency(detailQuotation.sampleFee || 0)} (gratis bila lanjut produksi)`
+                    : 'Gratis'}
+                </DetailField>
+              )}
             </DetailSection>
 
             {detailQuotation.designUrl && (
@@ -1305,11 +1343,14 @@ export const QuotationsModule: React.FC = () => {
             {detailQuotation.paymentSchedule && detailQuotation.paymentSchedule.length > 0 && (
               <DetailBlock title="Rencana termin pembayaran">
                 <ul className="divide-y divide-border/70 text-sm">
-                  {detailQuotation.paymentSchedule.map(term => (
+                  {detailQuotation.paymentSchedule.map((term, index, all) => (
                     <li key={term.id} className="flex items-center justify-between gap-3 py-2">
                       <span className="min-w-0">
                         <span className="font-semibold text-foreground">
                           {term.label} {term.percentage}%
+                        </span>
+                        <span className="block text-xs text-muted-foreground">
+                          Ditagih: {TERM_TRIGGER_LABELS[termTrigger(term, index, all.length)].toLowerCase()}
                         </span>
                       </span>
                       <span className="shrink-0 font-bold tabular-nums text-foreground">
@@ -1552,16 +1593,19 @@ export const QuotationsModule: React.FC = () => {
                   ? 'Belum ada desain yang disetujui'
                   : 'Tanpa acuan desain — isi spesifikasi manual'}
               </option>
-              {approvedDesigns.map(d => (
-                <option key={d.id} value={d.id}>
-                  {d.id} · {d.name} ({d.category || 'Custom'})
-                </option>
-              ))}
+              {approvedDesigns.map(d => {
+                const usedBy = designUsedBy(d.id);
+                return (
+                  <option key={d.id} value={d.id} disabled={usedBy.length > 0 && d.id !== selectedDesignId}>
+                    {d.id} · {d.name} ({d.category || 'Custom'}){usedBy.length > 0 ? ` — dipakai ${usedBy.join(', ')}` : ''}
+                  </option>
+                );
+              })}
             </Select>
             <FieldHint id="quo-design-hint">
               {approvedDesigns.length === 0
                 ? 'Setujui desain di halaman Desain & Sampel agar bisa ditarik ke penawaran ini.'
-                : 'Memilih desain mengisi otomatis nama produk, klien, dan catatan spesifikasinya.'}
+                : 'Memilih desain mengisi otomatis nama produk, klien, dan catatan spesifikasinya. Desain yang sudah dipakai pesanan lain tidak bisa dipilih: model baru perlu desain baru.'}
             </FieldHint>
           </div>
 
@@ -1912,12 +1956,32 @@ export const QuotationsModule: React.FC = () => {
                 <Select
                   id="quo-needs-sample"
                   value={quoFormData.needsSample ? 'true' : 'false'}
-                  onChange={e => setQuoFormData(prev => ({ ...prev, needsSample: e.target.value === 'true' }))}
+                  onChange={e => setNeedsSample(e.target.value === 'true')}
                 >
                   <option value="false">Tanpa sampel fisik (langsung produksi massal)</option>
                   <option value="true">Wajib sampel fisik (ACC sebelum SPK)</option>
                 </Select>
+                {quoFormData.needsSample && (
+                  <FieldHint>Sampel dikerjakan setelah deal tanpa menunggu DP; DP ditagih saat sampel dikirim.</FieldHint>
+                )}
               </div>
+
+              {quoFormData.needsSample && (
+                <div>
+                  <FieldLabel htmlFor="quo-sample-fee" aside="Gratis bila lanjut produksi">Biaya sampel (Rp)</FieldLabel>
+                  <Input
+                    id="quo-sample-fee"
+                    type="number"
+                    inputMode="numeric"
+                    min={0}
+                    value={quoFormData.sampleFee || ''}
+                    onChange={e => setQuoFormData(prev => ({ ...prev, sampleFee: Number(e.target.value) || 0 }))}
+                    placeholder="0"
+                    className="tabular-nums"
+                  />
+                  <FieldHint>Ditagih hanya bila pesanan batal setelah sampel dibuat.</FieldHint>
+                </div>
+              )}
 
               <div>
                 <FieldLabel htmlFor="quo-procurement">Status pengadaan bahan</FieldLabel>

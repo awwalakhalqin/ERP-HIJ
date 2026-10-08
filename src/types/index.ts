@@ -141,12 +141,39 @@ export interface OrderItemSize {
  * One agreed installment. Terms are negotiated when the quotation is made and
  * are printed on the invoice.
  */
+/** The milestone that makes an instalment due. */
+export type TermTrigger = 'deal' | 'sampleSent' | 'sample' | 'qc' | 'shipped' | 'delivered' | 'manual';
+
+/** Derived by the server from the milestone, the billing stamp and verified payments. */
+export type TermStatus = 'Menunggu' | 'Siap Ditagih' | 'Ditagih' | 'Sebagian' | 'Lunas';
+
 export interface PaymentTerm {
   id: string;
   /** "DP", "Termin 2", "Pelunasan" — printed as the invoice row label. */
   label: string;
   percentage: number;
   amount: number;
+  /** Agreed on the quotation; defaults by position (first = deal, last = shipped, middle = QC). */
+  trigger?: TermTrigger;
+
+  /*
+   * Billing state. Lives on the invoice's copy of the schedule only; the
+   * quotation and order keep the agreed plan.
+   */
+  status?: TermStatus;
+  /** Set once the milestone is reached; cleared while it is not. */
+  readyAt?: string;
+  /** Number printed on this instalment's tagihan, e.g. INV-005/T2. */
+  billNo?: string;
+  billedAt?: string;
+  billedBy?: string;
+  /** Why it was billed before its milestone, when it was. */
+  billedEarlyReason?: string;
+  /** Payment deadline of the tagihan, set when it is billed. */
+  dueDate?: string;
+  /** WhatsApp reminders sent for this tagihan. */
+  reminders?: { at: string; by: string }[];
+  /** Verified money allocated to this instalment, oldest instalment first. */
   paidAmount?: number;
   paidAt?: string;
 }
@@ -188,6 +215,8 @@ export interface Quotation {
   priceBelowMoq?: number;
   needsSample?: boolean;
   sampleStatus?: string;
+  /** Price of the physical sample: waived when the order goes to production, billed if it is cancelled after the sample was made. */
+  sampleFee?: number;
   isRepeatOrder?: boolean;
   /** Installments agreed with the customer (SOP-20). */
   paymentSchedule?: PaymentTerm[];
@@ -260,6 +289,8 @@ export interface Order {
   priceBelowMoq?: number;
   needsSample?: boolean;
   sampleStatus?: string;
+  /** Copied from the quotation; see Quotation.sampleFee. */
+  sampleFee?: number;
 
   // Production requirements before an SPK may be issued (SOP-01, 02, 03, 04, 06, 20).
   // downPayment holds the amount actually paid; dpRequired is the DP agreed at approval.
@@ -668,6 +699,10 @@ export interface Shipment {
   paidBy: 'Pengirim' | 'Penerima (COD Ongkir)';
   estimatedArrival?: string;
   status: 'Packing' | 'Surat Jalan Dibuat' | 'Picked Up' | 'In Transit' | 'Delivered';
+  /** Bukti terima barang, required to mark the shipment Delivered. */
+  receivedBy?: string;
+  receivedAt?: string;
+  proofOfDeliveryUrl?: string;
   user?: string;
   timestamp?: string;
 }
@@ -789,7 +824,8 @@ export interface Invoice {
   balanceRemaining: number;
   /** Older records may still carry one; the app neither sets nor chases due dates. */
   dueDate?: string;
-  status: 'Belum Bayar' | 'DP Dibayar' | 'Lunas' | 'Sebagian';
+  /** 'Dibatalkan': the order was cancelled; money already received became a saldo pelanggan. */
+  status: 'Belum Bayar' | 'DP Dibayar' | 'Lunas' | 'Sebagian' | 'Dibatalkan';
   paymentMethod?: string;
   notes?: string;
   user?: string;
@@ -799,8 +835,19 @@ export interface Invoice {
   shipmentId?: string;
   sentAt?: string;
   sentBy?: string;
-  /** Installments printed on the invoice document. */
+  /** Installments printed on the invoice document, each billed and paid on its own. */
   paymentSchedule?: PaymentTerm[];
+  /**
+   * Unpaid part of the instalments whose milestone has been reached or that
+   * have been billed. Instalments still waiting on production are not owed yet.
+   * Absent on invoices without a schedule: their whole balance is due.
+   */
+  dueNow?: number;
+  /**
+   * Set when the order was cancelled after its sample was made: the invoice
+   * then bills only this (the sample fee) instead of closing as Dibatalkan.
+   */
+  cancellationFee?: number;
 
   /** Revision trail — see Quotation. Payments already received carry over. */
   revision?: number;
@@ -811,6 +858,39 @@ export interface Invoice {
   supersededAt?: string;
 }
 
+export type DeductionType = 'PPh 23' | 'Biaya Transfer' | 'Pembulatan' | 'Lainnya';
+export type PaymentAdjustmentType = DeductionType | 'Pindahan Saldo';
+
+/*
+ * Saldo pelanggan: money HIJ holds for a customer that no invoice is owed.
+ * Born from an overpayment, or from payments on an order that was cancelled.
+ * Finance settles it by refund, by moving it to another invoice of the same
+ * customer, or (cancelled orders only) by declaring the DP forfeited.
+ */
+export interface CustomerCredit {
+  id: string; // SAL-001
+  customerId: string;
+  customerName: string;
+  source: 'Lebih Bayar' | 'Pesanan Batal';
+  orderId?: string;
+  /** Base number of the invoice family it came from. */
+  invoiceId: string;
+  amount: number;
+  remaining: number;
+  status: 'Terbuka' | 'Selesai';
+  history: {
+    at: string;
+    by: string;
+    action: 'Refund' | 'Hangus' | 'Pindah';
+    amount: number;
+    targetInvoiceId?: string;
+    paymentId?: string;
+    method?: string;
+    note?: string;
+  }[];
+  timestamp?: string;
+}
+
 export interface Payment {
   id: string;
   orderId?: string;
@@ -819,6 +899,19 @@ export interface Payment {
   customerName: string;
   amount: number;
   type: 'Down Payment' | 'DP' | 'Pelunasan' | 'Cicilan' | 'Custom';
+  /** The instalment this money landed in when it was recorded. */
+  termId?: string;
+  termLabel?: string;
+  /**
+   * Set when this settles part of an invoice without new money arriving: a
+   * deduction the customer made (PPh 23 withheld, transfer fee, rounding) or
+   * saldo moved from another invoice. Not counted as kas masuk.
+   */
+  adjustmentType?: PaymentAdjustmentType;
+  /** No. bukti potong for PPh 23, or any other reference for the adjustment. */
+  reference?: string;
+  /** The saldo pelanggan a 'Pindahan Saldo' came from. */
+  creditId?: string;
   date: string;
   bankAccount?: string;
   paymentMethod?: string;
